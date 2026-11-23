@@ -3,6 +3,10 @@ use crate::exec::{CmdOutput, MockRunner, PipedChild, Spawned};
 use serde_json::json;
 use std::collections::VecDeque;
 
+#[path = "../../../tests/common/canary.rs"]
+#[allow(dead_code)]
+mod canary;
+
 const BIRTH: &str = "Wed Aug 12 10:00:00 2026";
 
 struct TestRunner {
@@ -537,6 +541,22 @@ fn s9_gradle_end_releases_the_slot_while_readiness_alone_does_not() {
         assert!(f.runner.saw_slot);
         assert_eq!(f.runner.inner.remaining(), 0);
     }
+}
+
+#[test]
+fn android_combined_build_and_metro_log_failure_carries_a_pointer_not_its_lines() {
+    let gradle = "> Task :app:mergeDebugResources";
+    let mut f = fixture("expo-canary", Platform::Android);
+    expo_script(&mut f, &format!("{gradle}\n{}\n", canary::line()), false);
+    let mut ctx = f.ctx();
+    let failure = build_and_ready(&mut ctx).unwrap_err();
+    let receipt = ctx.fail(failure);
+    canary::assert_log_pointer(
+        &receipt.to_json(),
+        &std::fs::read(RunRecord::path(&f.root, "check-slot")).unwrap(),
+        &RunRecord::run_dir(&f.root, "check-slot").join("logs/build.log"),
+        &[gradle],
+    );
 }
 
 #[test]

@@ -52,6 +52,49 @@ impl Runner for Git {
     }
 }
 
+// The run's kept process logs hold an app's private console output.
+fn seed_logs(dir: &Path) {
+    std::fs::create_dir_all(dir.join("logs")).unwrap();
+    for log in ["metro.log", "build.log", "expo-run-ios.log"] {
+        std::fs::write(
+            dir.join("logs").join(log),
+            format!("{}\n", common::canary::line()),
+        )
+        .unwrap();
+    }
+}
+
+const VIDEO_AND_STEP: &[&str] = &[
+    "./media/video-published.mp4",
+    "./screenshots/01.png#Failing step",
+];
+
+// No kept-log value leaves the machine, and each comment attaches only the expected media.
+fn assert_no_log_sent(runner: &Staged, attached: &[&[&str]]) {
+    let calls = &runner.0 .0.calls;
+    assert!(!runner.2.is_empty());
+    for text in calls
+        .iter()
+        .map(|call| call.args.join(" "))
+        .chain(runner.1.iter().cloned())
+        .chain(runner.2.iter().cloned())
+    {
+        common::canary::assert_absent("published text", &text);
+    }
+    let sent: Vec<Vec<String>> = calls
+        .iter()
+        .filter(|call| call.label == "gh-pr-comment")
+        .map(|call| {
+            call.args
+                .windows(2)
+                .filter(|pair| pair[0] == "--attach")
+                .map(|pair| pair[1].clone())
+                .collect()
+        })
+        .collect();
+    assert_eq!(sent, attached);
+}
+
 fn machine() -> MachineIdentity {
     MachineIdentity {
         hostname: Some("qa-mac".into()),
@@ -270,11 +313,13 @@ fn cancelled_runs_refuse_new_and_resumed_publication_without_side_effects() {
 #[test]
 fn publish_comments_removes_the_label_and_pushes_the_blocks_with_the_exact_lease() {
     let (runs, dir) = run_dir(false);
-    let mut runner = Git(MockRunner::new());
-    script_comment_and_label(&mut runner.0);
-    script_commit(&mut runner.0);
+    seed_logs(&dir);
+    let mut runner = Staged(Git(MockRunner::new()), Vec::new(), Vec::new());
+    script_comment_and_label(&mut runner.0 .0);
+    script_commit(&mut runner.0 .0);
     runner
         .0
+         .0
         .expect_run("git push origin", CmdOutput::success(""));
 
     let receipt = publish(&mut runner, &runs, RUN, &machine());
@@ -285,9 +330,10 @@ fn publish_comments_removes_the_label_and_pushes_the_blocks_with_the_exact_lease
         "{:?}",
         receipt.failure
     );
-    assert_eq!(runner.0.remaining(), 0);
+    assert_eq!(runner.0 .0.remaining(), 0);
     let comment = runner
         .0
+         .0
         .calls
         .iter()
         .find(|c| c.label == "gh-pr-comment")
@@ -304,6 +350,7 @@ fn publish_comments_removes_the_label_and_pushes_the_blocks_with_the_exact_lease
     assert!(report_content(&body, "").starts_with("FAIL"));
     let commit = runner
         .0
+         .0
         .calls
         .iter()
         .find(|c| c.label == "git-commit-blocks")
@@ -321,6 +368,7 @@ fn publish_comments_removes_the_label_and_pushes_the_blocks_with_the_exact_lease
     assert!(!commit.args.iter().any(|a| a.contains("user.")));
     let push = runner
         .0
+         .0
         .calls
         .iter()
         .find(|c| c.label == "git-push-blocks")
@@ -353,6 +401,7 @@ fn publish_comments_removes_the_label_and_pushes_the_blocks_with_the_exact_lease
     assert_eq!(receipt.result, ReceiptResult::Published);
     assert!(again.0.calls.is_empty());
     assert_eq!(std::fs::read(dir.join("publication.json")).unwrap(), before);
+    assert_no_log_sent(&runner, &[VIDEO_AND_STEP]);
 }
 
 #[test]
@@ -458,14 +507,15 @@ fn a_lost_attached_comment_is_adopted_after_github_rewrites_its_body() {
 #[test]
 fn a_rejected_lease_attaches_the_yaml_in_a_second_comment() {
     let (runs, dir) = run_dir(false);
-    let mut runner = Git(MockRunner::new());
-    script_comment_and_label(&mut runner.0);
-    script_commit(&mut runner.0);
-    runner.0.expect_run(
+    seed_logs(&dir);
+    let mut runner = Staged(Git(MockRunner::new()), Vec::new(), Vec::new());
+    script_comment_and_label(&mut runner.0 .0);
+    script_commit(&mut runner.0 .0);
+    runner.0 .0.expect_run(
         "git push origin",
         CmdOutput::failed(1, "! [rejected] (stale info)"),
     );
-    runner.0.expect_run(
+    runner.0 .0.expect_run(
         "gh pr comment 12",
         CmdOutput::success("https://github.com/o/r/pull/12#issuecomment-2\n"),
     );
@@ -478,7 +528,7 @@ fn a_rejected_lease_attaches_the_yaml_in_a_second_comment() {
         "{:?}",
         receipt.failure
     );
-    assert_eq!(runner.0.remaining(), 0);
+    assert_eq!(runner.0 .0.remaining(), 0);
     let blocks = std::fs::read_to_string(dir.join("blocks-comment.md")).unwrap();
     assert!(blocks.contains("<details><summary>Saved blocks to commit</summary>"));
     assert!(blocks.contains("` test-app/.qaren/actions/tasks.yaml `"));
@@ -491,6 +541,7 @@ fn a_rejected_lease_attaches_the_yaml_in_a_second_comment() {
     assert!(std::fs::read_to_string(dir.join("comment.md"))
         .unwrap()
         .contains("FAIL"));
+    assert_no_log_sent(&runner, &[VIDEO_AND_STEP, &[]]);
 }
 
 #[test]
@@ -619,18 +670,20 @@ fn edited(runner: &Git) -> bool {
 #[test]
 fn description_is_written_after_the_comment() {
     let (runs, dir) = run_dir(false);
+    seed_logs(&dir);
     describe_pr(&dir, |_| {});
-    let mut runner = Git(MockRunner::new());
-    script_comment_and_label(&mut runner.0);
+    let mut runner = Staged(Git(MockRunner::new()), Vec::new(), Vec::new());
+    script_comment_and_label(&mut runner.0 .0);
     script_description(
-        &mut runner.0,
+        &mut runner.0 .0,
         Some(comments_ending(ASSET)),
         &[AUTHOR, AUTHOR],
         Some(CmdOutput::success("")),
     );
-    script_commit(&mut runner.0);
+    script_commit(&mut runner.0 .0);
     runner
         .0
+         .0
         .expect_run("git push origin", CmdOutput::success(""));
 
     let receipt = publish(&mut runner, &runs, RUN, &machine());
@@ -641,7 +694,7 @@ fn description_is_written_after_the_comment() {
         "{:?}",
         receipt.failure
     );
-    assert_eq!(runner.0.remaining(), 0);
+    assert_eq!(runner.0 .0.remaining(), 0);
     let written = description(&dir);
     let (section, video) = proof_section(&written);
     assert_eq!(written, format!("{AUTHOR}\n{section}"));
@@ -652,6 +705,7 @@ fn description_is_written_after_the_comment() {
     assert_eq!(written.matches(ASSET).count(), 1);
     let uploads = runner
         .0
+         .0
         .calls
         .iter()
         .filter(|c| c.args.contains(&"./media/video-published.mp4".to_string()))
@@ -662,6 +716,7 @@ fn description_is_written_after_the_comment() {
     assert_eq!(done.description.as_deref(), Some("written"));
     assert_eq!(receipt.outcomes["description"], "written");
     assert!(receipt.next_action.contains("proof section"));
+    assert_no_log_sent(&runner, &[VIDEO_AND_STEP]);
 }
 
 #[test]
@@ -1227,8 +1282,8 @@ fn an_unreadable_publication_state_fails_closed() {
     assert!(runner.0.calls.is_empty());
 }
 
-// Records what each `git add` stages, as the commit will contain it.
-struct Staged(Git, Vec<String>);
+// Records what each `git add` stages, as the commit will contain it, and each body file as gh reads it.
+struct Staged(Git, Vec<String>, Vec<String>);
 
 impl Runner for Staged {
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
@@ -1238,6 +1293,11 @@ impl Runner for Staged {
                 self.1
                     .push(std::fs::read_to_string(cwd.join(path)).unwrap());
             }
+        }
+        if let Some(i) = spec.args.iter().position(|a| a == "--body-file") {
+            let cwd = spec.cwd.clone().unwrap_or_default();
+            self.2
+                .push(std::fs::read_to_string(cwd.join(&spec.args[i + 1])).unwrap());
         }
         self.0.execute(spec, interruptible)
     }
@@ -1352,7 +1412,7 @@ fn an_eligible_parameterised_block_is_committed_byte_identical() {
     let (runs, dir) = run_dir(false);
     let source = "steps:\n  - inputText: ${PASSWORD}\n    into: \"Password\"\n";
     std::fs::write(dir.join("blocks/tasks.yaml"), source).unwrap();
-    let mut runner = Staged(Git(MockRunner::new()), Vec::new());
+    let mut runner = Staged(Git(MockRunner::new()), Vec::new(), Vec::new());
     script_comment_and_label(&mut runner.0 .0);
     script_commit_extension(&mut runner.0 .0, "yaml", source);
     runner
@@ -1382,7 +1442,7 @@ fn a_block_the_redaction_would_change_is_withheld_never_rewritten() {
         let (runs, dir) = run_dir(false);
         std::fs::write(dir.join("blocks/tasks.yaml"), &content).unwrap();
         edit_pr(&dir, |pr| pr["identityValues"] = serde_json::json!(["emulator-5554"]));
-        let mut runner = Staged(Git(MockRunner::new()), Vec::new());
+        let mut runner = Staged(Git(MockRunner::new()), Vec::new(), Vec::new());
         script_comment_and_label(&mut runner.0 .0);
 
         let receipt = publish(&mut runner, &runs, RUN, &fixture_machine());
@@ -1796,7 +1856,7 @@ fn a_block_in_the_producers_format_from_an_eligible_walk_is_committed_byte_ident
             "8081"
         ]);
     });
-    let mut runner = Staged(Git(MockRunner::new()), Vec::new());
+    let mut runner = Staged(Git(MockRunner::new()), Vec::new(), Vec::new());
     script_comment_and_label(&mut runner.0 .0);
     let mock = &mut runner.0 .0;
     mock.expect_run(

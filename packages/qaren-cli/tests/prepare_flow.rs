@@ -2102,6 +2102,7 @@ fn ios_metro_that_exits_while_pending_fails_as_metro_exited() {
     let repo = common::temp_repo();
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
+    mock.metro_log = Some(format!("{}\n", common::canary::line()));
     script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
     common::script_metro_bind_not_ready(&mut mock);
     mock.expect_run("ps", CmdOutput::failed(1, ""));
@@ -2113,6 +2114,13 @@ fn ios_metro_that_exits_while_pending_fails_as_metro_exited() {
     assert_eq!(failure.code, FailureCode::BuildFailed);
     assert!(failure.detail.to_string().starts_with("metro exited"));
     assert_eq!(receipt.metro_bind, None);
+    let runs = scenario.parent().unwrap();
+    common::canary::assert_log_pointer(
+        &receipt.to_json(),
+        &std::fs::read(RunRecord::path(runs, &receipt.run_id)).unwrap(),
+        &RunRecord::run_dir(runs, &receipt.run_id).join("logs/metro.log"),
+        &[],
+    );
     assert_eq!(wait_turns(&mock), 1);
     assert_eq!(mock.remaining(), 0);
 }
@@ -4141,12 +4149,13 @@ fn android_prepare_fails_fast_when_the_tunnel_dies_before_listening() {
             "started slot=1 serial=emulator-5554 adb_port=5555 lease={expected_holder}\n"
         )),
     );
-    mock.expect_spawn(
+    mock.inner.expect_spawn_with_log(
         "ssh",
         Spawned {
             pid: 7000,
             pgid: 7000,
         },
+        &format!("{}\n", common::canary::line()),
     );
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
     mock.expect_run("ps", CmdOutput::success("ssh -N\n"));
@@ -4171,9 +4180,12 @@ fn android_prepare_fails_fast_when_the_tunnel_dies_before_listening() {
         "a dead tunnel must be reported as such, not as a deadline: {}",
         failure.detail
     );
-    assert!(
-        !failure.evidence.is_empty(),
-        "the tunnel log tail must be attached as evidence"
+    let runs = scenario_path.parent().unwrap();
+    common::canary::assert_log_pointer(
+        &receipt.to_json(),
+        &std::fs::read(RunRecord::path(runs, &receipt.run_id)).unwrap(),
+        &RunRecord::run_dir(runs, &receipt.run_id).join("logs/tunnel.log"),
+        &[],
     );
     assert_eq!(
         mock.remaining(),
@@ -5234,7 +5246,7 @@ fn build_budget_expiry_after_build_releases_lock_without_publication() {
 }
 
 #[test]
-fn build_process_death_fails_with_log_evidence() {
+fn build_process_death_fails_with_a_log_pointer_and_no_log_lines() {
     let repo = common::temp_repo();
     let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
 
@@ -5248,7 +5260,10 @@ fn build_process_death_fails_with_log_evidence() {
     common::script_xcode(&mut mock);
     mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
     mock.expect_run("simctl bootstatus", CmdOutput::success(""));
-    mock.build_log = Some("CommandError: xcodebuild exited with error code 65\n".into());
+    mock.build_log = Some(format!(
+        "CommandError: xcodebuild exited with error code 65\n{}\n",
+        common::canary::line()
+    ));
     mock.expect_spawn_piped("expo run:ios", 5000, "", Some(65));
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
@@ -5263,13 +5278,11 @@ fn build_process_death_fails_with_log_evidence() {
         failure.next_action.contains("cleanup"),
         "cleanup must be the next action"
     );
-    assert!(
-        failure
-            .evidence
-            .iter()
-            .any(|e| e.contains("xcodebuild exited with error code 65")),
-        "the receipt must carry build log evidence: {:?}",
-        failure.evidence
+    common::canary::assert_log_pointer(
+        &receipt.to_json(),
+        &std::fs::read(RunRecord::path(&repo, &receipt.run_id)).unwrap(),
+        &RunRecord::run_dir(&repo, &receipt.run_id).join("logs/expo-run-ios.log"),
+        &["error code 65"],
     );
     assert_eq!(mock.remaining(), 0, "the liveness probe must have run");
     let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
@@ -9586,12 +9599,12 @@ fn b3_b6_b7_a_build_that_stands_still_is_cut_and_says_what_ran_out() {
     assert_eq!((limit.window_s, limit.idle_s), (7200, Some(600)));
     assert_eq!(limit.last_progress_age_s, Some(600));
     assert_eq!(limit.next_limit_s, Some(2400));
-    // B6: the cut's own detail and log lines reach the receipt; the window check does not replace it.
+    // B6: the cut's own detail and log pointer reach the receipt; the window check does not replace it.
     let failure = receipt.failure.as_ref().unwrap();
     assert!(failure.detail.to_string().starts_with(
         "the native build was stopped after 2600 s: it had produced no output for 600 s, past its limit of 2400 s; see "
     ), "{failure:?}");
-    assert_eq!(failure.evidence.len(), 1);
+    common::canary::assert_pointer_not_evidence(serde_json::to_value(failure).unwrap());
     // B7: re-run after the run's own cleanup; the cleanup comes first.
     let recovery = failure.build_recovery().unwrap();
     assert_eq!(

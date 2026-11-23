@@ -979,7 +979,7 @@ fn b6_a_check_whose_build_stands_still_reports_what_ran_out() {
         .detail
         .to_string()
         .starts_with("the native build was stopped after 2400 s"));
-    assert_eq!(failure.evidence.len(), 1);
+    common::canary::assert_pointer_not_evidence(serde_json::to_value(failure).unwrap());
     assert_eq!(
         failure.build_recovery().unwrap().reason,
         qaren::failure::RecoveryReason::BuildTimeLimit
@@ -13381,7 +13381,7 @@ fn b6_a_pr_run_whose_build_stands_still_reports_what_ran_out() {
         .detail
         .to_string()
         .starts_with("the native build was stopped after 2400 s"));
-    assert_eq!(failure.evidence.len(), 1);
+    common::canary::assert_pointer_not_evidence(serde_json::to_value(failure).unwrap());
 }
 
 #[test]

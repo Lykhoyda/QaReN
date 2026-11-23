@@ -46,7 +46,8 @@ fn run_json_and_receipts_withhold_key_strings_a_writer_did_not_redact() {
     for durable in [recorded, receipt.to_json()] {
         assert!(!durable.contains(BODY), "{durable}");
         assert!(durable.contains(PRIVATE_KEY_WITHHELD), "{durable}");
-        assert!(durable.contains("\"clean\""), "{durable}");
+        let value: serde_json::Value = serde_json::from_str(&durable).unwrap();
+        assert!(value.pointer("/failure/evidence").is_none(), "{durable}");
     }
     let reloaded = RunRecord::load(&dir, "sinkrun").unwrap();
     assert_eq!(reloaded.failure.unwrap().detail, PRIVATE_KEY_WITHHELD);
@@ -145,7 +146,6 @@ fn output_fields_mask_on_load_and_keep_the_json_string_contract() {
     let value: serde_json::Value = serde_json::from_str(&durable).unwrap();
     for pointer in [
         "/failure/detail",
-        "/failure/evidence/0",
         "/failure/next_action",
         "/prepare/command",
         "/history/0/note",
@@ -161,6 +161,7 @@ fn output_fields_mask_on_load_and_keep_the_json_string_contract() {
             Some(PRIVATE_KEY_WITHHELD)
         );
     }
+    assert!(value.pointer("/failure/evidence").is_none(), "{durable}");
     std::fs::remove_dir_all(dir).unwrap();
 }
 

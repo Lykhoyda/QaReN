@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod canary;
 pub mod host;
 
 use qaren::candidate::Candidate;
@@ -513,6 +514,8 @@ pub struct IosBuildRunner {
     pub ambiguous_app: bool,
     pub workspace_mutation: Option<WorkspaceMutation>,
     pub build_log: Option<String>,
+    // Written to the Metro log when the run starts Metro.
+    pub metro_log: Option<String>,
     pub build_spawn_fault: Option<BuildSpawnFault>,
     pub symlink_build_root: Option<&'static str>,
     // Answers the next app-container probe with the last installed bundle path.
@@ -840,6 +843,9 @@ impl qaren::exec::Runner for IosBuildRunner {
                         "Metro started while the build lock still named this run"
                     );
                 }
+            }
+            if let Some(text) = &self.metro_log {
+                std::fs::write(log, text).unwrap();
             }
         }
         self.inner.spawn_group_unchecked(spec, log)
