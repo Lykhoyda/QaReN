@@ -3960,6 +3960,19 @@ fn walk_failure(
         failure.next_action = OutputText::from_output("inspect_last_observed_screen");
         failure = failure.with_recovery(RecoveryReason::PreviousPlanPress);
     }
+    // A step that ended uncertain says why in front of its usual next action.
+    let uncertain = if failure.code == FailureCode::PlanStepFailed {
+        failure
+            .subreason
+            .as_deref()
+            .and_then(crate::failure::uncertain_words)
+    } else {
+        None
+    };
+    if let Some(words) = uncertain {
+        failure.next_action =
+            OutputText::from_output(&format!("{words}; {}", failure.next_action.as_str()));
+    }
     // Before the repeat note, which wraps the next action rather than replacing it.
     if installed_app && failure.code == FailureCode::PlanStepFailed && !previous_press {
         let base = failure.next_action.as_str().trim_end();
@@ -3972,7 +3985,13 @@ fn walk_failure(
         failure.next_action = text.clone();
         failure.suggestion = Some(text);
     }
-    if let Some(repeat) = repeat_of(runs_root, record, &failure) {
+    // Repeat matching stays with target-class failures: an uncertain outcome is no evidence about the plan.
+    let repeat = if uncertain.is_some() {
+        None
+    } else {
+        repeat_of(runs_root, record, &failure)
+    };
+    if let Some(repeat) = repeat {
         // The machine next action stays stable on a repeat; failure.repeat still records it.
         if !previous_press {
             failure.next_action = OutputText::from_output(&repeat_note(&failure, &repeat));

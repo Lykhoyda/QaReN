@@ -204,12 +204,13 @@ export async function tapSystemDialogViaRunner(
     try {
       tap = await tapSystemAlertFn(chosen, qaContext);
     } catch (error) {
-      qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+      qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
       throw error;
     }
     qaContext?.assertComplete();
     if (tap.isError) {
-      if (extractMutationDisposition(tap) !== 'none') qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+      if (extractMutationDisposition(tap) !== 'none')
+        qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
       const { code, error } = JSON.parse(tap.content[0]?.text ?? '{}') as {
         code?: ToolErrorCode;
         error?: string;
@@ -305,7 +306,8 @@ async function tapSystemDialog(
     return okResult({ tapped: true, platform, triedLabels: labels, selector });
   }
   if (qaContext) {
-    if (qaContext.authorizations > 0) qaContext.refuse('ACTION_OUTCOME_UNCERTAIN');
+    if (qaContext.authorizations > 0)
+      qaContext.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
     qaContext.invalidate();
   }
   if (result.deviceAuthority && shouldRejectMaestroDeviceAuthority(result.deviceAuthority)) {

@@ -316,7 +316,8 @@ export async function healKeyboardOccludedTap(
       return first;
   }
   // This repair has no retained-identity/no-invocation proof for QA.
-  if (qaContext && isKeyboardOccludedRefusal(first)) qaContext.refuse('ACTION_OUTCOME_UNCERTAIN');
+  if (qaContext && isKeyboardOccludedRefusal(first))
+    qaContext.refuse('ACTION_OUTCOME_UNCERTAIN', 'keyboard-visible');
   if (!deps || !isKeyboardOccludedRefusal(first)) return first;
   const t0 = Date.now();
   let dismissed = false;

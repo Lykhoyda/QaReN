@@ -1569,6 +1569,47 @@ is reported as performed. Issues raised by reads before or after the gesture,
 such as the readback of a code field that vanished after its fill, do not
 change the result.
 
+<a id="uncertain-outcome-reasons"></a>
+When a step ends `ACTION_OUTCOME_UNCERTAIN`, including in nested login replays
+and interruption dismissals, the core sets the existing `failure.subreason` to
+one of seven fixed words. Each word has a fixed explanation:
+
+| `subreason` | When | Explanation |
+| --- | --- | --- |
+| `keyboard-visible` | the iOS runner refused a tap because of the keyboard | The device runner refused the tap because of the on-screen keyboard |
+| `alert-blocked` | the iOS runner refused a drag with `APP_ALERT_INTERRUPTION` and mutation `none` | An app alert was open over the gesture point and the device runner did not perform the drag |
+| `dispatch-unconfirmed` | any other send whose outcome was not confirmed: a runner timeout or transport error, an unconfirmed drag or alert tap, a Maestro flow that threw | QaReN could not confirm the outcome of the action |
+| `context-unverified` | the dispatch context could no longer be validated after the action was authorized | QaReN could no longer validate the dispatch context after the action was authorized |
+| `deadline-expired` | the action's deadline passed after it was authorized | The time allowed for the action ran out after it was authorized |
+| `scroll-unverified` | a scroll towards the target was not confirmed and the capture after it was unusable | A scroll towards the target was not confirmed and the capture after it could not be used |
+| `unknown` | no classified reason; any other value is recorded as `unknown` | QaReN recorded no classified reason for the uncertain outcome |
+
+The first refusal of an action decides the reason; a cancellation keeps
+`RUN_CANCELLED`. On Android, `keyboard-visible` and `alert-blocked` do not
+occur. No input value, screen label or app text reaches the word, its
+explanation or a diagnostic that carries the reason; existing fields such as
+`failure.screen` keep their own masking rules. When the CLI's walk failure is
+this `PLAN_STEP_FAILED`, it keeps that `subreason` and its `next_action` is the
+explanation, `; `, and the next action the failure has without it: the usual re-run advice, or the ledger's
+`suggestion` when there is one (`suggestion` itself is unchanged, except as
+in `check --installed-app`, where both `suggestion` and `next_action` are the
+explanation, `; `, the usual next action and the mode's fixed sentence; see
+[plan checks](#plan-checks-and-screen-evidence)). Such a failure is not matched
+as a repeat. `ledger.json` carries the word when the CLI persists the core's
+step-failure ledger.
+
+Limits: a CLI-owned failure that supersedes the walk failure, a cancellation
+that arrives late, and a ledger the CLI writes itself (as for a cancellation
+while it waits for the core to exit) carry neither the word nor the
+explanation. The [cleanup precedence](#ios-admission-and-cleanup) and the held-run
+wording can replace or wrap the next action, and the console line prints the
+final next action, so the explanation may not reach the final receipt or the
+console. Stored words follow [input value masking](#input-value-masking) like
+any other receipt text. The guarantee covers what QaReN's own core writes.
+An unchanged screen and a covered target keep their own failures and get none
+of these reasons. Retries, captures, `failure.seen`, the trace and `report.md`
+do not change.
+
 <a id="covered-target-recovery"></a>
 
 Before dispatch, the walker also treats a press or fill target, including a
@@ -2067,10 +2108,15 @@ age (`ageMs`) and whether a device action ran after it (`afterDispatch`);
 carry `failure.screen` from the newest admitted observation, without target-miss
 `subreason` or `suggestion`; a previous-planned-press veto may supply the
 [recovery suggestion](#step-recovery). Other non-target causes, including render
-errors and failed scroll dispatches, carry none of these three failure fields, except
-in `check --installed-app`: there every `PLAN_STEP_FAILED` other than a
+errors and scroll dispatches that returned a failed result, carry none of these three
+failure fields. A step that ended `ACTION_OUTCOME_UNCERTAIN`, a scroll included, adds
+only `subreason`, one of the seven [uncertain-outcome reasons](#uncertain-outcome-reasons);
+its `screen` and `suggestion` keep their existing sources (a rejected check's screen
+and the interruption-ownership suggestion). The exception is
+`check --installed-app`: there every `PLAN_STEP_FAILED` other than a
 previous-planned-press veto sets `suggestion` and `next_action` to its usual next
 action followed by a fixed sentence naming the mode's native-screen-only limits;
+an [uncertain outcome](#uncertain-outcome-reasons) puts its explanation first;
 a repeat notice below wraps that `next_action` rather than replacing it. Labels follow the
 [input value masking contract](#input-value-masking), including its fixed-control-word
 exception when screen text is withheld; testIDs remain unless they hold a
@@ -2080,7 +2126,9 @@ for the miss reason; target-miss suggestions carry no app text and point to
 the walk's `next_action`, subject to the [cleanup precedence](#ios-admission-and-cleanup).
 It describes what was observed and never
 proposes a Wait for an enabled state, because a quoted Wait passes on a disabled control.
-Repeat matching applies only to target-class failures carrying a `subreason`.
+Repeat matching applies only to target-class failures carrying a `subreason`; a
+failure with one of the seven uncertain-outcome reasons is not target-class and is
+not matched as a repeat.
 When one of the last 20 `check` runs failed the same plan line with the same code and
 subreason on the same platform, app, recorded Git revision, worktree fingerprint
 and plan hash, `failure.repeat` names it and the walk's guidance leads with

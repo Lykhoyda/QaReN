@@ -273,7 +273,7 @@ export async function runMaestroInline(
     try {
       execution = await execute();
     } catch (err) {
-      if (opts.qaContext) opts.qaContext.refuse('ACTION_OUTCOME_UNCERTAIN');
+      if (opts.qaContext) opts.qaContext.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
       const message = err instanceof Error ? err.message : String(err);
       if (err instanceof RunnerCacheUnavailableError) {
         return {

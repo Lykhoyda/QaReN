@@ -2705,7 +2705,7 @@ export function createDeviceSwipeHandler(): (args: SwipeArgs) => Promise<ToolRes
               method: 'fast-runner',
             });
           }
-          args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+          args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
           if (args.exact === true) {
             return failResult(
               'fast-runner swipe call failed and exact: true forbids daemon fallback',
@@ -2713,7 +2713,7 @@ export function createDeviceSwipeHandler(): (args: SwipeArgs) => Promise<ToolRes
             );
           }
         } catch (err) {
-          args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+          args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
           if (args.exact === true) {
             return failResult(
               `fast-runner swipe call threw and exact: true forbids daemon fallback: ${err instanceof Error ? err.message : String(err)}`,
@@ -2754,7 +2754,7 @@ export function createDeviceSwipeHandler(): (args: SwipeArgs) => Promise<ToolRes
               ...coords,
             });
           }
-          args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+          args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
           if (args.exact === true) {
             return failResult(
               'fast-runner swipe call failed and exact: true forbids daemon fallback',
@@ -2762,7 +2762,7 @@ export function createDeviceSwipeHandler(): (args: SwipeArgs) => Promise<ToolRes
             );
           }
         } catch (err) {
-          args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+          args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
           if (args.exact === true) {
             return failResult(
               `fast-runner swipe call threw and exact: true forbids daemon fallback: ${err instanceof Error ? err.message : String(err)}`,
@@ -2857,9 +2857,9 @@ export function createDeviceScrollHandler(): (args: ScrollArgs) => Promise<ToolR
             { probes: () => buildIosProbes(bundleId, args.qaContext) },
           );
         }
-        args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+        args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
       } catch {
-        args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN');
+        args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
       }
     }
     // Daemon / Android fallthrough: dispatch the COORDINATE form. The arg
