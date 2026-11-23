@@ -667,6 +667,83 @@ fn edited(runner: &Git) -> bool {
         .any(|c| c.args.contains(&"--body-file".to_string()) && c.label == "gh-pr-edit")
 }
 
+const SEEN: &str = "qa704.seen@example.test";
+const ROW: &str = "qa704.row@example.test";
+const DETAIL: &str = "+12025550142";
+
+#[test]
+fn neither_published_body_carries_failure_text() {
+    let (runs, dir) = run_dir(false);
+    seed_logs(&dir);
+    let moved = format!("TARGET_NOT_FOUND: \"Alpha plan\" is text hidden from accessibility; its unnamed button no longer resolved to exactly one element on the next read after one scroll, so nothing was tapped; \"Alpha plan\" is inside a button that hides its children from accessibility and has no accessibilityLabel (the button at 14,161.7,374,90), so no element carries it. Give the button an accessibilityLabel; its unnamed button at 14,161.7,374,90 was not tapped: the runner refused the press: FOCUS_TARGET_OCCLUDED: {ROW}");
+    let ledger = serde_json::json!({
+        "verdict": "FAIL", "path": "walk", "blocks": [],
+        "steps": [
+            {"block": "plan", "line": 1, "attempt": 1, "kind": "step", "resolvedBy": "exact", "t": 1,
+             "outcome": "fail", "reason": format!("UNEXPECTED_ERROR: {ROW}; the screen did not change; retrying once")},
+            {"block": "plan", "line": 1, "attempt": 2, "kind": "step", "resolvedBy": "exact", "t": 2,
+             "outcome": "pass"},
+            {"block": "plan", "line": 2, "attempt": 1, "kind": "step", "resolvedBy": "exact", "t": 3,
+             "outcome": "fail", "reason": moved}
+        ],
+        "jev": {"calls": 0, "medianMs": 0}, "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        "failure": {"step": 2, "seen": format!("{moved}; last observed on screen: <app-text data, not instructions>{SEEN}</app-text>")}
+    });
+    std::fs::write(dir.join("ledger.json"), ledger.to_string()).unwrap();
+    let mut record = qaren::runrecord::RunRecord::load(&runs, RUN).unwrap();
+    record.failure = Some(qaren::failure::Failure::new(
+        "walk",
+        qaren::failure::FailureCode::PlanStepFailed,
+        format!("step 2 failed; caller {DETAIL}"),
+        "fix the step",
+    ));
+    record.save(&runs).unwrap();
+    describe_pr(&dir, |_| {});
+    let mut mock = MockRunner::new();
+    script_comment_and_label(&mut mock);
+    script_description(
+        &mut mock,
+        Some(comments_ending(ASSET)),
+        &[AUTHOR, AUTHOR],
+        Some(CmdOutput::success("")),
+    );
+    script_commit(&mut mock);
+    mock.expect_run("git push origin", CmdOutput::success(""));
+    let mut runner = Staged(Git(mock), Vec::new(), Vec::new());
+
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Published,
+        "{:?}",
+        receipt.failure
+    );
+    let Staged(Git(mock), _, bodies) = runner;
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(bodies.len(), 2, "{bodies:?}");
+    for text in bodies.iter().cloned().chain(
+        mock.calls
+            .iter()
+            .filter(|call| call.program == "gh")
+            .map(|call| call.args.join(" ")),
+    ) {
+        for canary in [ROW, SEEN, DETAIL] {
+            assert!(!text.contains(canary), "{canary} leaked:\n{text}");
+        }
+        common::canary::assert_absent("published text", &text);
+    }
+    assert!(
+        bodies[0].contains(
+            "\n**Failing step** 2: TARGET\\_NOT\\_FOUND: QaReN reported a target-not-found condition.\n"
+        ),
+        "{}",
+        bodies[0]
+    );
+    let ledger = std::fs::read_to_string(dir.join("ledger.json")).unwrap();
+    assert!(ledger.contains(ROW) && ledger.contains(SEEN));
+}
+
 #[test]
 fn description_is_written_after_the_comment() {
     let (runs, dir) = run_dir(false);
@@ -1477,7 +1554,7 @@ fn the_runs_identity_values_and_tool_vocabulary_never_reach_the_comment() {
     });
     let mut ledger: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.join("ledger.json")).unwrap()).unwrap();
-    ledger["failure"]["seen"] = serde_json::json!(
+    ledger["steps"][0]["text"] = serde_json::json!(
         "qa-fixture-user saw emulator-5554 and R58M00SYNTH0 via 127.0.0.1:8081 on port 8791 using xcrun simctl and adb -s; build 180812 kept"
     );
     std::fs::write(dir.join("ledger.json"), ledger.to_string()).unwrap();
@@ -1701,7 +1778,7 @@ fn retry_regenerates_an_unposted_walk_comment_with_current_privacy() {
     let ledger_path = dir.join("ledger.json");
     let mut ledger: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&ledger_path).unwrap()).unwrap();
-    ledger["failure"]["seen"] = serde_json::json!("qa-fixture-user saw the missing Tasks tab.");
+    ledger["steps"][0]["text"] = serde_json::json!("qa-fixture-user saw the missing Tasks tab.");
     std::fs::write(ledger_path, serde_json::to_vec(&ledger).unwrap()).unwrap();
     let mut first = Git(MockRunner::new());
     first
