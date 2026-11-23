@@ -560,7 +560,7 @@ impl Recovery {
         }
     }
 
-    // A plan mismatch: inspection only, and no reset can repair it.
+    // A screen observed after the plan's own press: inspect it first; no reset is indicated.
     fn previous_plan_press() -> Self {
         Self {
             key: None,
@@ -573,11 +573,11 @@ impl Recovery {
             own_cleanup_required: false,
             own_run_id: None,
             ladder: vec![
-                RecoveryRung::step(1, false, false, "a retry cannot help: the planned press already passed and the next target was not found"),
-                RecoveryRung::step(2, false, false, "restarting the app, Metro or the runner cannot repair a plan that does not match the screen its own press opened"),
-                RecoveryRung::step(3, false, false, "restarting the device cannot repair a plan mismatch"),
-                RecoveryRung::step(4, false, false, "rebuilding native code cannot repair a plan mismatch"),
-                RecoveryRung::step(5, false, false, "cleanup and a fresh prepare cannot repair a plan mismatch"),
+                RecoveryRung::step(1, false, false, "inspect the last observed screen before retrying"),
+                RecoveryRung::step(2, false, false, "no restart of the app, Metro or the runner is indicated by this observation"),
+                RecoveryRung::step(3, false, false, "no device restart is indicated by this observation"),
+                RecoveryRung::step(4, false, false, "no native rebuild is indicated by this observation"),
+                RecoveryRung::step(5, false, false, "no cleanup or fresh prepare is indicated by this observation"),
             ],
         }
     }
