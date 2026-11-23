@@ -1210,3 +1210,39 @@ pub fn timeline_failures(
     }
     failures
 }
+
+// A cached debug APK whose native fingerprint matches the test app, so an Android run reuses it.
+pub fn seed_cached_apk(repo: &Path, app: &Path) -> std::path::PathBuf {
+    use qaren::buildplan::{
+        hash_artifact, save_json, state_path, ArtifactKind, CachedArtifact, NativeCacheState,
+        CACHE_SCHEMA,
+    };
+    let apk = repo.join("cached").join("app-debug.apk");
+    std::fs::create_dir_all(apk.parent().unwrap()).unwrap();
+    std::fs::write(&apk, b"cached apk").unwrap();
+    let mut fp_runner = qaren::exec::MockRunner::new();
+    fp_runner.expect_run("ls-files", CmdOutput::success(""));
+    let fp = qaren::fingerprint::compute(&mut fp_runner, repo, app, "android").unwrap();
+    save_json(
+        &state_path(repo, "android", "com.rndevagent.testapp"),
+        &NativeCacheState {
+            schema: CACHE_SCHEMA.to_string(),
+            fingerprint_parts: fp.parts.clone(),
+            platform: "android".to_string(),
+            app_id: "com.rndevagent.testapp".to_string(),
+            worktree_root: repo.canonicalize().unwrap(),
+            fingerprint: fp.value,
+            built_at: "2026-10-11T00:00:00Z".to_string(),
+            candidate_sha: "b".repeat(40),
+            lockfile_sha256: String::new(),
+            generated_native_dirs: Vec::new(),
+            artifact: Some(CachedArtifact {
+                path: apk.clone(),
+                sha256: hash_artifact(&apk).unwrap(),
+                kind: ArtifactKind::Apk,
+            }),
+        },
+    )
+    .unwrap();
+    apk
+}
