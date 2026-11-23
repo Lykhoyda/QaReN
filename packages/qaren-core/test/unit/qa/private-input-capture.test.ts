@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { captureScreen, NativeCaptureError } from '../../../dist/qa/capture.js';
 import type { ReactObservation } from '../../../dist/qa/capture.js';
-import { PrivateInputCaptureError } from '../../../dist/qa/private-input.js';
+import {
+  NativeSnapshotIncomplete,
+  PrivateInputCaptureError,
+} from '../../../dist/qa/private-input.js';
 import { decideScreen } from '../../../dist/qa/resolve.js';
 import { ObservedPrivacy, redactEvidence } from '../../../dist/qa/privacy.js';
 import { scriptedJudge } from './judgment-fixtures.ts';
@@ -245,6 +248,53 @@ test('an incomplete native capture is never usable, while a missing React digest
   privacy.observe(degraded);
   assert.equal(privacy.redact(secret), '•••');
   assert.equal(privacy.canScreenshot(), false);
+});
+
+test('an incomplete native capture names the read it took and how many native reads it made', async () => {
+  const long = () =>
+    observedNative(
+      Array.from({ length: 599 }, (_, i) => ({
+        ref: `@row${i}`,
+        type: 'StaticText',
+        label: `Row ${i}`,
+      })),
+    );
+  for (const [native, options, causes] of [
+    [() => ({ ...long(), truncated: true }), {}, ['read=ordinary', 'truncated']],
+    [
+      () => ({ ...long(), truncated: true }),
+      { platformPresence: true },
+      ['read=presence', 'truncated'],
+    ],
+    [
+      () => ({ ...observedNative([field(secret)]), snapshotVerdict: undefined }),
+      {},
+      ['read=ordinary', 'unattested'],
+    ],
+  ] as const) {
+    let reads = 0;
+    await assert.rejects(
+      captureScreen({
+        requirePrivateInputs: true,
+        appId: 'com.test',
+        ...options,
+        native: async () => {
+          reads++;
+          return native();
+        },
+        react: async () => observation(),
+      }),
+      (error) => {
+        assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
+        assert.deepEqual(error.causes, causes);
+        assert.equal(error.reads, 1);
+        assert.match(error.message, /; read 1 times over \d+ ms\.$/);
+        assert.equal(error.message.includes(secret), false);
+        return true;
+      },
+    );
+    assert.equal(reads, 1);
+  }
 });
 
 test('private input values and screenshot restrictions persist into later screens and blocks', async () => {

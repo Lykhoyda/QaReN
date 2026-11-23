@@ -5,6 +5,7 @@ import { boundedCapture, CaptureDeadline, captureScreen } from '../../../dist/qa
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import {
   NativeSnapshotIncomplete,
+  PrivateInputCaptureError,
   ReactCaptureIncomplete,
 } from '../../../dist/qa/private-input.js';
 import { ObservedPrivacy } from '../../../dist/qa/privacy.js';
@@ -107,7 +108,7 @@ test('a wait owns dropped-snapshot polling and preserves the cause and read coun
   assert.equal(f.deps.now(), WAIT_BUDGET_MS);
   assert.equal(
     result.failure?.seen,
-    'The native snapshot was incomplete (nodes=2; causes=dropped=5); read 30 times over 15000 ms.',
+    'The native snapshot was incomplete (nodes=2; causes=read=ordinary,dropped=5); read 30 times over 15000 ms.',
   );
   assert.deepEqual(f.actions, []);
 });
@@ -131,7 +132,7 @@ test('T1: an always-incomplete native Wait uses its deadline and names the obser
     'message' in result && result.message,
     `The native snapshot was incomplete (nodes=121; causes=${causes.join(',')}); read ${reads} times over ${WAIT_BUDGET_MS} ms.`,
   );
-  assert.equal(result.steps.at(-1)?.block, 'private-input-capture');
+  assert.equal(result.steps.at(-1)?.block, 'native-snapshot');
   assert.equal(result.videoPublication, 'unknown');
   assert.equal(result.nonStrictPublication, undefined);
   assert.deepEqual(f.actions, []);
@@ -333,6 +334,37 @@ test('T4: Fill with a declared input refuses native incompleteness immediately',
   assert.equal(result.videoPublication, 'unknown');
   assert.equal(result.nonStrictPublication, undefined);
   assert.deepEqual(f.actions, []);
+});
+
+test('a quoted Fill files native incompleteness and private-input failure under their own ledger keys', async () => {
+  for (const [thrown, code, key, ending] of [
+    [
+      () => new NativeSnapshotIncomplete(600, ['read=ordinary', 'truncated'], 1, 1230),
+      'NATIVE_SNAPSHOT_INCOMPLETE',
+      'native-snapshot',
+      '; read 1 times over 1230 ms.',
+    ],
+    [
+      () => new PrivateInputCaptureError(),
+      'PRIVATE_INPUT_CAPTURE_UNKNOWN',
+      'private-input-capture',
+      undefined,
+    ],
+  ] as const) {
+    const f = walker(
+      [],
+      scriptedJudge(() => assert.fail('capture refuses before judgment')),
+    );
+    f.deps.captureScreen = async () => {
+      throw thrown();
+    };
+    const result = await runPlan(parsePlan('1. Fill "x" with "hello"').blocks!, f.deps);
+    assert.equal(result.verdict, 'REFUSED', key);
+    assert.equal('code' in result && result.code, code);
+    assert.equal(result.steps.at(-1)?.block, key);
+    if (ending) assert.ok('message' in result && result.message.endsWith(ending), key);
+    assert.deepEqual(f.actions, []);
+  }
 });
 
 test('T5: a React-incomplete Wait retains its privacy refusal without re-reading', async () => {

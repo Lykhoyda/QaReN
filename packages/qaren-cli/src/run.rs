@@ -2416,6 +2416,18 @@ mod block_start_tests {
         assert_eq!(refusal_code("DEV_REDBOX"), FailureCode::CoreRefused);
     }
 
+    #[test]
+    fn native_snapshot_incomplete_next_action_claims_no_rerun() {
+        assert_eq!(
+            refusal_code("NATIVE_SNAPSHOT_INCOMPLETE"),
+            FailureCode::CoreRefused
+        );
+        assert_eq!(
+            Failure::core_refusal_next_action("NATIVE_SNAPSHOT_INCOMPLETE"),
+            "QaReN could not prove it read the whole screen. Report the run id with the available snapshot detail."
+        );
+    }
+
     fn home_with_reports(name: &str, coalitions: &[&str]) -> PathBuf {
         let home = std::env::temp_dir().join(format!("qaren-{name}-{}", std::process::id()));
         let reports = home.join("Library/Logs/DiagnosticReports");

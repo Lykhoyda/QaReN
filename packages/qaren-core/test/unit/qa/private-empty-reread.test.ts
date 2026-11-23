@@ -137,7 +137,7 @@ for (const firstReadMs of [0, 20_900]) {
     const error = await result;
     assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
     assert.equal(error.nodes, 1);
-    assert.deepEqual(error.causes, ['dropped=3', 'retry-deadline']);
+    assert.deepEqual(error.causes, ['read=ordinary', 'dropped=3', 'retry-deadline']);
     assert.equal(reads.length, firstReadMs === 0 ? 12 : 3);
     assert.equal(reads.at(-1), deadline - (firstReadMs === 0 ? 500 : 100));
     assert.equal(
@@ -171,10 +171,36 @@ for (const withEmpty of [false, true]) {
     const error = await result;
     assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
     assert.equal(error.nodes, 1);
-    assert.deepEqual(error.causes, ['dropped=5', 'retry-deadline']);
+    assert.deepEqual(error.causes, ['read=ordinary', 'dropped=5', 'retry-deadline']);
+    assert.equal(error.reads, reads);
+    assert.equal(error.elapsedMs, 6_000);
     assert.equal(time.now(), 6_000);
   });
 }
+
+test('a dropped re-read whose deadline passes before it starts counts only the first read', async (t) => {
+  const time = clock(t);
+  let reads = 0;
+  const result = captureScreen({
+    requirePrivateInputs: true,
+    now: time.now,
+    timing: (event) => {
+      if (event.stage === 'native-reread') time.elapse(6_000);
+    },
+    native: async () => {
+      reads++;
+      return droppedCapture();
+    },
+    react: async () => assert.fail('no React read after native evidence expires'),
+  }).catch((error: Error) => error);
+  await nextTurn();
+  await time.advance(500);
+  const error = await result;
+  assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
+  assert.deepEqual(error.causes, ['read=ordinary', 'dropped=5', 'retry-deadline']);
+  assert.equal(error.reads, 1);
+  assert.equal(reads, 1);
+});
 
 for (const changed of ['truncated', 'degraded'] as const) {
   test(`a dropped re-read that becomes ${changed} refuses its own causes without an expiry marker`, async (t) => {
@@ -200,7 +226,9 @@ for (const changed of ['truncated', 'degraded'] as const) {
     assert.ok(error instanceof NativeSnapshotIncomplete, String(error));
     assert.deepEqual(
       error.causes,
-      changed === 'truncated' ? ['truncated', 'dropped=2'] : ['dropped=2', 'verdict=degraded'],
+      changed === 'truncated'
+        ? ['read=ordinary', 'truncated', 'dropped=2']
+        : ['read=ordinary', 'dropped=2', 'verdict=degraded'],
     );
     assert.equal(reads, 2);
     assert.equal(reactReads, 1);
@@ -210,17 +238,17 @@ for (const changed of ['truncated', 'degraded'] as const) {
 test('dropped private captures with another cause, a wait budget or presence mode refuse after one read', async () => {
   const dropped = droppedCapture();
   for (const [native, options, causes] of [
-    [{ ...dropped, truncated: true }, {}, ['truncated', 'dropped=5']],
+    [{ ...dropped, truncated: true }, {}, ['read=ordinary', 'truncated', 'dropped=5']],
     [
       {
         ...dropped,
         snapshotVerdict: { state: 'degraded', nodeCount: 1, refMapUpdated: true, reasons: [] },
       },
       {},
-      ['dropped=5', 'verdict=degraded'],
+      ['read=ordinary', 'dropped=5', 'verdict=degraded'],
     ],
-    [dropped, { budgetMs: 1_000 }, ['dropped=5']],
-    [dropped, { platformPresence: true }, ['dropped=5']],
+    [dropped, { budgetMs: 1_000 }, ['read=ordinary', 'dropped=5']],
+    [dropped, { platformPresence: true }, ['read=presence', 'dropped=5']],
   ] as const) {
     let reads = 0;
     let reactReads = 0;
@@ -404,6 +432,9 @@ test('a deadline-cut re-read keeps the decisive presence failure with retry-dead
     assert.ok(logs.includes(cause), cause);
   }
   assert.ok(error.causes.includes('retry-deadline'));
+  assert.equal(error.causes[0], 'read=presence');
+  assert.equal(error.reads, reads);
+  assert.equal(error.elapsedMs, 6_000);
   assert.equal([error.message, ...logs].join('\n').includes('deadline-private-canary'), false);
 });
 
@@ -797,8 +828,9 @@ test('a persistently empty private capture refuses unchanged after the existing 
   assert.equal(error.code, 'NATIVE_SNAPSHOT_INCOMPLETE');
   assert.equal(
     error.message,
-    'The native snapshot was incomplete (nodes=0; causes=verdict=degraded,ref-map-not-updated,reason=empty-capture,node-count-mismatch).',
+    'The native snapshot was incomplete (nodes=0; causes=read=ordinary,verdict=degraded,ref-map-not-updated,reason=empty-capture,node-count-mismatch); read 12 times over 6000 ms.',
   );
+  assert.equal(error.reads, 12);
   assert.equal(reads.length, 12);
   assert.equal(reads.at(-1), 5_500);
 });
@@ -889,7 +921,7 @@ test('an empty retry that becomes non-empty but incomplete still refuses on that
   const error = await result;
   assert.ok(error instanceof NativeSnapshotIncomplete);
   assert.equal(error.nodes, 2);
-  assert.deepEqual(error.causes, ['truncated']);
+  assert.deepEqual(error.causes, ['read=ordinary', 'truncated']);
   assert.equal(reads, 2);
 });
 
