@@ -116,6 +116,9 @@ jobs:
       - name: Checkout
         if: ${{ needs.changes.outputs.ios == 'true' }}
         uses: actions/checkout@v4
+      - name: LookOnlyKit swift test
+        if: ${{ needs.changes.outputs.ios == 'true' }}
+        run: swift test --package-path packages/qaren-ios-runner/QarenIosRunner/LookOnlyKit
       # De-flake: codeql.yml only ever BUILDS for the simulator SDK; this is the
       # first workflow to BOOT a simulator on CI, where cold-boot timeouts are a
       # documented macos-15 image issue (runner-images #12862, #12777). Pre-boot
