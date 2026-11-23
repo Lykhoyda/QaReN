@@ -857,3 +857,30 @@ impl Failure {
         self
     }
 }
+
+#[cfg(test)]
+mod log_pointer_tests {
+    use super::*;
+
+    #[test]
+    fn a_log_pointer_carries_the_file_and_its_size_when_readable() {
+        let dir = std::env::temp_dir().join(format!("qaren-log-pointer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("metro.log");
+        std::fs::write(&log, "bundling\nready\n").unwrap();
+        let failure = Failure::new("build", FailureCode::BuildFailed, "metro exited", "inspect")
+            .with_log(&log);
+        let pointer = failure.log.as_ref().unwrap();
+        assert_eq!(pointer.file, log.display().to_string());
+        assert_eq!(pointer.bytes, Some(std::fs::metadata(&log).unwrap().len()));
+        assert!(failure.evidence.is_empty());
+
+        let missing = dir.join("absent.log");
+        let failure = Failure::new("build", FailureCode::BuildFailed, "metro exited", "inspect")
+            .with_log(&missing);
+        let json = serde_json::to_value(&failure).unwrap();
+        assert!(json["log"].get("bytes").is_none(), "{json}");
+        assert_eq!(json["log"]["file"], missing.display().to_string());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

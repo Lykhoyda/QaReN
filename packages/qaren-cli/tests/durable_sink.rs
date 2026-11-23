@@ -421,6 +421,57 @@ fn evidence_documents_and_reports_still_withhold_opaque_output() {
 }
 
 #[test]
+fn a_log_pointer_masks_a_declared_value_in_its_path_and_survives_status() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    const DECLARED: &str = "zq79declared";
+    let dir = common::temp_repo();
+    let logs = dir.join(format!("prefix-{DECLARED}-suffix"));
+    std::fs::create_dir_all(&logs).unwrap();
+    let log = logs.join("metro.log");
+    std::fs::write(&log, "metro output\n").unwrap();
+    let bytes = std::fs::metadata(&log).unwrap().len();
+    with_input_scope(
+        Arc::new(InputValues::from_entries([(
+            OsString::from("QAREN_INPUT_PASSWORD"),
+            OsString::from(DECLARED),
+        )])),
+        || {
+            let mut record = common::base_record(
+                &dir,
+                &common::ios_scenario_yaml(8793),
+                "pointer",
+                Phase::Failed,
+            );
+            record.failure = Some(
+                Failure::new(
+                    "build",
+                    qaren::failure::FailureCode::BuildFailed,
+                    "metro exited",
+                    "inspect the log",
+                )
+                .with_log(&log),
+            );
+            record.save(&dir).unwrap();
+        },
+    );
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(RunRecord::path(&dir, "pointer")).unwrap())
+            .unwrap();
+    let masked = format!("{}/prefix-[REDACTED_INPUT]-suffix/metro.log", dir.display());
+    assert_eq!(saved["failure"]["log"]["file"], masked);
+    assert_eq!(saved["failure"]["log"]["bytes"], bytes);
+    let mut mock = qaren::exec::MockRunner::new();
+    let receipt = qaren::commands::status::status(&mut mock, &dir, "pointer");
+    assert_eq!(receipt.run_id, "pointer");
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    let shown: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+    assert_eq!(shown["failure"]["log"], saved["failure"]["log"]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn withholding_codes_survive_input_collisions_without_exempting_free_text() {
     use qaren::redact::{with_input_scope, InputValues};
     use std::ffi::OsString;
