@@ -212,7 +212,11 @@ import {
 import {
   QaDispatchContext,
   QaDispatchError,
+  asUncertainReason,
+  uncertainReason,
+  uncertainReasonOf,
   type QaDispatchDiagnostic,
+  type UncertainReason,
 } from '../domain/qa-dispatch.js';
 import {
   admitObservation,
@@ -1644,12 +1648,15 @@ async function walkBlockScoped(
         );
         if (refusal.code === 'EVIDENCE_EXPIRED' && context.authorizations === 0)
           throw new EvidenceExpired(itemExpired);
-        throw new QaDispatchError(
+        const code =
           !context.authorizations || refusal.code === 'RUN_CANCELLED'
             ? refusal.code
             : context.refusedBeforeMutation
               ? 'TARGET_MOVED_BEFORE_DISPATCH'
-              : 'ACTION_OUTCOME_UNCERTAIN',
+              : 'ACTION_OUTCOME_UNCERTAIN';
+        throw new QaDispatchError(
+          code,
+          code === 'ACTION_OUTCOME_UNCERTAIN' ? uncertainReasonOf(refusal) : undefined,
         );
       }
       throw error;
@@ -2321,6 +2328,14 @@ async function walkBlockScoped(
         ...lastScreen,
       },
     };
+  };
+  const withSubreason = (outcome: WalkOutcome, subreason?: UncertainReason): WalkOutcome =>
+    outcome.failure && subreason
+      ? { ...outcome, failure: { ...outcome.failure, subreason } }
+      : outcome;
+  const nestedSubreason = (nested: WalkOutcome): { subreason?: UncertainReason } => {
+    const subreason = asUncertainReason(nested.failure?.subreason);
+    return subreason ? { subreason } : {};
   };
   const withCause = (
     outcome: WalkOutcome,
@@ -3172,7 +3187,10 @@ async function walkBlockScoped(
     rows.push(...nested.rows);
     if (nested.refusal) return { refuse: nested.refusal };
     if (nested.failure)
-      return { fail: ['the login block did not pass: ', ...segments(nested.failure.seen)] };
+      return {
+        fail: ['the login block did not pass: ', ...segments(nested.failure.seen)],
+        ...nestedSubreason(nested),
+      };
     if (!sequence.planPassed) {
       privacy.startWindow();
       if (deps.videoPolicy === 'non-strict') {
@@ -3542,7 +3560,7 @@ async function walkBlockScoped(
           separateRowOperations(nested.rows);
           rows.push(...nested.rows);
           if (nested.refusal) return { refuse: nested.refusal };
-          if (nested.failure) return { fail: nested.failure.seen };
+          if (nested.failure) return { fail: nested.failure.seen, ...nestedSubreason(nested) };
           const after = (await capture()).screen;
           afterDecline = after;
           const gone = (text: string): boolean =>
@@ -3673,7 +3691,10 @@ async function walkBlockScoped(
     const shown = loginReplayed ? (await capture()).screen : (afterDecline ?? fresh.screen);
     const shot = await shoot(item);
     if ('fail' in result) {
-      const outcome = failed(item, attempt, result.fail, shown, shot);
+      const outcome = withSubreason(
+        failed(item, attempt, result.fail, shown, shot),
+        result.subreason,
+      );
       return result.repeatedOptIn ? askedAgain(outcome, result.repeatedOptIn) : outcome;
     }
     return {
@@ -5998,7 +6019,7 @@ async function walkBlockScoped(
             } catch (error) {
               if (isAbort(error)) throw error;
               if (error instanceof EvidenceExpired && scrollNeedsReadback)
-                throw new QaDispatchError('ACTION_OUTCOME_UNCERTAIN');
+                throw new QaDispatchError('ACTION_OUTCOME_UNCERTAIN', 'scroll-unverified');
               if (!(error instanceof EvidenceExpired) || freshness-- <= 0) throw error;
               metric('refresh', before);
               before = await captureBeforeDispatch();
@@ -6614,19 +6635,24 @@ async function walkBlockScoped(
                   : error.message,
               }
             : undefined;
-        const caughtOutcome = failed(
-          item,
-          currentAttempt,
-          error.message,
-          latest,
-          shot,
-          undefined,
-          miss,
-          error instanceof ResolutionError && TARGET_CODES.has(error.code)
-            ? error.code
-            : error instanceof EvidenceExpired && error.itemExpired && targetPending
-              ? 'TARGET_NOT_FOUND'
-              : false,
+        const caughtOutcome = withSubreason(
+          failed(
+            item,
+            currentAttempt,
+            error.message,
+            latest,
+            shot,
+            undefined,
+            miss,
+            error instanceof ResolutionError && TARGET_CODES.has(error.code)
+              ? error.code
+              : error instanceof EvidenceExpired && error.itemExpired && targetPending
+                ? 'TARGET_NOT_FOUND'
+                : false,
+          ),
+          error instanceof QaDispatchError && error.code === 'ACTION_OUTCOME_UNCERTAIN'
+            ? uncertainReason(error.uncertainReason)
+            : undefined,
         );
         return {
           ...(error instanceof ResolutionError && error.missing

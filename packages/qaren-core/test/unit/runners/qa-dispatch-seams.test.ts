@@ -205,6 +205,9 @@ test('QA native refusal retains a bounded response without another send', async 
   assert.ok(!JSON.stringify(context.refusalDiagnostic).includes('PRIVATE-'));
 });
 
+const reasonOf = (context: QaDispatchContext) =>
+  (context.refusal as { uncertainReason?: string } | undefined)?.uncertainReason;
+
 for (const failure of ['transport', 'decode']) {
   test(`QA ${failure} failure stays unknown after the existing status probe`, async () => {
     const sends = runner((body) => {
@@ -233,6 +236,7 @@ for (const failure of ['transport', 'decode']) {
     assert.equal(context.refusedBeforeMutation, false);
     assert.equal(context.authorizations, 1);
     assert.deepEqual(sends, ['tap', 'status']);
+    assert.equal(reasonOf(context), 'dispatch-unconfirmed');
   });
 }
 
@@ -360,6 +364,7 @@ for (const handler of [createDeviceScrollHandler, createDeviceSwipeHandler]) {
     );
     assert.deepEqual(sends, ['drag']);
     assert.equal(context.authorizations, 1);
+    assert.equal(reasonOf(context), 'dispatch-unconfirmed');
   });
 }
 
@@ -484,6 +489,7 @@ for (const code of ['KEYBOARD_RELAYOUT_REQUIRED', 'KEYBOARD_OCCLUDED', 'KEYBOARD
     assert.deepEqual(sends, ['tap']);
     assert.equal(cdpCalls, 0);
     assert.equal(context.authorizations, 1);
+    assert.equal(reasonOf(context), 'keyboard-visible');
   });
 }
 
@@ -1301,4 +1307,57 @@ test('an expired focused replacement refuses before clearing', async () => {
   assert.equal(cleared, false);
   assert.deepEqual(sends, []);
   assert.equal(context.authorizations, 0);
+});
+
+for (const [mutation, expected] of [
+  ['none', 'alert-blocked'],
+  ['possible', 'dispatch-unconfirmed'],
+  [undefined, 'dispatch-unconfirmed'],
+] as const) {
+  test(`S3 an app alert over the drag with mutation ${mutation} is ${expected}`, async () => {
+    session();
+    const sends = runner(() => ({
+      ok: false,
+      error: {
+        code: 'APP_ALERT_INTERRUPTION',
+        message: 'PRIVATE-runner-message',
+        mutation,
+      },
+    }));
+    const context = new QaDispatchContext(10, () => 1);
+    await assert.rejects(
+      createDeviceScrollHandler()({ direction: 'down', qaContext: context }),
+      /ACTION_OUTCOME_UNCERTAIN/,
+    );
+    assert.deepEqual(sends, ['drag']);
+    assert.equal(context.authorizations, 1);
+    assert.equal(context.refusal!.message, 'ACTION_OUTCOME_UNCERTAIN');
+    assert.ok(!JSON.stringify({ ...context.refusal }).includes('PRIVATE-'));
+    assert.equal(reasonOf(context), expected);
+  });
+}
+
+test('S3 an ordinary failed drag with mutation none is dispatch-unconfirmed', async () => {
+  session();
+  runner(() => ({ ok: false, error: { code: 'FAILED', message: 'no effect', mutation: 'none' } }));
+  const context = new QaDispatchContext(10, () => 1);
+  await assert.rejects(
+    createDeviceScrollHandler()({ direction: 'down', qaContext: context }),
+    /ACTION_OUTCOME_UNCERTAIN/,
+  );
+  assert.equal(reasonOf(context), 'dispatch-unconfirmed');
+});
+
+test('S5 an Android tap whose reply throws is dispatch-unconfirmed', async () => {
+  const sends = androidRunner(() => {
+    throw Error('PRIVATE-transport');
+  });
+  const context = new QaDispatchContext(10, () => 1);
+  await assert.rejects(
+    runAndroid({ command: 'tap', x: 10, y: 20, qaContext: context }),
+    /ACTION_OUTCOME_UNCERTAIN/,
+  );
+  assert.deepEqual(sends, ['tap', 'status']);
+  assert.equal(context.authorizations, 1);
+  assert.equal(reasonOf(context), 'dispatch-unconfirmed');
 });

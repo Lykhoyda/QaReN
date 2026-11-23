@@ -382,6 +382,20 @@ pub struct Recovery {
 
 const CANNOT_HELP: &str = "cannot help";
 
+// The fixed words for the reason of a step that ended ACTION_OUTCOME_UNCERTAIN; None for any other subreason.
+pub(crate) fn uncertain_words(subreason: &str) -> Option<&'static str> {
+    Some(match subreason {
+        "keyboard-visible" => "The device runner refused the tap because of the on-screen keyboard",
+        "alert-blocked" => "An app alert was open over the gesture point and the device runner did not perform the drag",
+        "dispatch-unconfirmed" => "QaReN could not confirm the outcome of the action",
+        "context-unverified" => "QaReN could no longer validate the dispatch context after the action was authorized",
+        "deadline-expired" => "The time allowed for the action ran out after it was authorized",
+        "scroll-unverified" => "A scroll towards the target was not confirmed and the capture after it could not be used",
+        "unknown" => "QaReN recorded no classified reason for the uncertain outcome",
+        _ => return None,
+    })
+}
+
 impl From<RecoveryReason> for Recovery {
     fn from(reason: RecoveryReason) -> Self {
         use RecoveryReason::*;

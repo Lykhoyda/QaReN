@@ -1841,3 +1841,20 @@ test('a tap whose target is simply missing never presses the form Cancel', async
   assert.ok(!result.recoveries);
   assert.ok(rows.every((row) => row.interruption?.outcome !== 'dismissed'));
 });
+
+test('N2: an uncertain decline press inside an app-interruption dismissal names its reason', async () => {
+  const f = app(promo());
+  f.deps.press = async (ref, context) => {
+    f.actions.push(`press ${ref}`);
+    context!.authorize();
+    return (context!.refuse as (code: string, reason?: string) => never)(
+      'ACTION_OUTCOME_UNCERTAIN',
+      'keyboard-visible',
+    );
+  };
+  const result = await runPlan(plan(), f.deps);
+  assert.equal(result.verdict, 'FAIL');
+  assert.deepEqual(f.actions, ['press @close']);
+  assert.match(result.failure!.seen, /^ACTION_OUTCOME_UNCERTAIN/);
+  assert.equal(result.failure?.subreason, 'keyboard-visible');
+});

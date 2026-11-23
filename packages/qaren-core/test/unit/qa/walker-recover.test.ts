@@ -847,3 +847,50 @@ test('app exit during dev-menu recovery terminates without retry or publication'
   assert.equal(hides, 1);
   assert.equal(f.calls.filter((call) => call.startsWith('press ')).length, 0);
 });
+
+const uncertain = (
+  context: { authorize(): void; refuse(code: string, reason?: string): never },
+  reason: string,
+) => {
+  context.authorize();
+  return context.refuse('ACTION_OUTCOME_UNCERTAIN', reason);
+};
+
+test('N1: an uncertain press inside the login replay names its reason on the outer step', async () => {
+  const wall = screen(['Sign in'], 'app', { 'Sign in': 'login-screen' });
+  const f = fake([wall], {
+    login: {
+      marker: { id: 'login-screen' },
+      block: { ...block('1. Tap "Sign in"\n'), slug: 'login' },
+    },
+  });
+  f.deps.press = async (ref, context) => {
+    f.calls.push(`press ${ref}`);
+    return uncertain(context as never, 'dispatch-unconfirmed');
+  };
+  const ledger = await runPlan([block('1. Tap "Settings"\n')], f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.match(ledger.failure!.seen, /^the login block did not pass: ACTION_OUTCOME_UNCERTAIN/);
+  assert.deepEqual(
+    ledger.steps.map((r) => [r.block, r.outcome]),
+    [
+      ['login', 'fail'],
+      ['plan', 'fail'],
+    ],
+  );
+  assert.equal(ledger.failure?.subreason, 'dispatch-unconfirmed');
+});
+
+test('N3: an uncertain recovery-owned dialog send names its reason', async () => {
+  const covered = screen(['Settings'], 'dialog');
+  const f = fake([covered]);
+  f.deps.dialog = async (action, context) => {
+    f.calls.push(`dialog ${action}`);
+    return uncertain(context as never, 'alert-blocked');
+  };
+  const ledger = await runPlan([block('1. Tap "Settings"\n')], f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.match(ledger.failure!.seen, /^ACTION_OUTCOME_UNCERTAIN/);
+  assert.ok(f.calls.includes('dialog dismiss'));
+  assert.equal(ledger.failure?.subreason, 'alert-blocked');
+});

@@ -3960,6 +3960,19 @@ fn walk_failure(
         failure.next_action = OutputText::from_output("inspect_last_observed_screen");
         failure = failure.with_recovery(RecoveryReason::PreviousPlanPress);
     }
+    // A step that ended uncertain says why in front of its usual next action.
+    let uncertain = if failure.code == FailureCode::PlanStepFailed {
+        failure
+            .subreason
+            .as_deref()
+            .and_then(crate::failure::uncertain_words)
+    } else {
+        None
+    };
+    if let Some(words) = uncertain {
+        failure.next_action =
+            OutputText::from_output(&format!("{words}; {}", failure.next_action.as_str()));
+    }
     // Before the repeat note, which wraps the next action rather than replacing it.
     if installed_app && failure.code == FailureCode::PlanStepFailed && !previous_press {
         let base = failure.next_action.as_str().trim_end();
@@ -3972,7 +3985,13 @@ fn walk_failure(
         failure.next_action = text.clone();
         failure.suggestion = Some(text);
     }
-    if let Some(repeat) = repeat_of(runs_root, record, &failure) {
+    // Repeat matching stays with target-class failures: an uncertain outcome is no evidence about the plan.
+    let repeat = if uncertain.is_some() {
+        None
+    } else {
+        repeat_of(runs_root, record, &failure)
+    };
+    if let Some(repeat) = repeat {
         // The machine next action stays stable on a repeat; failure.repeat still records it.
         if !previous_press {
             failure.next_action = OutputText::from_output(&repeat_note(&failure, &repeat));
@@ -4981,5 +5000,215 @@ mod last_screen_tests {
             assert_eq!(kept.next_action.as_str(), own);
             assert!(kept.suggestion.is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod uncertain_reason_tests {
+    use super::*;
+    use serde_json::json;
+
+    const WORDS: [(&str, &str); 7] = [
+        ("keyboard-visible", "The device runner refused the tap because of the on-screen keyboard"),
+        ("alert-blocked", "An app alert was open over the gesture point and the device runner did not perform the drag"),
+        ("dispatch-unconfirmed", "QaReN could not confirm the outcome of the action"),
+        ("context-unverified", "QaReN could no longer validate the dispatch context after the action was authorized"),
+        ("deadline-expired", "The time allowed for the action ran out after it was authorized"),
+        ("scroll-unverified", "A scroll towards the target was not confirmed and the capture after it could not be used"),
+        ("unknown", "QaReN recorded no classified reason for the uncertain outcome"),
+    ];
+    const GENERIC: &str = "read the report, fix the app or the plan, then re-run";
+
+    fn seen(subreason: &str) -> core::LedgerFailure {
+        serde_json::from_value(json!({
+            "step": 7,
+            "seen": "ACTION_OUTCOME_UNCERTAIN; last observed on screen: PRIVATE-screen-label private-canary",
+            "subreason": subreason,
+        }))
+        .unwrap()
+    }
+
+    fn record(run_id: &str, platform: &str) -> RunRecord {
+        serde_json::from_value(json!({
+            "schema": RUN_SCHEMA, "run_id": run_id, "created_at": "2026-10-30T08:15:00Z",
+            "scenario": {"schema": "qaren/1", "name": "test", "platform": platform,
+                "candidate": {"project_root": ".", "app_id": "test", "revision": "HEAD"}},
+            "scenario_path": "scenario.yaml", "scenario_sha256": "0", "plan_sha256": "plan",
+            "candidate": {"repo_root": ".", "project_root": ".", "app_id": "test",
+                "git_sha": "abc", "git_dirty": false, "lockfile_sha256": null},
+            "phase": "cleaned", "prepare": null
+        }))
+        .unwrap()
+    }
+
+    fn walk(
+        seen: &core::LedgerFailure,
+        root: &Path,
+        record: &RunRecord,
+        installed: bool,
+    ) -> Failure {
+        walk_failure(
+            None,
+            &|| plan_step_failure(Some(seen)),
+            Some(seen),
+            root,
+            record,
+            installed,
+        )
+    }
+
+    fn runs_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("qaren-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    #[test]
+    fn l1_each_reason_stands_in_front_of_the_usual_next_action() {
+        let none = Path::new("/nonexistent-qaren-runs");
+        for (word, words) in WORDS {
+            for platform in ["ios", "android"] {
+                let failure = walk(&seen(word), none, &record("check-1", platform), false);
+                assert_eq!(failure.code, FailureCode::PlanStepFailed);
+                assert_eq!(failure.step, Some(7));
+                assert_eq!(failure.subreason.as_deref(), Some(word));
+                assert!(failure.suggestion.is_none() && failure.repeat.is_none());
+                assert!(failure.recovery.is_none());
+                assert_eq!(failure.next_action.as_str(), format!("{words}; {GENERIC}"));
+            }
+            // --installed-app keeps its existing rule: the usual next action, then its fixed sentence, also as the suggestion.
+            let installed = walk(&seen(word), none, &record("check-1", "ios"), true);
+            let expected = format!("{words}; {GENERIC}. {INSTALLED_APP_STEP}");
+            assert_eq!(installed.next_action.as_str(), expected);
+            assert_eq!(installed.suggestion.as_deref(), Some(expected.as_str()));
+            assert!(installed.recovery.is_none() && installed.repeat.is_none());
+        }
+        for word in ["absent", "gremlins"] {
+            let failure = walk(&seen(word), none, &record("check-1", "ios"), false);
+            assert_eq!(failure.next_action.as_str(), GENERIC);
+        }
+        let refused = walk_failure(
+            None,
+            &|| {
+                Failure::new(
+                    "walk",
+                    FailureCode::CoreRefused,
+                    "refused",
+                    "follow the refusal",
+                )
+            },
+            Some(&seen("unknown")),
+            none,
+            &record("check-1", "ios"),
+            false,
+        );
+        assert_eq!(refused.next_action.as_str(), "follow the refusal");
+    }
+
+    #[test]
+    fn l2_an_identical_earlier_uncertain_failure_is_not_a_repeat() {
+        let root = runs_root("uncertain-repeat");
+        let seen = seen("dispatch-unconfirmed");
+        let mut first = record("check-20261030T081500Z", "ios");
+        let failure = walk(&seen, &root, &first, false);
+        let fixed = failure.next_action.as_str().to_string();
+        first.failure = Some(failure);
+        first.save(&root).unwrap();
+        let again = walk(
+            &seen,
+            &root,
+            &record("check-20261030T082000Z", "ios"),
+            false,
+        );
+        assert!(again.repeat.is_none());
+        assert_eq!(again.next_action.as_str(), fixed);
+        assert_eq!(
+            fixed,
+            format!("QaReN could not confirm the outcome of the action; {GENERIC}")
+        );
+        // A target-class failure on the same records still repeats.
+        let mut absent = record("check-20261030T083000Z", "ios");
+        let target = super::uncertain_reason_tests::seen("absent");
+        absent.failure = Some(walk(&target, &root, &absent, false));
+        absent.save(&root).unwrap();
+        assert!(walk(
+            &target,
+            &root,
+            &record("check-20261030T084000Z", "ios"),
+            false
+        )
+        .repeat
+        .is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn l3_a_ledger_suggestion_stays_the_suggestion_and_follows_the_reason() {
+        let suggestion = "line 12 targets this control; if the interruption is optional, move that step before line 7 or remove it";
+        let mut seen = seen("dispatch-unconfirmed");
+        seen.suggestion = Some(OutputText::from_output(suggestion));
+        let failure = walk(
+            &seen,
+            Path::new("/nonexistent-qaren-runs"),
+            &record("check-1", "ios"),
+            false,
+        );
+        assert_eq!(failure.suggestion.as_deref(), Some(suggestion));
+        assert_eq!(
+            failure.next_action.as_str(),
+            format!("QaReN could not confirm the outcome of the action; {suggestion}")
+        );
+    }
+
+    // A guard: it passes on the base. The receipt's cleanup rules treat this failure as they do today.
+    #[test]
+    fn l5_cleanup_and_runner_recovery_treat_the_failure_as_before() {
+        let mut record = record("check-1", "ios");
+        let none = Path::new("/nonexistent-qaren-runs");
+        let failure = walk(&seen("dispatch-unconfirmed"), none, &record, false);
+        let cleanup = "qaren cleanup check-1 --json";
+        assert_eq!(cleanup_first(cleanup, &failure), cleanup);
+        let retain = "Leave the process, device and lease untouched; report the missing ownership proof and request the owning run or device owner to resolve it.";
+        record.resources.runner_cleanup_cause = Some(RecoveryReason::LeaseUnproven);
+        let mut receipt = Receipt::new(
+            "check",
+            &record.run_id,
+            ReceiptResult::Fail,
+            "cleaned",
+            "2026-10-30T08:15:00Z".into(),
+        );
+        receipt.failure = Some(failure);
+        crate::commands::cleanup::project_runner_recovery(&mut receipt, &record);
+        assert_eq!(receipt.next_action, retain);
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.next_action.as_str(), retain);
+        assert_eq!(failure.subreason.as_deref(), Some("dispatch-unconfirmed"));
+        assert_eq!(
+            receipt.recovery.unwrap().key.as_deref(),
+            Some("ios_runner_cleanup")
+        );
+    }
+
+    #[test]
+    fn l4_no_input_value_or_screen_label_reaches_the_reason_or_the_next_action() {
+        let inputs = std::sync::Arc::new(crate::redact::InputValues::from_values(vec![
+            "private-canary".into(),
+        ]));
+        let record = record("check-1", "ios");
+        let none = Path::new("/nonexistent-qaren-runs");
+        crate::redact::with_input_scope(inputs, || {
+            for (word, words) in WORDS {
+                let failure = walk(&seen(word), none, &record, false);
+                let before = serde_json::to_value(&failure).unwrap();
+                let text = crate::redact::durable_json(&json!({ "failure": failure })).unwrap();
+                assert!(!text.contains("private-canary"), "{text}");
+                let after: Value = serde_json::from_str(&text).unwrap();
+                for json in [&before, &after["failure"]] {
+                    assert_eq!(json["subreason"], word);
+                    assert_eq!(json["next_action"], format!("{words}; {GENERIC}"));
+                    assert!(json.get("recovery").is_none());
+                }
+            }
+        });
     }
 }

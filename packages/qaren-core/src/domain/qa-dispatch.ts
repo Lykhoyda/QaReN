@@ -96,8 +96,35 @@ function measuredSettle(meta: unknown) {
 
 export type QaDispatchDiagnostic = ReturnType<typeof refusalDiagnostic>;
 
+const UNCERTAIN_REASONS = [
+  'keyboard-visible',
+  'alert-blocked',
+  'dispatch-unconfirmed',
+  'context-unverified',
+  'deadline-expired',
+  'scroll-unverified',
+  'unknown',
+] as const;
+export type UncertainReason = (typeof UNCERTAIN_REASONS)[number];
+
+export function asUncertainReason(value: unknown): UncertainReason | undefined {
+  return allowed(value, UNCERTAIN_REASONS) ?? undefined;
+}
+
+export function uncertainReason(value: unknown): UncertainReason {
+  return asUncertainReason(value) ?? 'unknown';
+}
+
+// The first refusal decides the reason: an expiry or a lost context is named for what it is.
+export function uncertainReasonOf(first: QaDispatchError): UncertainReason {
+  if (first.code === 'EVIDENCE_EXPIRED') return 'deadline-expired';
+  if (first.code === 'ACTION_CONTEXT_CHANGED') return 'context-unverified';
+  return uncertainReason(first.uncertainReason);
+}
+
 export class QaDispatchError extends Error {
   private measuredSettle?: ReturnType<typeof measuredSettle>;
+  readonly uncertainReason: UncertainReason | undefined;
 
   get settleMeta() {
     return this.measuredSettle;
@@ -107,9 +134,14 @@ export class QaDispatchError extends Error {
     this.measuredSettle ??= measuredSettle(meta);
   }
 
-  constructor(readonly code: QaDispatchRefusal) {
+  constructor(
+    readonly code: QaDispatchRefusal,
+    reason?: unknown,
+  ) {
     super(code);
     this.name = 'QaDispatchError';
+    this.uncertainReason =
+      code === 'ACTION_OUTCOME_UNCERTAIN' ? uncertainReason(reason) : undefined;
   }
 }
 
@@ -173,8 +205,10 @@ export class QaDispatchContext {
     );
   }
 
-  refuse(code: QaDispatchRefusal): never {
-    this.failure ??= new QaDispatchError(code);
+  refuse(code: 'ACTION_OUTCOME_UNCERTAIN', reason: UncertainReason): never;
+  refuse(code: Exclude<QaDispatchRefusal, 'ACTION_OUTCOME_UNCERTAIN'>): never;
+  refuse(code: QaDispatchRefusal, reason?: UncertainReason): never {
+    this.failure ??= new QaDispatchError(code, reason);
     throw this.failure;
   }
 

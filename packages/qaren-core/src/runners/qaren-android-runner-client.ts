@@ -2355,7 +2355,7 @@ export async function runAndroid(args: RunAndroidArgs): Promise<ToolResult> {
     ));
   } catch (err) {
     throwIfCancelled();
-    if (args.qaContext) args.qaContext.refuse('ACTION_OUTCOME_UNCERTAIN');
+    if (args.qaContext) args.qaContext.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
     const m = errMessage(err);
     // GH #383: a protocol mismatch (reuse-gate reject, post-start verify, or the
     // /command v-stamp) is a distinct, actionable failure — surface it before the

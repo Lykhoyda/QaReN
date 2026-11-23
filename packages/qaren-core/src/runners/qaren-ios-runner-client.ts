@@ -1260,8 +1260,15 @@ export async function fastSwipe(
     );
     if (qaContext && !resp.ok && resp.error?.code === 'RUNNER_TIMEOUT') {
       await containRunnerTimeout('drag', resp.error.message ?? 'RUNNER_TIMEOUT', authority);
-      qaContext.refuse('ACTION_OUTCOME_UNCERTAIN');
+      qaContext.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
     }
+    if (
+      qaContext &&
+      !resp.ok &&
+      resp.error?.code === 'APP_ALERT_INTERRUPTION' &&
+      resp.error.mutation === 'none'
+    )
+      qaContext.refuse('ACTION_OUTCOME_UNCERTAIN', 'alert-blocked');
     return resp as unknown as FastRunnerResponse;
   } catch (error) {
     throwIfCancelled();
@@ -1270,7 +1277,7 @@ export async function fastSwipe(
       const message = error instanceof Error ? error.message : String(error);
       if (message.startsWith('RUNNER_TIMEOUT'))
         await containRunnerTimeout('drag', message, authority);
-      qaContext.refuse('ACTION_OUTCOME_UNCERTAIN');
+      qaContext.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
     }
     throw error;
   }
@@ -3071,19 +3078,21 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
         : containRunnerTimeout(args.command, m, commandAuthorityBefore));
       diagnoseRefusal(
         'dispatch-error',
-        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'),
+        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed'),
         'RUNNER_TIMEOUT',
       );
       return result;
     }
-    diagnoseRefusal('dispatch-error', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
+    diagnoseRefusal('dispatch-error', () =>
+      args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed'),
+    );
     throw err;
   }
   if (!presenceRequested && !resp.ok && resp.error?.code === 'KEYBOARD_RELAYOUT_REQUIRED') {
     keyboardEvent('relayout');
     diagnoseRefusal(
       'native-response',
-      () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'),
+      () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'keyboard-visible'),
       'KEYBOARD_RELAYOUT_REQUIRED',
     );
     const relayoutFailure = await measureTiming(
@@ -3166,7 +3175,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
         : containRunnerTimeout(args.command, message, commandAuthorityBefore));
       diagnoseRefusal(
         'native-response',
-        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'),
+        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed'),
         'RUNNER_TIMEOUT',
       );
       return result;
@@ -3179,7 +3188,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       const result = await containTypeTimeout(args, commandAuthorityBefore);
       diagnoseRefusal(
         'native-response',
-        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'),
+        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed'),
         'RUNNER_TIMEOUT',
       );
       return result;
