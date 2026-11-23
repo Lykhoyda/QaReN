@@ -45,6 +45,8 @@ The package cut, literal `qaren check`, Jev seam, Phase 4 blocks, and PR run/pub
   source and test code must be TypeScript (`.ts`/`.tsx`) or Rust. The
   grandfathered `.js`/`.mjs` files are listed in
   `scripts/js-migration-baseline.txt`; do not grow that baseline casually.
+  Native runner code under `packages/qaren-ios-runner` (Swift) and
+  `packages/qaren-android-runner` (Kotlin) is outside this rule.
 - In `packages/qaren-core` the names are final and have no alias: `QAREN_*`
   environment variables, `.qaren/` in the app repository (`.qaren/actions` is
   the action corpus, a real directory or a Git-proven direct link to the same
