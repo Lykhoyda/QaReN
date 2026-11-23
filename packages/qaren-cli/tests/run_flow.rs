@@ -4084,6 +4084,57 @@ fn a_held_target_failure_keeps_its_plan_edit_ahead_of_the_inspection_steps() {
 }
 
 #[test]
+fn an_uncertain_step_failure_from_the_core_puts_its_explanation_in_front_of_the_next_action() {
+    let cases = [
+        (
+            "keyboard-visible",
+            "The device runner refused the tap because of the on-screen keyboard",
+        ),
+        ("gremlins", ""),
+    ];
+    for (word, words) in cases {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        let result = HELD_FAIL.replace(
+            r#""seen":"no Tasks","kind":"step"}"#,
+            &format!(
+                r#""seen":"ACTION_OUTCOME_UNCERTAIN; last observed on screen: PRIVATE-label","kind":"step","subreason":"{word}"}}"#
+            ),
+        );
+        script_held_result(&mut mock, &repo, &result, 1);
+
+        let (receipt, _) = run_with_events(&mut mock, &request(&repo, &app, 30));
+
+        assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::PlanStepFailed);
+        assert_eq!(failure.subreason.as_deref(), Some(word));
+        assert!(failure.repeat.is_none() && failure.recovery.is_none());
+        let next = failure.next_action.as_str();
+        assert!(!next.contains("PRIVATE-label"), "{next}");
+        if words.is_empty() {
+            assert!(
+                next.starts_with("read the report, fix the app or the plan, then re-run"),
+                "{next}"
+            );
+        } else {
+            assert!(
+                next.starts_with(&format!(
+                    "{words}; read the report, fix the app or the plan, then re-run"
+                )),
+                "{next}"
+            );
+        }
+        let stored = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+        let kept = stored.failure.unwrap();
+        assert_eq!(kept.subreason.as_deref(), Some(word));
+        assert!(next.starts_with(kept.next_action.as_str()), "{next}");
+        assert!(!kept.next_action.as_str().contains("PRIVATE-label"));
+    }
+}
+
+#[test]
 fn cancellation_after_held_cleanup_releases_resources_and_clears_the_hold() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
