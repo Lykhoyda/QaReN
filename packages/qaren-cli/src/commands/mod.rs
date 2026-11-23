@@ -30,28 +30,6 @@ pub fn repo_root_of_cwd(runner: &mut dyn Runner) -> Result<PathBuf, Failure> {
     Ok(PathBuf::from(output.stdout.trim()))
 }
 
-pub fn log_tail(path: &Path, lines: usize) -> String {
-    use std::io::{Read, Seek, SeekFrom};
-    const TAIL_BYTES: u64 = 65_536;
-    let read = || -> std::io::Result<String> {
-        let mut file = std::fs::File::open(path)?;
-        let len = file.metadata()?.len();
-        let start = len.saturating_sub(TAIL_BYTES);
-        file.seek(SeekFrom::Start(start))?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)?;
-        Ok(String::from_utf8_lossy(&buf).into_owned())
-    };
-    match read() {
-        Ok(content) => {
-            let all: Vec<&str> = content.lines().collect();
-            let start = all.len().saturating_sub(lines);
-            all[start..].join("\n")
-        }
-        Err(e) => format!("(log unreadable: {e})"),
-    }
-}
-
 pub fn scenario_identity(record: &RunRecord) -> ScenarioIdentity {
     ScenarioIdentity {
         name: record.scenario.name.clone(),

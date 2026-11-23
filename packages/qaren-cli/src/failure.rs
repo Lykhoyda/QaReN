@@ -195,6 +195,9 @@ pub struct Failure {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub evidence: Vec<OutputText>,
+    // Where a kept process log is, never its lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<LogPointer>,
     pub next_action: OutputText,
     // Failed or refused walk steps: the line and, for a target-class failure, its miss reason and screen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -214,6 +217,14 @@ pub struct Failure {
     // What ran out when a native build step was stopped for time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<Box<LimitFacts>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogPointer {
+    pub file: OutputText,
+    // The file's size when the failure was built; absent when it could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,13 +293,9 @@ fn deserialize_evidence<'de, D: serde::Deserializer<'de>>(
 ) -> Result<Vec<OutputText>, D::Error> {
     Vec::<String>::deserialize(deserializer).map(|notes| {
         notes
-            .into_iter()
-            .map(
-                |note| match crate::core::AdmissionSummary::from_note(&note) {
-                    Some(summary) => OutputText::from_admission(&summary),
-                    None => OutputText::from_output(&note),
-                },
-            )
+            .iter()
+            .filter_map(|note| crate::core::AdmissionSummary::from_note(note))
+            .map(|summary| OutputText::from_admission(&summary))
             .collect()
     })
 }
@@ -639,6 +646,7 @@ impl Failure {
             code,
             detail: OutputText::from_output(&detail.into()),
             evidence: Vec::new(),
+            log: None,
             next_action: OutputText::from_output(&next_action.into()),
             step: None,
             subreason: None,
@@ -734,11 +742,12 @@ impl Failure {
         )
     }
 
-    pub fn with_evidence(mut self, evidence: Vec<String>) -> Self {
-        self.evidence = evidence
-            .into_iter()
-            .map(|line| OutputText::from_output(&line))
-            .collect();
+    // Built under the creating run's redaction scope, so declared values in the path are masked.
+    pub fn with_log(mut self, file: &std::path::Path) -> Self {
+        self.log = Some(LogPointer {
+            file: OutputText::from_output(&file.display().to_string()),
+            bytes: std::fs::metadata(file).ok().map(|meta| meta.len()),
+        });
         self
     }
 }
@@ -857,5 +866,32 @@ impl Failure {
             .collect(),
         })));
         self
+    }
+}
+
+#[cfg(test)]
+mod log_pointer_tests {
+    use super::*;
+
+    #[test]
+    fn a_log_pointer_carries_the_file_and_its_size_when_readable() {
+        let dir = std::env::temp_dir().join(format!("qaren-log-pointer-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("metro.log");
+        std::fs::write(&log, "bundling\nready\n").unwrap();
+        let failure = Failure::new("build", FailureCode::BuildFailed, "metro exited", "inspect")
+            .with_log(&log);
+        let pointer = failure.log.as_ref().unwrap();
+        assert_eq!(pointer.file, log.display().to_string());
+        assert_eq!(pointer.bytes, Some(std::fs::metadata(&log).unwrap().len()));
+        assert!(failure.evidence.is_empty());
+
+        let missing = dir.join("absent.log");
+        let failure = Failure::new("build", FailureCode::BuildFailed, "metro exited", "inspect")
+            .with_log(&missing);
+        let json = serde_json::to_value(&failure).unwrap();
+        assert!(json["log"].get("bytes").is_none(), "{json}");
+        assert_eq!(json["log"]["file"], missing.display().to_string());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

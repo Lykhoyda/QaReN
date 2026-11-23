@@ -311,7 +311,7 @@ fn the_bundle_request_count_exists_only_once_metro_logs_a_request() {
 }
 
 #[test]
-fn an_evidence_tail_naming_a_private_key_never_reaches_run_json() {
+fn a_log_naming_a_private_key_never_reaches_run_json() {
     let dir = common::temp_repo();
     let log = dir.join("tunnel.log");
     for mention in [
@@ -327,12 +327,12 @@ fn an_evidence_tail_naming_a_private_key_never_reaches_run_json() {
             "ssh tunnel died".to_string(),
             "inspect the tunnel log",
         )
-        .with_evidence(vec![qaren::commands::log_tail(&log, 25)]);
+        .with_log(&log);
         persist_failure(&dir, "tailrun", failure.clone());
         let recorded =
             std::fs::read_to_string(qaren::runrecord::RunRecord::path(&dir, "tailrun")).unwrap();
         assert!(!recorded.contains(FAKE_BODY), "{recorded}");
-        assert_eq!(failure.evidence, vec![PRIVATE_KEY_WITHHELD.to_string()]);
+        assert!(failure.evidence.is_empty());
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -854,13 +854,10 @@ fn subprocess_fixture_worker() {
     let failure = Failure::new(
         "build",
         FailureCode::BuildFailed,
-        "fixture failed",
+        format!("fixture failed; .env echo {KEY}"),
         "inspect log",
     )
-    .with_evidence(vec![
-        qaren::commands::log_tail(&log, 25),
-        format!(".env echo {KEY}"),
-    ]);
+    .with_log(&log);
     persist_failure(dir, "build-failure", failure);
 
     let output = runner.run(&shell(
@@ -882,8 +879,7 @@ fn subprocess_fixture_worker() {
         FailureCode::DepsInstallFailed,
         output.stdout.clone(),
         "retry",
-    )
-    .with_evidence(vec![output.stdout]);
+    );
     assert!(!serde_json::to_string(&failure).unwrap().contains(KEY));
     persist_failure(dir, "capture-failure", failure);
 
@@ -988,19 +984,23 @@ fn a_live_tail_never_copies_a_body_whose_mention_awaits_its_newline() {
     let spawned = runner.spawn_group(&shell(&script, &dir), &log).unwrap();
     until(|| dir.join("done").exists());
     runner.flush_logs().unwrap();
+    let live = std::fs::read_to_string(&log).unwrap();
+    assert!(live.contains(PRIVATE_KEY_WITHHELD), "{live}");
+    assert!(!live.contains(FAKE_BODY), "{live}");
     let failure = Failure::new(
         "metro",
         FailureCode::TunnelFailed,
         "not ready".to_string(),
         "inspect the log",
     )
-    .with_evidence(vec![qaren::commands::log_tail(&log, 25)]);
+    .with_log(&log);
     persist_failure(&dir, "liverun", failure);
     unsafe { libc::kill(-spawned.pgid, libc::SIGKILL) };
     let recorded =
         std::fs::read_to_string(qaren::runrecord::RunRecord::path(&dir, "liverun")).unwrap();
     assert!(!recorded.contains(FAKE_BODY), "{recorded}");
-    assert!(recorded.contains(PRIVATE_KEY_WITHHELD), "{recorded}");
+    let value: serde_json::Value = serde_json::from_str(&recorded).unwrap();
+    assert_eq!(value["failure"]["log"]["file"], log.display().to_string());
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -1203,8 +1203,7 @@ fn registry_output_fixture_worker() {
                         FailureCode::DepsInstallFailed,
                         &retained,
                         "check registry setup",
-                    )
-                    .with_evidence(vec![retained.clone()]);
+                    );
                     persist_failure(dir, "registryrun", failure.clone());
                     no_canary(
                         &std::fs::read_to_string(qaren::runrecord::RunRecord::path(

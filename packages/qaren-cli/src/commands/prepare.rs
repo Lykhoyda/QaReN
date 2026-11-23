@@ -2280,7 +2280,7 @@ fn allocate_android(ctx: &mut Ctx, android_home: Option<&str>) -> Result<(), Fai
                 tunnel_log.display()
             ),
         )
-        .with_evidence(vec![super::log_tail(&tunnel_log, 25)]));
+        .with_log(&tunnel_log));
     };
     wait_for_local_listener(
         ctx,
@@ -2359,7 +2359,7 @@ fn allocate_android(ctx: &mut Ctx, android_home: Option<&str>) -> Result<(), Fai
                 server_log.display()
             ),
         )
-        .with_evidence(vec![super::log_tail(&server_log, 25)]));
+        .with_log(&server_log));
     };
     wait_for_local_listener(
         ctx,
@@ -3337,7 +3337,7 @@ fn allocate_usb(
                 server_log.display()
             ),
         )
-        .with_evidence(vec![super::log_tail(&server_log, 25)]));
+        .with_log(&server_log));
     };
     wait_for_local_listener(
         ctx,
@@ -3560,7 +3560,7 @@ fn spawn_metro_only(ctx: &mut Ctx, listen: metro::Listen) -> Result<(), Failure>
                 ctx.record.run_id
             ),
         )
-        .with_evidence(vec![super::log_tail(&metro_log, 25)]));
+        .with_log(&metro_log));
     }
     Ok(())
 }
@@ -3583,7 +3583,7 @@ fn wait_metro_responding(ctx: &mut Ctx) -> Result<(), Failure> {
                     ctx.record.run_id
                 ),
             )
-            .with_evidence(vec![super::log_tail(&metro_resource.log, 25)]));
+            .with_log(&metro_resource.log));
         }
         let port_output = ctx.runner.run(&metro::port_owner_spec(metro_resource.port));
         let owner = match metro::parse_port_owner(&port_output) {
@@ -3651,7 +3651,7 @@ fn wait_metro_responding(ctx: &mut Ctx) -> Result<(), Failure> {
                     ctx.record.run_id
                 ),
             )
-            .with_evidence(vec![super::log_tail(&log, 25)]));
+            .with_log(&log));
         }
         ctx.runner.sleep(Duration::from_secs(2));
     }
@@ -5163,7 +5163,7 @@ fn wait_for_local_listener(
                 ),
                 "run qaren cleanup for this run, then retry prepare",
             )
-            .with_evidence(vec![super::log_tail(log, 25)]));
+            .with_log(log));
         }
         if ctx.runner.monotonic_ms() >= deadline {
             return Err(Failure::new(
@@ -5175,7 +5175,7 @@ fn wait_for_local_listener(
                 ),
                 "run qaren cleanup for this run, then retry prepare",
             )
-            .with_evidence(vec![super::log_tail(log, 25)]));
+            .with_log(log));
         }
         ctx.runner.sleep(Duration::from_millis(500));
     }
@@ -5491,7 +5491,7 @@ fn run_finite_build_command(
                 log.display()
             ),
         )
-        .with_evidence(vec![super::log_tail(&log, 25)]);
+        .with_log(&log);
         if let Some(ended_by) = ended_by {
             let window_s = if compile || ctx.build_deadline_ms.is_some() {
                 build_ceiling_seconds(build_limit_seconds(ctx))
@@ -5782,7 +5782,7 @@ fn with_build_window<T>(
     ctx.build_deadline_ms = scoped.build_deadline_ms;
     ctx.build_limit = scoped.build_limit;
     ctx.host_wait_ms = scoped.host_wait_ms;
-    // A cut for time keeps its own facts and log lines over the generic budget failure.
+    // A cut for time keeps its own facts and log pointer over the generic budget failure.
     if !matches!(&result, Err(failure) if failure.code == FailureCode::BuildContended || failure.limit.is_some())
     {
         budget?;
@@ -6158,7 +6158,7 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
                 ctx.record.run_id
             ),
         )
-        .with_evidence(vec![super::log_tail(&build_log, 25)]));
+        .with_log(&build_log));
     }
     wait_ready(ctx)
 }
@@ -6234,7 +6234,7 @@ fn wait_ready_until(
                     ctx.record.run_id
                 ),
             )
-            .with_evidence(vec![super::log_tail(&metro_resource.log, 25)]));
+            .with_log(&metro_resource.log));
         }
         match ready_probes(ctx, &metro_resource, watch.is_some()) {
             Readiness::Ready(pid) => {
@@ -6307,7 +6307,7 @@ fn wait_ready_until(
                     ctx.record.run_id
                 ),
             )
-            .with_evidence(vec![super::log_tail(&metro_resource.log, 25)]));
+            .with_log(&metro_resource.log));
         }
         ctx.runner.sleep(READY_TICK);
     }

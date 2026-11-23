@@ -948,7 +948,7 @@ fn a_check_whose_candidate_moves_during_the_build_never_publishes_and_releases_t
     assert_eq!(mock.remaining(), 0);
 }
 
-// AI-471 B6: a build cut for time reaches the check receipt with its limit and log lines.
+// AI-471 B6: a build cut for time reaches the check receipt with its limit and log pointer.
 #[test]
 fn b6_a_check_whose_build_stands_still_reports_what_ran_out() {
     let (repo, app) = app_repo();
@@ -979,7 +979,7 @@ fn b6_a_check_whose_build_stands_still_reports_what_ran_out() {
         .detail
         .to_string()
         .starts_with("the native build was stopped after 2400 s"));
-    assert_eq!(failure.evidence.len(), 1);
+    common::canary::assert_pointer_not_evidence(serde_json::to_value(failure).unwrap());
     assert_eq!(
         failure.build_recovery().unwrap().reason,
         qaren::failure::RecoveryReason::BuildTimeLimit
@@ -13318,7 +13318,7 @@ fn script_pr_pass(mock: &mut MockRunner, repo: &Path, wt: &Path) {
     );
 }
 
-// AI-471 B6: a build cut for time reaches the pr receipt with its limit and log lines.
+// AI-471 B6: a build cut for time reaches the pr receipt with its limit and log pointer.
 #[test]
 fn b6_a_pr_run_whose_build_stands_still_reports_what_ran_out() {
     let (repo, app) = app_repo();
@@ -13381,7 +13381,7 @@ fn b6_a_pr_run_whose_build_stands_still_reports_what_ran_out() {
         .detail
         .to_string()
         .starts_with("the native build was stopped after 2400 s"));
-    assert_eq!(failure.evidence.len(), 1);
+    common::canary::assert_pointer_not_evidence(serde_json::to_value(failure).unwrap());
 }
 
 #[test]
