@@ -60,7 +60,6 @@ pub fn dev_server_node_options(base: Option<&str>, preload: Option<&Path>) -> St
         .map(str::to_string)
         .into_iter()
         .collect();
-    options.push("--dns-result-order=ipv4first".into());
     if let Some(preload) = preload {
         let escaped = preload
             .to_string_lossy()
