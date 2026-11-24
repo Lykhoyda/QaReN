@@ -2939,10 +2939,12 @@ private-value masking described below.
 
 ### Input value masking
 
-**Screens with a secure field.** Failure screen-text evidence becomes
-`[screen text withheld: a secure field is on screen]`, and moved-target identity
-labels become `•••`, whenever the capture contains any secure field, including
-empty or offscreen fields. The failure reason remains available, but its appended
+**Screens with a secure field.** When a capture contains any secure field,
+including an empty or offscreen field, moved-target identity labels become `•••`.
+The screen text appended to a failure becomes
+`[screen text withheld: a secure field is on screen]` unless a development error
+overlay is in front, in which case QaReN reports the number of lines withheld.
+The failure reason remains available, but its appended
 screen-text context is withheld. This presence-based rule does not apply to a
 later capture without a secure field; known private values still follow the
 shared masking rules below, but an unknown secret's ordinary-text echo remains
@@ -5620,7 +5622,7 @@ The selected config declares the video mode. `qaren check --installed-app` force
 strict mode. `--record` turns on recording for a standard check and uses the
 configured video mode.
 
-SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in published media. QaReN does not mask media regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
+Both policies mask SECRET runtime inputs in text output and apply the same readback restrictions to those inputs. When a capture contains a secure field, QaReN leaves its screen element's value unset, uses the private values it has learned to mask matching text in output, skips the row screenshot and withholds video publication for that window. Strict rules withhold subsequent row screenshots for the rest of the run. Under non-strict rules, a successful login replay before the first passing plan row restarts the screenshot window from the latest capture. A local recording can contain the screen, including content shown between captures. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in published media. QaReN does not mask media regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
 
 For non-strict privacy withholding, the report and PR comment name the protected
 cause. They offer the `(test-pii)` hint when a SECRET input is observed in a readable,
