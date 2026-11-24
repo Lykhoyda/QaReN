@@ -46,3 +46,27 @@ export function hitProbeNote(result: HitProbeResult): string {
       ? '; the live hit read found no hit point'
       : '; no live hit read was available';
 }
+
+export const RUNNER_LIVE_CHECK_REASONS = [
+  'expired',
+  'no-identity',
+  'absent',
+  'ambiguous',
+  'exception',
+  'deadline',
+  'read-failed',
+] as const;
+export type LiveCheckReason = (typeof RUNNER_LIVE_CHECK_REASONS)[number] | 'unreported';
+
+// A tap reply that was sent after an unavailable live check; an absent or unlisted word is `unreported`.
+export function sentAfterUnavailableRead(
+  data: unknown,
+): { reason: LiveCheckReason; reported: 'word' | 'none' | 'unlisted' } | undefined {
+  if (typeof data !== 'object' || data === null) return undefined;
+  const reply = data as { occlusionCheck?: unknown; liveCheckReason?: unknown };
+  if (reply.occlusionCheck !== 'unavailable') return undefined;
+  const word = reply.liveCheckReason;
+  if (typeof word !== 'string') return { reason: 'unreported', reported: 'none' };
+  const reason = RUNNER_LIVE_CHECK_REASONS.find((listed) => listed === word);
+  return reason ? { reason, reported: 'word' } : { reason: 'unreported', reported: 'unlisted' };
+}

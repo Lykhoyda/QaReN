@@ -49,8 +49,16 @@ enum DispatchGuard {
     case .hittable(true): return nil
     case .hittable(false): return "not-hittable"
     case .moved: return "moved"
-    case .unavailable: return unavailableReason ?? "unavailable"
+    case .unavailable:
+      // A passed deadline and a thrown read keep the strict message they had as one word.
+      guard let unavailableReason, !["deadline", "read-failed"].contains(unavailableReason) else { return "unavailable" }
+      return unavailableReason
     }
+  }
+
+  // An ordinary tap sent after an unavailable live check carries the reason the check gave no answer.
+  static func sentAfterUnavailable(_ check: TargetCheck, reason: String?) -> String? {
+    check == .unavailable ? reason : nil
   }
 
   static func dispatchTap<T>(

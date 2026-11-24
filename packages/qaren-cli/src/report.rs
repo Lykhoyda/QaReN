@@ -81,6 +81,74 @@ pub struct LedgerSummary {
     // One entry per permission opt-in recovery declined.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declined_opt_ins: Vec<DeclinedOptInLine>,
+    // iOS taps sent after an inconclusive live check, summed per operation; a row without an id stands alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inconclusive_presses: Vec<InconclusivePresses>,
+    // Authorised press commands with no usable reply and an unknown or unreadable journal, per operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub press_outcome_unknown: Vec<PressOutcomeUnknown>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InconclusivePresses {
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub operation_id: u64,
+    pub line: u64,
+    pub counts: std::collections::BTreeMap<crate::core::LiveCheckReason, u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PressOutcomeUnknown {
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub operation_id: u64,
+    pub line: u64,
+    pub count: u64,
+}
+
+// Rows of one operation are summed in the order they first appear; rows without an operation id are never summed.
+fn press_guard_lists(steps: &[Row]) -> (Vec<InconclusivePresses>, Vec<PressOutcomeUnknown>) {
+    let (mut sent, mut unknown) = (
+        Vec::<InconclusivePresses>::new(),
+        Vec::<PressOutcomeUnknown>::new(),
+    );
+    let (mut sent_at, mut unknown_at) = (
+        std::collections::HashMap::<u64, usize>::new(),
+        std::collections::HashMap::<u64, usize>::new(),
+    );
+    for row in steps {
+        let id = row.operation_id;
+        if let Some(counts) = &row.inconclusive_presses {
+            let at = match sent_at.get(&id) {
+                Some(&at) if id != 0 => at,
+                _ => {
+                    sent_at.insert(id, sent.len());
+                    sent.push(InconclusivePresses {
+                        operation_id: id,
+                        line: row.line,
+                        counts: Default::default(),
+                    });
+                    sent.len() - 1
+                }
+            };
+            for (&word, &count) in counts {
+                *sent[at].counts.entry(word).or_default() += u64::from(count);
+            }
+        }
+        if let Some(count) = row.press_outcome_unknown {
+            match unknown_at.get(&id) {
+                Some(&at) if id != 0 => unknown[at].count += u64::from(count),
+                _ => {
+                    unknown_at.insert(id, unknown.len());
+                    unknown.push(PressOutcomeUnknown {
+                        operation_id: id,
+                        line: row.line,
+                        count: u64::from(count),
+                    });
+                }
+            }
+        }
+    }
+    (sent, unknown)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -162,7 +230,10 @@ pub fn summarize(ledger: &Ledger) -> LedgerSummary {
             _ => {}
         }
     }
+    let (inconclusive_presses, press_outcome_unknown) = press_guard_lists(&ledger.steps);
     LedgerSummary {
+        inconclusive_presses,
+        press_outcome_unknown,
         verdict: ledger.verdict.clone(),
         path: ledger.path.clone(),
         steps: ledger.steps.len() as u64,
@@ -395,10 +466,79 @@ fn row_line_with(row: &Row, prose: &dyn Fn(&str) -> String) -> String {
             .unwrap_or_default(),
     ]
     .concat();
+    let inconclusive = row
+        .inconclusive_presses
+        .as_ref()
+        .map(|counts| {
+            format!(
+                "; sent after an inconclusive live check ({})",
+                word_counts(counts)
+            )
+        })
+        .unwrap_or_default();
+    let unknown = row
+        .press_outcome_unknown
+        .map(|count| {
+            format!(
+                "; no usable reply for {count} press command{}: outcome unknown",
+                if count == 1 { "" } else { "s" }
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "- {mark} line {}{text}{retry}{reason}{kept}{method}{coverage}{reconnect}{target}\n",
+        "- {mark} line {}{text}{retry}{reason}{kept}{method}{coverage}{reconnect}{target}{inconclusive}{unknown}\n",
         row.line
     )
+}
+
+fn word_counts(
+    counts: &std::collections::BTreeMap<crate::core::LiveCheckReason, impl std::fmt::Display>,
+) -> String {
+    counts
+        .iter()
+        .map(|(word, count)| format!("{} {count}", word.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn inconclusive_totals(
+    summary: &LedgerSummary,
+) -> std::collections::BTreeMap<crate::core::LiveCheckReason, u64> {
+    let mut totals = std::collections::BTreeMap::new();
+    for entry in &summary.inconclusive_presses {
+        for (&word, &count) in &entry.counts {
+            *totals.entry(word).or_default() += count;
+        }
+    }
+    totals
+}
+
+fn unknown_total(summary: &LedgerSummary) -> u64 {
+    summary
+        .press_outcome_unknown
+        .iter()
+        .map(|entry| entry.count)
+        .sum()
+}
+
+// Counts beside the verdict on any verdict; the verdict itself is unchanged.
+fn press_guard_note(summary: &LedgerSummary) -> String {
+    let sent: u64 = inconclusive_totals(summary).values().sum();
+    let unknown = unknown_total(summary);
+    let mut note = String::new();
+    if sent > 0 {
+        note.push_str(&format!(
+            " · {sent} press{} sent after an inconclusive live check",
+            if sent == 1 { "" } else { "es" }
+        ));
+    }
+    if unknown > 0 {
+        note.push_str(&format!(
+            " · outcome unknown for {unknown} press command{}",
+            if unknown == 1 { "" } else { "s" }
+        ));
+    }
+    note
 }
 
 fn reconnect_note(summary: &LedgerSummary) -> String {
@@ -492,10 +632,11 @@ pub fn render(input: &ReportInput<'_>) -> String {
     let summary = summarize(input.ledger);
     let mut out = String::new();
     out.push_str(&format!(
-        "# QaReN check: {}{}{}\n\n",
+        "# QaReN check: {}{}{}{}\n\n",
         prose(&summary.verdict_label()),
         reconnect_note(&summary),
-        opt_in_note(&summary)
+        opt_in_note(&summary),
+        press_guard_note(&summary)
     ));
     out.push_str(&format!(
         "Run `{}` · {} · `{}` · device {}\n\n",
@@ -603,6 +744,20 @@ pub fn render(input: &ReportInput<'_>) -> String {
             entry.line,
             entry.reason.sentence(),
             entry.reason.as_str()
+        ));
+    }
+    let totals = inconclusive_totals(&summary);
+    let sent: u64 = totals.values().sum();
+    if sent > 0 {
+        out.push_str(&format!(
+            "- Presses sent after an inconclusive live check: {sent} ({}). The iOS runner could not confirm the target just before these taps. This is a count, not a finding about which element was tapped.\n",
+            word_counts(&totals)
+        ));
+    }
+    let unknown = unknown_total(&summary);
+    if unknown > 0 {
+        out.push_str(&format!(
+            "- Press commands with no usable reply: {unknown}. The journal answered \"unknown\" or its status could not be read. Whether the target gesture ran is unknown.\n"
         ));
     }
     out.push_str(&format!(
@@ -1018,6 +1173,7 @@ pub fn render_pr_comment(
     out.push_str(&verdict_label(input.ledger, refusal));
     out.push_str(&reconnect_note(&summary));
     out.push_str(&opt_in_note(&summary));
+    out.push_str(&press_guard_note(&summary));
     out.push_str("\n\n");
     out.push_str(&format!(
         "Tested: commit `{}` on {}",

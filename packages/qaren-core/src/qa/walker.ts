@@ -4,6 +4,7 @@ import {
   OverlayHits,
   type HitProbeIdentity,
   type HitProbeResult,
+  type LiveCheckReason,
   type OverlayHitReceipt,
 } from './live-hit.js';
 import {
@@ -274,6 +275,8 @@ export interface ActResult {
   keyboardShown?: boolean;
   // The Fill ladder rung that produced this result.
   method?: FillMethod;
+  // An iOS tap sent after its live check gave no answer, and the reason.
+  liveCheck?: LiveCheckReason;
 }
 
 export interface WalkerDeps {
@@ -1599,6 +1602,10 @@ async function walkBlockScoped(
       if (item.kind === 'scroll') sequence.momentum = true;
       const result = await send(context);
       observeRowSettle(result);
+      if (kind === 'press' && result.liveCheck) {
+        const counts = (guardRow(item.line).inconclusivePresses ??= {});
+        counts[result.liveCheck] = (counts[result.liveCheck] ?? 0) + 1;
+      }
       if (result.entryMismatch) fillMismatch = result.entryMismatch;
       context.assertComplete();
       const resultCode = result.error?.split(':', 1)[0];
@@ -1654,6 +1661,14 @@ async function walkBlockScoped(
             : context.refusedBeforeMutation
               ? 'TARGET_MOVED_BEFORE_DISPATCH'
               : 'ACTION_OUTCOME_UNCERTAIN';
+        if (
+          kind === 'press' &&
+          context.authorizations > 0 &&
+          context.refusalDiagnostic?.sendUnresolved
+        ) {
+          const row = guardRow(item.line);
+          row.pressOutcomeUnknown = (row.pressOutcomeUnknown ?? 0) + 1;
+        }
         throw new QaDispatchError(
           code,
           code === 'ACTION_OUTCOME_UNCERTAIN' ? uncertainReasonOf(refusal) : undefined,
@@ -1684,6 +1699,15 @@ async function walkBlockScoped(
   const bandFor = (item: Item, target: Target, screen: Screen) =>
     scrollUntilBand(target, screen, (receipt) => scrollBands.set(item.line, receipt));
   const overlayRows = new Map<number, { observation: number; checks: OverlayHitReceipt[] }>();
+  const guardRows = new Map<
+    number,
+    Pick<LedgerRow, 'inconclusivePresses' | 'pressOutcomeUnknown'>
+  >();
+  const guardRow = (line: number) => {
+    let row = guardRows.get(line);
+    if (!row) guardRows.set(line, (row = {}));
+    return row;
+  };
   const targetRows = new Map<
     number,
     Pick<LedgerRow, 'collapsed' | 'candidateExclusions' | 'coveredBy'>
@@ -2023,6 +2047,8 @@ async function walkBlockScoped(
     const withheld = withheldRows.get(row.line);
     withheldRows.delete(row.line);
     if (withheld) row = { ...row, screenshotWithheld: withheld };
+    row = { ...row, ...guardRows.get(row.line) };
+    guardRows.delete(row.line);
     const reactCoverage = reactGaps.get(row.line);
     row = {
       ...row,
@@ -6718,6 +6744,8 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(row.coveredBy ? { coveredBy: row.coveredBy } : {}),
     ...(row.entryMismatch ? { entryMismatch: row.entryMismatch } : {}),
     ...(row.screenshotWithheld ? { screenshotWithheld: row.screenshotWithheld } : {}),
+    ...(row.inconclusivePresses ? { inconclusivePresses: row.inconclusivePresses } : {}),
+    ...(row.pressOutcomeUnknown ? { pressOutcomeUnknown: row.pressOutcomeUnknown } : {}),
     ...(screenshot ? { screenshot } : {}),
     ...(timing ? { timing } : {}),
     ...(reactCoverage ? { reactCoverage } : {}),

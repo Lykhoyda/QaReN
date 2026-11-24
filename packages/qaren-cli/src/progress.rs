@@ -278,6 +278,8 @@ mod tests {
             collapsed: None,
             candidate_exclusions: None,
             covered_by: None,
+            inconclusive_presses: None,
+            press_outcome_unknown: None,
         }
     }
 

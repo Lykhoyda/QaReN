@@ -687,6 +687,7 @@ extension QarenIosRunnerTests {
       read: { target in
         var hittable: Bool?
         let exception = RunnerObjCExceptionCatcher.catchException({ hittable = target.isHittable })
+        if exception != nil { self.lastLiveCheckUnavailable = "read-failed" }
         return exception == nil ? hittable : nil
       }
     ).hittable
@@ -710,8 +711,8 @@ extension QarenIosRunnerTests {
       lastLiveCheckUnavailable = "no-identity"
       return .unavailable
     }
-    // Deadline, or a frame or hittability read that threw.
-    lastLiveCheckUnavailable = "unavailable"
+    // Kept when the deadline passes; a frame or hittability read that threw sets "read-failed".
+    lastLiveCheckUnavailable = "deadline"
     let expected = CGRect(
       x: retained.rect.x, y: retained.rect.y,
       width: retained.rect.width, height: retained.rect.height
@@ -752,6 +753,7 @@ extension QarenIosRunnerTests {
           }
           matches = agree
         })
+        if exception != nil { self.lastLiveCheckUnavailable = "read-failed" }
         return exception == nil ? matches : nil
       },
       checkHittability: checkHittability,

@@ -1,5 +1,9 @@
 import { androidStartGate } from './android-start-gate.js';
-import type { HitProbeIdentity } from './live-hit.js';
+import {
+  type HitProbeIdentity,
+  type LiveCheckReason,
+  sentAfterUnavailableRead,
+} from './live-hit.js';
 import type { PressEvidence } from './selection-press.js';
 import { devOverlayDeadline } from '../domain/dev-overlay.js';
 import { QaDispatchError } from '../domain/qa-dispatch.js';
@@ -500,10 +504,12 @@ function act(
             ? { typed: data.typedLength, observed: observed as number[] }
             : undefined;
         const chars = data?.caseNormalizedChars;
+        const liveCheck = actionLiveCheck(data);
         return {
           ...settle,
           ok: true,
           proven: proven || verified,
+          ...(liveCheck ? { liveCheck } : {}),
           ...(keyboard !== undefined ? { keyboardShown: keyboard } : {}),
           ...(dialog ? { dialog } : {}),
           ...(kept ? { kept } : {}),
@@ -591,6 +597,18 @@ function actionKeyboard(meta?: Record<string, unknown>): boolean | undefined {
     // Diagnostics cannot change an action's outcome.
   }
   return shown;
+}
+
+// The reason an iOS tap was sent after an unavailable live check; logged value-free.
+function actionLiveCheck(data: unknown): LiveCheckReason | undefined {
+  const read = sentAfterUnavailableRead(data);
+  if (!read) return undefined;
+  try {
+    log(`action-live-check=${JSON.stringify(read)}`);
+  } catch {
+    // Diagnostics cannot change an action's outcome.
+  }
+  return read.reason;
 }
 
 function logActionSettle(
