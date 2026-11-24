@@ -2396,6 +2396,17 @@ Quoted waits and scroll-until targets also accept a unique visible testID as
 identity evidence, independently of literal text; a React-only twin of a native
 element carrying that testID does not break its uniqueness.
 
+On Android, an element can be on screen but hidden in place: Android reports it
+as not visible to the user although its frame overlaps the visible area with its
+centre inside, such as a code field's transparent input behind its digit boxes.
+A Wait never counts such an element present. When a Wait on its testID ends in a
+definite stable absence, the failure's last observed screen shows that element
+hidden in place, and that screen's own diagnosis is that the target is absent,
+the failure says so. For a native input, the suggestion gives examples of
+visible testIDs to wait for and suggests a Tap if the app provides a control
+that focuses the input; for another element, it suggests waiting for a visible
+control. iOS reports no visible-to-user fact, so this does not apply there.
+
 When a literal check fails and a node's label contains the plan's literal, the
 failure can explain why that node did not count: `not-visible` means it was
 reported not visible to the user or was outside the viewport;
@@ -2514,7 +2525,8 @@ absence observations sharing one screen signature normally fails at its deadline
 “did not appear”; it does not report expired evidence for that stable absence.
 For a quoted value that is not a stored text selector, the failure adds why from
 identifiers and frames only: no captured element carries the identifier, several
-do, or the one that does is React-only, offscreen or has its centre covered.
+do, or the one that does is React-only, offscreen (on Android possibly hidden in
+place, as the failure then says) or has its centre covered.
 When those stable absence observations identify one React-only match, the quoted
 wait fails with `TARGET_REACT_ONLY` (`PLAN_STEP_FAILED`, exit 1). Its detail uses
 identifiers, kinds and frames, without labels, placeholders or field values, to
