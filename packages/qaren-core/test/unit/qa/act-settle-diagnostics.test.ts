@@ -38,6 +38,7 @@ import { AppProcessGoneError } from '../../../dist/qa/capture.js';
 import { runPlan, type ActResult } from '../../../dist/qa/walker.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { captureScreen } from '../../../dist/qa/capture.js';
+import * as liveHit from '../../../dist/qa/live-hit.js';
 import { nativeCapture } from './platform-presence-fixtures.ts';
 import { walker, scriptedJudge, screen, element } from './judgment-fixtures.ts';
 import type { ToolResult } from '../../../dist/utils.js';
@@ -65,6 +66,7 @@ function fixture(throwSink = false) {
     fillEvidence,
     unwrap,
     isRecord,
+    sentAfterUnavailableRead: liveHit.sentAfterUnavailableRead,
     stop,
     log: (line: string) => {
       logs.push(line);
@@ -114,6 +116,46 @@ test('act projects measured send fields into the row contract', async () => {
     runnerMs: 80,
     settleProbes: 2,
   });
+});
+
+test('act keeps the word of a press sent after an unavailable live check and logs it value-free', async () => {
+  const { act, logs } = fixture();
+  const outcome = await act(
+    async () =>
+      okResult(
+        {
+          message: 'tapped',
+          occlusionCheck: 'unavailable',
+          liveCheckReason: 'ambiguous',
+          liveCheckMs: 81,
+          handledMs: 120,
+        },
+        { meta: { timings_ms: { liveCheck: 81, runner: 120 } } },
+      ),
+    false,
+  );
+  assert.equal(outcome.ok, true);
+  assert.equal(outcome.liveCheck, 'ambiguous');
+  assert.deepEqual(
+    logs.filter((line) => line.startsWith('action-live-check=')),
+    ['action-live-check={"reason":"ambiguous","reported":"word"}'],
+  );
+  const hitTested = fixture();
+  const tested = await hitTested.act(
+    async () => okResult({ message: 'tapped', occlusionCheck: 'hit-tested' }),
+    false,
+  );
+  assert.equal(tested.liveCheck, undefined);
+  assert.equal(hitTested.logs.filter((line) => line.startsWith('action-live-check=')).length, 0);
+  const refused = fixture();
+  const notExecuted = await refused.act(
+    async () =>
+      okResult({ tapped: false, occlusionCheck: 'unavailable', liveCheckReason: 'deadline' }),
+    false,
+  );
+  assert.equal(notExecuted.ok, false);
+  assert.equal(notExecuted.liveCheck, undefined);
+  assert.equal(refused.logs.filter((line) => line.startsWith('action-live-check=')).length, 0);
 });
 
 for (const platform of ['ios', 'android'] as const) {

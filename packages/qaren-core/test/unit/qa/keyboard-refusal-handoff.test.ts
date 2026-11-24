@@ -41,6 +41,7 @@ import {
   REQUIRED_IOS_FEATURES,
   getPluginVersion,
 } from '../../../dist/runners/protocol.js';
+import * as liveHit from '../../../dist/qa/live-hit.js';
 
 const error = 'KEYBOARD_DISMISS_FAILED: native control could not hide the keyboard';
 const refusal: ActResult = { ok: false, proven: false, mutation: 'none', error };
@@ -211,6 +212,7 @@ function pressAdapter(press: ReturnType<typeof createDevicePressHandler>): Walke
     extractMutationDisposition,
     entryMismatchOf,
     isRecord,
+    sentAfterUnavailableRead: liveHit.sentAfterUnavailableRead,
   });
 }
 

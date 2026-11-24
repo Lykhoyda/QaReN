@@ -81,6 +81,74 @@ pub struct LedgerSummary {
     // One entry per permission opt-in recovery declined.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declined_opt_ins: Vec<DeclinedOptInLine>,
+    // iOS taps sent after an inconclusive live check, summed per operation; a row without an id stands alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inconclusive_presses: Vec<InconclusivePresses>,
+    // Authorised press commands with no usable reply and an unknown or unreadable journal, per operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub press_outcome_unknown: Vec<PressOutcomeUnknown>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InconclusivePresses {
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub operation_id: u64,
+    pub line: u64,
+    pub counts: std::collections::BTreeMap<crate::core::LiveCheckReason, u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PressOutcomeUnknown {
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub operation_id: u64,
+    pub line: u64,
+    pub count: u64,
+}
+
+// Rows of one operation are summed in the order they first appear; rows without an operation id are never summed.
+fn press_guard_lists(steps: &[Row]) -> (Vec<InconclusivePresses>, Vec<PressOutcomeUnknown>) {
+    let (mut sent, mut unknown) = (
+        Vec::<InconclusivePresses>::new(),
+        Vec::<PressOutcomeUnknown>::new(),
+    );
+    let (mut sent_at, mut unknown_at) = (
+        std::collections::HashMap::<u64, usize>::new(),
+        std::collections::HashMap::<u64, usize>::new(),
+    );
+    for row in steps {
+        let id = row.operation_id;
+        if let Some(counts) = &row.inconclusive_presses {
+            let at = match sent_at.get(&id) {
+                Some(&at) if id != 0 => at,
+                _ => {
+                    sent_at.insert(id, sent.len());
+                    sent.push(InconclusivePresses {
+                        operation_id: id,
+                        line: row.line,
+                        counts: Default::default(),
+                    });
+                    sent.len() - 1
+                }
+            };
+            for (&word, &count) in counts {
+                *sent[at].counts.entry(word).or_default() += u64::from(count);
+            }
+        }
+        if let Some(count) = row.press_outcome_unknown {
+            match unknown_at.get(&id) {
+                Some(&at) if id != 0 => unknown[at].count += u64::from(count),
+                _ => {
+                    unknown_at.insert(id, unknown.len());
+                    unknown.push(PressOutcomeUnknown {
+                        operation_id: id,
+                        line: row.line,
+                        count: u64::from(count),
+                    });
+                }
+            }
+        }
+    }
+    (sent, unknown)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -162,7 +230,10 @@ pub fn summarize(ledger: &Ledger) -> LedgerSummary {
             _ => {}
         }
     }
+    let (inconclusive_presses, press_outcome_unknown) = press_guard_lists(&ledger.steps);
     LedgerSummary {
+        inconclusive_presses,
+        press_outcome_unknown,
         verdict: ledger.verdict.clone(),
         path: ledger.path.clone(),
         steps: ledger.steps.len() as u64,
@@ -395,10 +466,79 @@ fn row_line_with(row: &Row, prose: &dyn Fn(&str) -> String) -> String {
             .unwrap_or_default(),
     ]
     .concat();
+    let inconclusive = row
+        .inconclusive_presses
+        .as_ref()
+        .map(|counts| {
+            format!(
+                "; sent after an inconclusive live check ({})",
+                word_counts(counts)
+            )
+        })
+        .unwrap_or_default();
+    let unknown = row
+        .press_outcome_unknown
+        .map(|count| {
+            format!(
+                "; no usable reply for {count} press command{}: outcome unknown",
+                if count == 1 { "" } else { "s" }
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "- {mark} line {}{text}{retry}{reason}{kept}{method}{coverage}{reconnect}{target}\n",
+        "- {mark} line {}{text}{retry}{reason}{kept}{method}{coverage}{reconnect}{target}{inconclusive}{unknown}\n",
         row.line
     )
+}
+
+fn word_counts(
+    counts: &std::collections::BTreeMap<crate::core::LiveCheckReason, impl std::fmt::Display>,
+) -> String {
+    counts
+        .iter()
+        .map(|(word, count)| format!("{} {count}", word.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn inconclusive_totals(
+    summary: &LedgerSummary,
+) -> std::collections::BTreeMap<crate::core::LiveCheckReason, u64> {
+    let mut totals = std::collections::BTreeMap::new();
+    for entry in &summary.inconclusive_presses {
+        for (&word, &count) in &entry.counts {
+            *totals.entry(word).or_default() += count;
+        }
+    }
+    totals
+}
+
+fn unknown_total(summary: &LedgerSummary) -> u64 {
+    summary
+        .press_outcome_unknown
+        .iter()
+        .map(|entry| entry.count)
+        .sum()
+}
+
+// Counts beside the verdict on any verdict; the verdict itself is unchanged.
+fn press_guard_note(summary: &LedgerSummary) -> String {
+    let sent: u64 = inconclusive_totals(summary).values().sum();
+    let unknown = unknown_total(summary);
+    let mut note = String::new();
+    if sent > 0 {
+        note.push_str(&format!(
+            " · {sent} press{} sent after an inconclusive live check",
+            if sent == 1 { "" } else { "es" }
+        ));
+    }
+    if unknown > 0 {
+        note.push_str(&format!(
+            " · outcome unknown for {unknown} press command{}",
+            if unknown == 1 { "" } else { "s" }
+        ));
+    }
+    note
 }
 
 fn reconnect_note(summary: &LedgerSummary) -> String {
@@ -492,10 +632,11 @@ pub fn render(input: &ReportInput<'_>) -> String {
     let summary = summarize(input.ledger);
     let mut out = String::new();
     out.push_str(&format!(
-        "# QaReN check: {}{}{}\n\n",
+        "# QaReN check: {}{}{}{}\n\n",
         prose(&summary.verdict_label()),
         reconnect_note(&summary),
-        opt_in_note(&summary)
+        opt_in_note(&summary),
+        press_guard_note(&summary)
     ));
     out.push_str(&format!(
         "Run `{}` · {} · `{}` · device {}\n\n",
@@ -603,6 +744,20 @@ pub fn render(input: &ReportInput<'_>) -> String {
             entry.line,
             entry.reason.sentence(),
             entry.reason.as_str()
+        ));
+    }
+    let totals = inconclusive_totals(&summary);
+    let sent: u64 = totals.values().sum();
+    if sent > 0 {
+        out.push_str(&format!(
+            "- Presses sent after an inconclusive live check: {sent} ({}). The iOS runner could not confirm the target just before these taps. This is a count, not a finding about which element was tapped.\n",
+            word_counts(&totals)
+        ));
+    }
+    let unknown = unknown_total(&summary);
+    if unknown > 0 {
+        out.push_str(&format!(
+            "- Press commands with no usable reply: {unknown}. The journal answered \"unknown\" or its status could not be read. Whether the target gesture ran is unknown.\n"
         ));
     }
     out.push_str(&format!(
@@ -1018,6 +1173,7 @@ pub fn render_pr_comment(
     out.push_str(&verdict_label(input.ledger, refusal));
     out.push_str(&reconnect_note(&summary));
     out.push_str(&opt_in_note(&summary));
+    out.push_str(&press_guard_note(&summary));
     out.push_str("\n\n");
     out.push_str(&format!(
         "Tested: commit `{}` on {}",
@@ -2445,5 +2601,211 @@ mod tests {
             !default.contains("Started on the installed app"),
             "{default}"
         );
+    }
+
+    fn press_guard_ledger(verdict: &str, steps: serde_json::Value) -> Ledger {
+        serde_json::from_value(serde_json::json!({
+            "verdict": verdict, "path": "walk", "blocks": [], "steps": steps,
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap()
+    }
+
+    fn press_guard_input(ledger: &Ledger) -> ReportInput<'_> {
+        ReportInput {
+            installed_app: None,
+            video: None,
+            run_id: "check-test",
+            platform: "ios",
+            app_id: "com.example",
+            device: "test-device",
+            ledger,
+        }
+    }
+
+    fn press_guard_comment(ledger: &Ledger) -> String {
+        render_pr_comment(
+            &press_guard_input(ledger),
+            None,
+            &PrRun {
+                tested_sha: "abcdef1234567",
+                tested_older_commit: false,
+                video: &VideoStatus::Available,
+                video_continuity: &[],
+                screenshot: None,
+                plan_sha256: "plan-hash",
+                video_publication: &VideoPublication::Eligible,
+            },
+            &MachineIdentity::default(),
+        )
+    }
+
+    #[test]
+    fn press_guard_evidence_is_summed_per_operation_and_reported_beside_any_verdict() {
+        let row = |block: &str,
+                   id: Option<u64>,
+                   line: u64,
+                   attempt: u64,
+                   outcome: &str,
+                   extra: serde_json::Value| {
+            let mut row = serde_json::json!({"block": block, "line": line, "attempt": attempt,
+                "kind": "step", "resolvedBy": "exact", "t": 0, "outcome": outcome,
+                "text": format!("{line}. Tap \"go\"")});
+            if let Some(id) = id {
+                row["operationId"] = id.into();
+            }
+            row.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            row
+        };
+        let ledger = press_guard_ledger(
+            "PASS",
+            serde_json::json!([
+                row(
+                    "login",
+                    Some(2),
+                    1,
+                    1,
+                    "retry",
+                    serde_json::json!({"inconclusivePresses": {"deadline": 1}})
+                ),
+                row(
+                    "login",
+                    Some(2),
+                    1,
+                    2,
+                    "pass",
+                    serde_json::json!({"inconclusivePresses": {"deadline": 1, "read-failed": 1}})
+                ),
+                row(
+                    "qa",
+                    Some(5),
+                    1,
+                    1,
+                    "pass",
+                    serde_json::json!({"inconclusivePresses": {"ambiguous": 1}})
+                ),
+                row(
+                    "qa",
+                    None,
+                    3,
+                    1,
+                    "fail",
+                    serde_json::json!({"pressOutcomeUnknown": 1})
+                ),
+                row(
+                    "qa",
+                    None,
+                    3,
+                    2,
+                    "pass",
+                    serde_json::json!({"pressOutcomeUnknown": 2, "inconclusivePresses": {"unreported": 1}})
+                ),
+            ]),
+        );
+        let summary = summarize(&ledger);
+        use crate::core::LiveCheckReason::{Ambiguous, Deadline, ReadFailed, Unreported};
+        let entry =
+            |operation_id: u64, line: u64, counts: &[(crate::core::LiveCheckReason, u64)]| {
+                InconclusivePresses {
+                    operation_id,
+                    line,
+                    counts: counts.iter().copied().collect(),
+                }
+            };
+        assert_eq!(
+            summary.inconclusive_presses,
+            vec![
+                entry(2, 1, &[(Deadline, 2), (ReadFailed, 1)]),
+                entry(5, 1, &[(Ambiguous, 1)]),
+                entry(0, 3, &[(Unreported, 1)]),
+            ]
+        );
+        assert_eq!(
+            summary.press_outcome_unknown,
+            vec![
+                PressOutcomeUnknown {
+                    operation_id: 0,
+                    line: 3,
+                    count: 1
+                },
+                PressOutcomeUnknown {
+                    operation_id: 0,
+                    line: 3,
+                    count: 2
+                },
+            ]
+        );
+        let encoded = serde_json::to_value(&summary).unwrap();
+        assert!(encoded["press_outcome_unknown"][0]
+            .get("operation_id")
+            .is_none());
+        assert_eq!(encoded["inconclusive_presses"][0]["operation_id"], 2);
+        assert_eq!(summary.verdict_label(), "PASS");
+
+        let report = render(&press_guard_input(&ledger));
+        let comment = press_guard_comment(&ledger);
+        let note = " · 5 presses sent after an inconclusive live check · outcome unknown for 3 press commands";
+        assert!(
+            report.starts_with(&format!("# QaReN check: PASS{note}\n")),
+            "{report}"
+        );
+        for body in [&report, &comment] {
+            assert!(body.contains(note), "{body}");
+            for line in [
+                "- ✗ line 1: 1. Tap \"go\"; sent after an inconclusive live check (deadline 1)\n",
+                "- ✓ line 1: 1. Tap \"go\" (attempt 2); sent after an inconclusive live check (deadline 1, read-failed 1)\n",
+                "- ✓ line 1: 1. Tap \"go\"; sent after an inconclusive live check (ambiguous 1)\n",
+                "- ✗ line 3: 3. Tap \"go\"; no usable reply for 1 press command: outcome unknown\n",
+                "- ✓ line 3: 3. Tap \"go\" (attempt 2); sent after an inconclusive live check (unreported 1); no usable reply for 2 press commands: outcome unknown\n",
+            ] {
+                assert!(body.contains(line), "{line}\n{body}");
+            }
+        }
+        assert!(report.contains("- Presses sent after an inconclusive live check: 5 (ambiguous 1, deadline 2, read-failed 1, unreported 1). The iOS runner could not confirm the target just before these taps. This is a count, not a finding about which element was tapped.\n"), "{report}");
+        assert!(report.contains("- Press commands with no usable reply: 3. The journal answered \"unknown\" or its status could not be read. Whether the target gesture ran is unknown.\n"), "{report}");
+
+        let one = press_guard_ledger(
+            "FAIL",
+            serde_json::json!([row(
+                "qa",
+                Some(1),
+                2,
+                1,
+                "fail",
+                serde_json::json!({"inconclusivePresses": {"deadline": 1}, "pressOutcomeUnknown": 1})
+            )]),
+        );
+        assert!(render(&press_guard_input(&one)).starts_with(
+            "# QaReN check: FAIL · 1 press sent after an inconclusive live check · outcome unknown for 1 press command\n"
+        ));
+    }
+
+    #[test]
+    fn a_run_without_press_guard_evidence_has_no_key_and_no_note() {
+        let ledger = press_guard_ledger(
+            "PASS",
+            serde_json::json!([{"block": "qa", "operationId": 1, "line": 1, "attempt": 1, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": "pass", "text": "1. Tap \"go\""}]),
+        );
+        let summary = summarize(&ledger);
+        let encoded = serde_json::to_value(&summary).unwrap();
+        assert!(encoded.get("inconclusive_presses").is_none());
+        assert!(encoded.get("press_outcome_unknown").is_none());
+        assert_eq!(summary.verdict_label(), "PASS");
+        let report = render(&press_guard_input(&ledger));
+        let comment = press_guard_comment(&ledger);
+        assert!(report.starts_with("# QaReN check: PASS\n"), "{report}");
+        for body in [&report, &comment] {
+            assert!(!body.contains("inconclusive live check"), "{body}");
+            assert!(!body.contains("outcome unknown"), "{body}");
+            assert!(!body.contains("no usable reply"), "{body}");
+        }
+
+        let parsed: LedgerSummary = serde_json::from_value(encoded).unwrap();
+        assert!(parsed.inconclusive_presses.is_empty());
+        assert!(parsed.press_outcome_unknown.is_empty());
     }
 }

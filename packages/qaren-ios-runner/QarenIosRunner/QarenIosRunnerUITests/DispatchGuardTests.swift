@@ -68,6 +68,22 @@ final class DispatchGuardTests: XCTestCase {
     XCTAssertEqual(DispatchGuard.strictRefusal(.unavailable, unavailableReason: nil), "unavailable")
   }
 
+  func testStrictRefusalKeepsUnavailableForAPassedDeadlineAndAThrownRead() {
+    for reason in ["deadline", "read-failed"] {
+      XCTAssertEqual(DispatchGuard.strictRefusal(.unavailable, unavailableReason: reason), "unavailable")
+    }
+  }
+
+  func testAnOrdinaryTapCarriesTheWordOnlyWhenTheLiveCheckWasUnavailable() {
+    for reason in ["expired", "no-identity", "absent", "ambiguous", "exception", "deadline", "read-failed"] {
+      XCTAssertEqual(DispatchGuard.sentAfterUnavailable(.unavailable, reason: reason), reason)
+      for check in [DispatchGuard.TargetCheck.hittable(true), .hittable(false), .moved] {
+        XCTAssertNil(DispatchGuard.sentAfterUnavailable(check, reason: reason))
+      }
+    }
+    XCTAssertNil(DispatchGuard.sentAfterUnavailable(.unavailable, reason: nil))
+  }
+
   func testStrictTapActivatesPartiallyExposedRowInsteadOfCoveredCentre() {
     let row = CGRect(x: 0, y: 100, width: 402, height: 60)
     let header = CGRect(x: 0, y: 0, width: 402, height: 140)

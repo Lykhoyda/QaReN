@@ -1,3 +1,5 @@
+mod common;
+
 use qaren::core::Ledger;
 use qaren::failure::{Failure, FailureCode};
 use qaren::record::{VideoPublication, VideoStatus};
@@ -617,4 +619,64 @@ fn the_local_report_keeps_every_reason_and_frame() {
         1
     );
     assert!(line_starting(&local, "Step 1:").contains(COVER), "{local}");
+}
+
+// The check and the publication are separate processes, each with its own inputs.
+fn publish_in_two_scopes(
+    written_with: Option<&str>,
+    rendered_with: Option<&str>,
+) -> (Ledger, String) {
+    use common::press_guard::input_scope;
+    use qaren::redact::with_input_scope;
+    let stored = with_input_scope(input_scope(written_with), || {
+        qaren::redact::durable_json(&common::press_guard::ledger(None)).unwrap()
+    });
+    with_input_scope(input_scope(rendered_with), || {
+        let reread: Ledger = serde_json::from_str(&stored).unwrap();
+        let body = render(
+            &reread,
+            false,
+            &VideoStatus::Available,
+            &VideoPublication::Eligible,
+        );
+        (reread, body)
+    })
+}
+
+const PRESS_NOTE: &str =
+    " · 5 presses sent after an inconclusive live check · outcome unknown for 1 press command";
+
+#[test]
+fn published_press_guard_evidence_keeps_each_operation_across_two_scopes() {
+    let (reread, body) = publish_in_two_scopes(Some("operationId"), None);
+    assert_eq!(
+        common::press_guard::summary_lists(qaren::report::summarize(&reread)),
+        common::press_guard::expected()
+    );
+    assert!(body.contains(PRESS_NOTE), "{body}");
+    for line in [
+        "- ✗ line 1; sent after an inconclusive live check (deadline 1)\n",
+        "- ✓ line 1; sent after an inconclusive live check (ambiguous 1)\n",
+        "- ✓ line 1; sent after an inconclusive live check (deadline 2)\n",
+        "- ✗ line 2; no usable reply for 1 press command: outcome unknown\n",
+        "- ✓ line 3\n",
+        "- ✓ line 7; sent after an inconclusive live check (absent 1)\n",
+    ] {
+        assert!(body.contains(line), "{line}\n{body}");
+    }
+}
+
+#[test]
+fn the_publishing_process_masks_its_own_input_in_the_press_guard_lines() {
+    let (_, body) = publish_in_two_scopes(None, Some("ambiguous"));
+    assert!(!body.contains("ambiguous"), "{body}");
+    assert!(
+        body.contains("- ✓ line 1; sent after an inconclusive live check ([REDACTED_INPUT] 1)\n"),
+        "{body}"
+    );
+    assert!(body.contains(PRESS_NOTE), "{body}");
+    assert!(body.contains("(deadline 2)"), "{body}");
+
+    let (_, body) = publish_in_two_scopes(Some("ambiguous"), None);
+    assert!(body.contains("(ambiguous 1)"), "{body}");
 }

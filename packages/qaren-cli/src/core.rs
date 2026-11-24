@@ -3,6 +3,7 @@ use crate::failure::{AdmissionCause, AdmissionFacts, Failure, FailureCode};
 use crate::redact::redact_secrets;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -536,6 +537,66 @@ pub struct Row {
         deserialize_with = "passive"
     )]
     pub covered_by: Option<CoveredBy>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "inconclusive_presses"
+    )]
+    pub inconclusive_presses: Option<BTreeMap<LiveCheckReason, u32>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "press_outcome_unknown"
+    )]
+    pub press_outcome_unknown: Option<u32>,
+}
+
+// Why an iOS tap was sent although its live check gave no answer; `unreported` when the runner named no listed word.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum LiveCheckReason {
+    Expired,
+    NoIdentity,
+    Absent,
+    Ambiguous,
+    Exception,
+    Deadline,
+    ReadFailed,
+    Unreported,
+}
+
+impl LiveCheckReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Expired => "expired",
+            Self::NoIdentity => "no-identity",
+            Self::Absent => "absent",
+            Self::Ambiguous => "ambiguous",
+            Self::Exception => "exception",
+            Self::Deadline => "deadline",
+            Self::ReadFailed => "read-failed",
+            Self::Unreported => "unreported",
+        }
+    }
+}
+
+// Diagnostics only: an empty map, an unlisted word or a zero count drops the field, never the row.
+pub fn inconclusive_counts(value: Value) -> Option<BTreeMap<LiveCheckReason, u32>> {
+    serde_json::from_value::<BTreeMap<LiveCheckReason, u32>>(value)
+        .ok()
+        .filter(|counts| !counts.is_empty() && counts.values().all(|&count| count > 0))
+}
+
+fn inconclusive_presses<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<LiveCheckReason, u32>>, D::Error> {
+    Ok(inconclusive_counts(Value::deserialize(deserializer)?))
+}
+
+fn press_outcome_unknown<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u32>, D::Error> {
+    Ok(passive(deserializer)?.filter(|&count: &u32| count > 0))
 }
 
 // Value-free interruption decision for a step.

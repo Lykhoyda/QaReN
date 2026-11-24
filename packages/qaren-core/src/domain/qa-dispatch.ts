@@ -69,6 +69,7 @@ function refusalDiagnostic(refusal: QaDispatchRefusal, facts: unknown) {
     ] as const),
     probeState: allowed(fact(facts, 'probeState'), ['completed', 'failed', 'unknown'] as const),
     recovery: allowed(fact(facts, 'recovery'), ['recovered', 'recovered-error', 'resent'] as const),
+    ...(fact(facts, 'sendUnresolved') === true ? { sendUnresolved: true as const } : {}),
   });
 }
 

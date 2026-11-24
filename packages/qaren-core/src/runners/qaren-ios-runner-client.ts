@@ -2073,7 +2073,7 @@ async function postCommandWithRecovery(
   qaContext?: QaDispatchContext,
   qaTiming?: TimingContext,
   focusedProof?: () => Promise<boolean>,
-  qaRecovery?: { probeState?: ProbeState },
+  qaRecovery?: { probeState?: ProbeState; sendUnresolved?: true },
 ): Promise<{ resp: RunnerResponse; recovery?: TransportRecovery }> {
   if (runnerPoisoned && body.command !== 'status') {
     throw new Error(
@@ -2089,6 +2089,7 @@ async function postCommandWithRecovery(
   const commandId = generateCommandId();
   lastRunnerCommand = typeof body.command === 'string' ? body.command : String(body.command);
   const timeoutMs = commandTimeoutMs(body.command);
+  const authorizedBefore = qaContext?.authorizations ?? 0;
   try {
     return {
       resp: await sendCommandOnce(
@@ -2107,6 +2108,14 @@ async function postCommandWithRecovery(
     if (!isAmbiguousTransportFailure(message)) throw err;
     const probe = await probeCommandStatus(state.port, commandId, qaTiming);
     if (qaRecovery) qaRecovery.probeState = probe?.state;
+    // An authorised tap with no usable reply whose journal could not say whether it ran.
+    if (
+      qaRecovery &&
+      body.command === 'tap' &&
+      (qaContext?.authorizations ?? 0) > authorizedBefore &&
+      (!probe || probe.state === 'unknown')
+    )
+      qaRecovery.sendUnresolved = true;
     const decision = decideRecovery(probe, body.command);
     if (decision.action === 'return-recovered') {
       return {
@@ -2981,7 +2990,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
 
   let resp: RunnerResponse;
   let recovery: TransportRecovery | undefined;
-  const qaRecovery: { probeState?: ProbeState } = {};
+  const qaRecovery: { probeState?: ProbeState; sendUnresolved?: true } = {};
   const diagnoseRefusal = <T>(
     stage: 'dispatch-error' | 'native-response',
     operation: () => T,
@@ -3003,6 +3012,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
             ...(nativeCode ? { nativeCode } : {}),
             probeState: qaRecovery.probeState,
             recovery: recovery?.outcome,
+            sendUnresolved: qaRecovery.sendUnresolved,
           }),
           operation,
         )

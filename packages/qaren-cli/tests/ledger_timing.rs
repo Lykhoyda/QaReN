@@ -517,3 +517,58 @@ fn first_counted_is_preserved_without_later_proven_app_evidence() {
         assert_eq!(parsed.first_counted().unwrap().at_ms, 101_000);
     }
 }
+
+#[test]
+fn press_guard_row_fields_round_trip_and_an_invalid_one_is_dropped_alone() {
+    let row = |extra: serde_json::Value| {
+        let mut row = json!({"block":"qa","line":1,"attempt":1,"kind":"step","resolvedBy":"exact","t":120,"outcome":"pass"});
+        row.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        row
+    };
+    let read = |extra: serde_json::Value| {
+        let parsed: Ledger = serde_json::from_value(ledger(
+            json!([row(extra)]),
+            json!({"walkMs":120,"steps":1,"passed":1,"failed":0}),
+        ))
+        .expect("a row with an invalid press guard field is kept");
+        assert_eq!(parsed.steps.len(), 1);
+        serde_json::to_value(&parsed.steps[0]).unwrap()
+    };
+    let words = json!({"expired":1,"no-identity":2,"absent":3,"ambiguous":4,"exception":5,
+        "deadline":6,"read-failed":7,"unreported":8});
+    let both = json!({"inconclusivePresses":words,"pressOutcomeUnknown":2});
+    assert_eq!(read(both.clone()), row(both));
+
+    for invalid in [
+        json!({"sideways":1}),
+        json!({"deadline":1,"sideways":1}),
+        json!({"deadline":0}),
+        json!({"deadline":-1}),
+        json!({"deadline":1.5}),
+        json!({}),
+        json!(["deadline"]),
+        json!("deadline"),
+    ] {
+        assert_eq!(
+            read(json!({"inconclusivePresses":invalid,"pressOutcomeUnknown":1})),
+            row(json!({"pressOutcomeUnknown":1})),
+            "{invalid}"
+        );
+    }
+    for invalid in [
+        json!(0),
+        json!(-1),
+        json!(1.5),
+        json!("1"),
+        json!(4_294_967_296u64),
+    ] {
+        assert_eq!(
+            read(json!({"inconclusivePresses":{"deadline":1},"pressOutcomeUnknown":invalid})),
+            row(json!({"inconclusivePresses":{"deadline":1}})),
+            "{invalid}"
+        );
+    }
+    assert_eq!(read(json!({})), row(json!({})));
+}

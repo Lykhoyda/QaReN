@@ -249,6 +249,7 @@ struct DataPayload: Codable {
   let verifyStable: Bool?
   let textEntryRoute: String?
   let occlusionCheck: String?
+  var liveCheckReason: String? = nil
   var appProcessIdentifier: Int? = nil
   var tappedLabel: String? = nil
   var tappedRect: SnapshotRect? = nil

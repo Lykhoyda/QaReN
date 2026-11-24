@@ -5,7 +5,7 @@ import type {
   GroundProof,
   ScrollBandReceipt,
 } from './resolve.js';
-import type { OverlayHitReceipt } from './live-hit.js';
+import type { LiveCheckReason, OverlayHitReceipt } from './live-hit.js';
 import type { PressEvidence } from './selection-press.js';
 import type { MediaLatch, WithholdCause } from './privacy.js';
 import type { Item } from './plan.js';
@@ -90,6 +90,10 @@ export interface LedgerRow {
   candidateExclusions?: CandidateExclusion[];
   // What covered the target's centre before the tap.
   coveredBy?: CoveredBy;
+  // iOS taps of this row sent after their live check gave no answer, counted per reason.
+  inconclusivePresses?: Partial<Record<LiveCheckReason, number>>;
+  // Authorised taps of this row whose reply was lost and whose journal answered unknown or was unreadable.
+  pressOutcomeUnknown?: number;
 }
 
 export interface InterruptionReceipt {
