@@ -2446,4 +2446,210 @@ mod tests {
             "{default}"
         );
     }
+
+    fn press_guard_ledger(verdict: &str, steps: serde_json::Value) -> Ledger {
+        serde_json::from_value(serde_json::json!({
+            "verdict": verdict, "path": "walk", "blocks": [], "steps": steps,
+            "jev": { "calls": 0, "medianMs": 0 },
+            "llmTurns": 0, "escapes": 0, "recoveries": 0,
+        }))
+        .unwrap()
+    }
+
+    fn press_guard_input(ledger: &Ledger) -> ReportInput<'_> {
+        ReportInput {
+            installed_app: None,
+            video: None,
+            run_id: "check-test",
+            platform: "ios",
+            app_id: "com.example",
+            device: "test-device",
+            ledger,
+        }
+    }
+
+    fn press_guard_comment(ledger: &Ledger) -> String {
+        render_pr_comment(
+            &press_guard_input(ledger),
+            None,
+            &PrRun {
+                tested_sha: "abcdef1234567",
+                tested_older_commit: false,
+                video: &VideoStatus::Available,
+                video_continuity: &[],
+                screenshot: None,
+                plan_sha256: "plan-hash",
+                video_publication: &VideoPublication::Eligible,
+            },
+            &MachineIdentity::default(),
+        )
+    }
+
+    #[test]
+    fn press_guard_evidence_is_summed_per_operation_and_reported_beside_any_verdict() {
+        let row = |block: &str,
+                   id: Option<u64>,
+                   line: u64,
+                   attempt: u64,
+                   outcome: &str,
+                   extra: serde_json::Value| {
+            let mut row = serde_json::json!({"block": block, "line": line, "attempt": attempt,
+                "kind": "step", "resolvedBy": "exact", "t": 0, "outcome": outcome,
+                "text": format!("{line}. Tap \"go\"")});
+            if let Some(id) = id {
+                row["operationId"] = id.into();
+            }
+            row.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            row
+        };
+        let ledger = press_guard_ledger(
+            "PASS",
+            serde_json::json!([
+                row(
+                    "login",
+                    Some(2),
+                    1,
+                    1,
+                    "retry",
+                    serde_json::json!({"inconclusivePresses": {"deadline": 1}})
+                ),
+                row(
+                    "login",
+                    Some(2),
+                    1,
+                    2,
+                    "pass",
+                    serde_json::json!({"inconclusivePresses": {"deadline": 1, "read-failed": 1}})
+                ),
+                row(
+                    "qa",
+                    Some(5),
+                    1,
+                    1,
+                    "pass",
+                    serde_json::json!({"inconclusivePresses": {"ambiguous": 1}})
+                ),
+                row(
+                    "qa",
+                    None,
+                    3,
+                    1,
+                    "fail",
+                    serde_json::json!({"pressOutcomeUnknown": 1})
+                ),
+                row(
+                    "qa",
+                    None,
+                    3,
+                    2,
+                    "pass",
+                    serde_json::json!({"pressOutcomeUnknown": 2, "inconclusivePresses": {"unreported": 1}})
+                ),
+            ]),
+        );
+        let summary = summarize(&ledger);
+        use crate::core::LiveCheckReason::{Ambiguous, Deadline, ReadFailed, Unreported};
+        let entry =
+            |operation_id: u64, line: u64, counts: &[(crate::core::LiveCheckReason, u64)]| {
+                InconclusivePresses {
+                    operation_id,
+                    line,
+                    counts: counts.iter().copied().collect(),
+                }
+            };
+        assert_eq!(
+            summary.inconclusive_presses,
+            vec![
+                entry(2, 1, &[(Deadline, 2), (ReadFailed, 1)]),
+                entry(5, 1, &[(Ambiguous, 1)]),
+                entry(0, 3, &[(Unreported, 1)]),
+            ]
+        );
+        assert_eq!(
+            summary.press_outcome_unknown,
+            vec![
+                PressOutcomeUnknown {
+                    operation_id: 0,
+                    line: 3,
+                    count: 1
+                },
+                PressOutcomeUnknown {
+                    operation_id: 0,
+                    line: 3,
+                    count: 2
+                },
+            ]
+        );
+        let encoded = serde_json::to_value(&summary).unwrap();
+        assert!(encoded["press_outcome_unknown"][0]
+            .get("operation_id")
+            .is_none());
+        assert_eq!(encoded["inconclusive_presses"][0]["operation_id"], 2);
+        assert_eq!(summary.verdict_label(), "PASS");
+
+        let report = render(&press_guard_input(&ledger));
+        let comment = press_guard_comment(&ledger);
+        let note = " · 5 presses sent after an inconclusive live check · outcome unknown for 3 press commands";
+        assert!(
+            report.starts_with(&format!("# QaReN check: PASS{note}\n")),
+            "{report}"
+        );
+        for body in [&report, &comment] {
+            assert!(body.contains(note), "{body}");
+            for line in [
+                "- ✗ line 1: 1. Tap \"go\"; sent after an inconclusive live check (deadline 1)\n",
+                "- ✓ line 1: 1. Tap \"go\" (attempt 2); sent after an inconclusive live check (deadline 1, read-failed 1)\n",
+                "- ✓ line 1: 1. Tap \"go\"; sent after an inconclusive live check (ambiguous 1)\n",
+                "- ✗ line 3: 3. Tap \"go\"; no usable reply for 1 press command: outcome unknown\n",
+                "- ✓ line 3: 3. Tap \"go\" (attempt 2); sent after an inconclusive live check (unreported 1); no usable reply for 2 press commands: outcome unknown\n",
+            ] {
+                assert!(body.contains(line), "{line}\n{body}");
+            }
+        }
+        assert!(report.contains("- Presses sent after an inconclusive live check: 5 (ambiguous 1, deadline 2, read-failed 1, unreported 1). The iOS runner could not confirm the target just before these taps. This is a count, not a finding about which element was tapped.\n"), "{report}");
+        assert!(report.contains("- Press commands with no usable reply: 3. The journal answered \"unknown\" or its status could not be read. Whether the target gesture ran is unknown.\n"), "{report}");
+
+        let one = press_guard_ledger(
+            "FAIL",
+            serde_json::json!([row(
+                "qa",
+                Some(1),
+                2,
+                1,
+                "fail",
+                serde_json::json!({"inconclusivePresses": {"deadline": 1}, "pressOutcomeUnknown": 1})
+            )]),
+        );
+        assert!(render(&press_guard_input(&one)).starts_with(
+            "# QaReN check: FAIL · 1 press sent after an inconclusive live check · outcome unknown for 1 press command\n"
+        ));
+    }
+
+    #[test]
+    fn a_run_without_press_guard_evidence_has_no_key_and_no_note() {
+        let ledger = press_guard_ledger(
+            "PASS",
+            serde_json::json!([{"block": "qa", "operationId": 1, "line": 1, "attempt": 1, "kind": "step",
+                "resolvedBy": "exact", "t": 0, "outcome": "pass", "text": "1. Tap \"go\""}]),
+        );
+        let summary = summarize(&ledger);
+        let encoded = serde_json::to_value(&summary).unwrap();
+        assert!(encoded.get("inconclusive_presses").is_none());
+        assert!(encoded.get("press_outcome_unknown").is_none());
+        assert_eq!(summary.verdict_label(), "PASS");
+        let report = render(&press_guard_input(&ledger));
+        let comment = press_guard_comment(&ledger);
+        assert!(report.starts_with("# QaReN check: PASS\n"), "{report}");
+        for body in [&report, &comment] {
+            assert!(!body.contains("inconclusive live check"), "{body}");
+            assert!(!body.contains("outcome unknown"), "{body}");
+            assert!(!body.contains("no usable reply"), "{body}");
+        }
+
+        let parsed: LedgerSummary = serde_json::from_value(encoded).unwrap();
+        assert!(parsed.inconclusive_presses.is_empty());
+        assert!(parsed.press_outcome_unknown.is_empty());
+    }
 }

@@ -3311,3 +3311,57 @@ for (const result of ['hittable', 'not-hittable'] as const) {
     );
   });
 }
+
+test('presses sent after an unavailable live check are counted per word on kept and streamed rows', async () => {
+  const streamed: LedgerRow[] = [];
+  const f = fake([at(400), at(400), at(400), done()], {
+    press: [
+      { ok: true, proven: false, liveCheck: 'deadline' },
+      { ok: true, proven: false, liveCheck: 'ambiguous' },
+    ],
+  });
+  f.deps.row = (row) => void streamed.push(row);
+  const outcome = await walkBlock(block('1. Tap "go"\n✓ "Done"\n'), { ...f.deps, platform: 'ios' });
+  for (const rows of [outcome.rows, streamed]) {
+    assert.deepEqual(
+      rows.map((row) => [row.line, row.outcome, row.inconclusivePresses, row.pressOutcomeUnknown]),
+      [
+        [1, 'retry', { deadline: 1 }, undefined],
+        [1, 'pass', { ambiguous: 1 }, undefined],
+        [2, 'pass', undefined, undefined],
+      ],
+    );
+  }
+});
+
+for (const [name, authorize, sendUnresolved, expected] of [
+  ['an authorised press with an unresolved send', true, true, 1],
+  ['the same fact without an authorisation', false, true, undefined],
+  ['the same refusal without the fact', true, false, undefined],
+] as const) {
+  test(`press outcome unknown is counted only for ${name}`, async () => {
+    const streamed: LedgerRow[] = [];
+    const f = fake([at(400)], {});
+    f.deps.row = (row) => void streamed.push(row);
+    f.deps.press = async (_ref, context) => {
+      if (authorize) context.authorize();
+      return context.diagnoseRefusal(
+        () => ({
+          stage: 'dispatch-error',
+          mutating: true,
+          probeState: 'unknown',
+          ...(sendUnresolved ? { sendUnresolved: true } : {}),
+        }),
+        () => context.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed'),
+      );
+    };
+    const outcome = await walkBlock(block('1. Tap "go"\n'), { ...f.deps, platform: 'ios' });
+    assert.equal(outcome.block.outcome, 'fail');
+    for (const rows of [outcome.rows, streamed]) {
+      assert.deepEqual(
+        rows.map((row) => [row.outcome, row.pressOutcomeUnknown, row.inconclusivePresses]),
+        [['fail', expected, undefined]],
+      );
+    }
+  });
+}

@@ -2,6 +2,7 @@
 
 pub mod canary;
 pub mod host;
+pub mod press_guard;
 
 use qaren::candidate::Candidate;
 use qaren::exec::{CmdOutput, MockRunner};
