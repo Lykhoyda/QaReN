@@ -165,17 +165,20 @@ impl<'a> Ctx<'a> {
             ) {
                 format!("{cleanup}; then {}", failure.next_action)
             } else {
-                let remedy = self
-                    .notes
-                    .iter()
-                    .rev()
-                    .find(|(key, _)| {
-                        key == "build_failure_next_action"
-                            && failure.code == FailureCode::BuildFailed
-                    })
-                    .map(|(_, value)| format!("; only after cleanup completes: {value}"))
-                    .unwrap_or_default();
-                format!("{cleanup}{remedy}")
+                let limit = failure.limit.as_deref().map(LimitFacts::remedy);
+                match limit.as_deref().or_else(|| {
+                    self.notes
+                        .iter()
+                        .rev()
+                        .find(|(key, _)| {
+                            key == "build_failure_next_action"
+                                && failure.code == FailureCode::BuildFailed
+                        })
+                        .map(|(_, value)| value.as_str())
+                }) {
+                    Some(remedy) => format!("{cleanup}; only after cleanup completes: {remedy}"),
+                    None => cleanup,
+                }
             };
             failure.next_action = crate::redact::OutputText::from_output(&next);
         }
@@ -4019,7 +4022,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     let t = ctx.mark("app_launch", t);
 
     enter_substage(ctx, Some("ready_probes"));
-    wait_ready_until(ctx, deadline, Some(watch))?;
+    wait_ready_until(ctx, deadline, Some(watch), None)?;
     ctx.mark("ready_probes", t);
     enter_substage(ctx, None);
     Ok(())
@@ -6174,9 +6177,27 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
     wait_ready(ctx)
 }
 
+// expo run:android builds, installs and starts the app: past its limit the wait goes on while the output count grows.
 pub(crate) fn wait_ready(ctx: &mut Ctx) -> Result<(), Failure> {
-    let deadline = ctx.runner.monotonic_ms() + ctx.record.scenario.deadlines.build_seconds * 1000;
-    wait_ready_until(ctx, deadline, None)
+    let log = ctx.record.resources.metro.as_ref().expect("metro spawned").log.clone();
+    let baseline = ctx.runner.log_lines(&log);
+    let start_ms = ctx.runner.monotonic_ms();
+    let limit_s = ctx.record.scenario.deadlines.build_seconds;
+    let progress = ReadyProgress::new(start_ms, limit_s, baseline);
+    let window_s = progress.window_ms / 1000;
+    wait_ready_until(ctx, progress.hard_ms(), None, Some(progress))?;
+    let waited_ms = ctx.runner.monotonic_ms().saturating_sub(start_ms);
+    ctx.timings.push(("expo_run_android".into(), waited_ms));
+    if waited_ms > limit_s.saturating_mul(1000) {
+        ctx.notes.push((
+            "build_limit".into(),
+            format!(
+                "limit {limit_s} s; readiness was confirmed after {} s; window {window_s} s",
+                waited_ms / 1000
+            ),
+        ));
+    }
+    Ok(())
 }
 
 const READY_TICK: Duration = Duration::from_secs(5);
@@ -6194,6 +6215,151 @@ struct AppWatch {
     downs: u32,
 }
 
+// The time rule of the expo run:android wait; every time is monotonic ms.
+struct ReadyProgress {
+    start_ms: u64,
+    limit_ms: u64,
+    idle_ms: u64,
+    window_ms: u64,
+    last_count: u64,
+    last_growth_ms: u64,
+}
+
+// One turn's observations. probed false: the turn's clock sample, at_ms, was after the window
+// and it issued no probe. probed true: the probes returned pending at at_ms. count is what the
+// count read returned, read_ms the clock after it.
+struct Turn {
+    probed: bool,
+    at_ms: u64,
+    count: Option<u64>,
+    read_ms: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    Sleep(u64),
+    Cut {
+        ended_by: LimitEnd,
+        elapsed_ms: u64,
+        age_ms: u64,
+    },
+}
+
+impl ReadyProgress {
+    fn new(start_ms: u64, limit_s: u64, baseline: Option<u64>) -> Self {
+        ReadyProgress {
+            start_ms,
+            limit_ms: limit_s.saturating_mul(1000),
+            idle_ms: build_idle_seconds(limit_s).saturating_mul(1000),
+            window_ms: build_ceiling_seconds(limit_s).saturating_mul(1000),
+            last_count: baseline.unwrap_or(0),
+            last_growth_ms: start_ms,
+        }
+    }
+
+    fn hard_ms(&self) -> u64 {
+        self.start_ms.saturating_add(self.window_ms)
+    }
+
+    // A turn issues probes only when its clock sample is within the window.
+    fn admits(&self, turn_start_ms: u64) -> bool {
+        turn_start_ms <= self.hard_ms()
+    }
+
+    fn decide(&mut self, turn: Turn) -> Step {
+        // Growth is dated at the read's return, the earliest clock reading not before it; a
+        // smaller number is a new baseline, as in the finite build's loop.
+        let count = turn.count.unwrap_or(self.last_count);
+        let grew = count > self.last_count;
+        if grew {
+            self.last_growth_ms = turn.read_ms;
+        }
+        self.last_count = count;
+        let at = turn.at_ms;
+        let limit_at = self.start_ms.saturating_add(self.limit_ms);
+        // The reason is chosen on at; the facts are reported at the read's return.
+        let cut = |ended_by| Step::Cut {
+            ended_by,
+            elapsed_ms: turn.read_ms.saturating_sub(self.start_ms),
+            age_ms: turn.read_ms.saturating_sub(self.last_growth_ms),
+        };
+        if !turn.probed || at >= self.hard_ms() {
+            return cut(LimitEnd::Window);
+        }
+        let idle_due = limit_at.max(self.last_growth_ms.saturating_add(self.idle_ms));
+        if !grew && at >= idle_due {
+            return cut(LimitEnd::NoProgress);
+        }
+        let due = self.hard_ms().min(idle_due);
+        Step::Sleep((READY_TICK.as_millis() as u64).min(due.saturating_sub(turn.read_ms)))
+    }
+}
+
+// Reads the count after a turn's last observation and returns the sleep, or the cut as a failure.
+fn progress_turn(
+    ctx: &mut Ctx,
+    progress: &mut ReadyProgress,
+    probed: bool,
+    at_ms: u64,
+    log: &Path,
+) -> Result<Duration, Failure> {
+    let count = ctx.runner.log_lines(log);
+    let read_ms = ctx.runner.monotonic_ms();
+    match progress.decide(Turn {
+        probed,
+        at_ms,
+        count,
+        read_ms,
+    }) {
+        Step::Sleep(ms) => Ok(Duration::from_millis(ms)),
+        Step::Cut {
+            ended_by,
+            elapsed_ms,
+            age_ms,
+        } => Err(ready_cut(progress, ended_by, elapsed_ms, age_ms, log)),
+    }
+}
+
+fn ready_cut(
+    progress: &ReadyProgress,
+    ended_by: LimitEnd,
+    elapsed_ms: u64,
+    age_ms: u64,
+    log: &Path,
+) -> Failure {
+    let (limit_s, window_s) = (progress.limit_ms / 1000, progress.window_ms / 1000);
+    let (elapsed, age) = (elapsed_ms / 1000, age_ms / 1000);
+    let facts = LimitFacts {
+        phase: "expo_run_android".into(),
+        setting: "deadlines.build_seconds".into(),
+        limit_s,
+        window_s,
+        idle_s: Some(progress.idle_ms / 1000),
+        elapsed_s: elapsed,
+        ended_by,
+        last_progress_age_s: Some(age),
+        next_limit_s: match ended_by {
+            LimitEnd::Window => (window_s < BUILD_CEILING_S).then_some(window_s),
+            LimitEnd::NoProgress | LimitEnd::CommandLimit => Some(limit_s),
+        },
+        learned: false,
+    };
+    let detail = match ended_by {
+        LimitEnd::NoProgress => format!(
+            "QaReN stopped waiting for expo run:android after {elapsed} s. The {limit_s} s limit was reached and the wait observed no increase in the output count for {age} s. QaReN sent no signal to the process; run this run's cleanup to retire its recorded group; see {}",
+            log.display()
+        ),
+        LimitEnd::Window | LimitEnd::CommandLimit => format!(
+            "QaReN stopped waiting for expo run:android after {elapsed} s: the wait reached the end of its window of {window_s} s; the age since the last observed count increase, or since wait entry if none was observed, was {age} s; QaReN sent no signal to the process; run this run's cleanup to retire its recorded group; see {}",
+            log.display()
+        ),
+    };
+    let remedy = facts.remedy();
+    Failure::new("build", FailureCode::ReadyDeadlineExceeded, detail, remedy)
+        .with_log(log)
+        .with_limit(facts)
+}
+
 enum Readiness {
     Ready(Option<u32>),
     // The watched app is alive but Metro is not ready yet.
@@ -6206,6 +6372,7 @@ fn wait_ready_until(
     ctx: &mut Ctx,
     deadline: u64,
     mut watch: Option<AppWatch>,
+    mut progress: Option<ReadyProgress>,
 ) -> Result<(), Failure> {
     let metro_resource = ctx.record.resources.metro.clone().expect("metro spawned");
     let identity = metro_resource.identity.clone().expect("identity captured");
@@ -6232,6 +6399,12 @@ fn wait_ready_until(
             }
         }
         ensure_running(ctx.runner, "build")?;
+        if let Some(progress) = progress.as_mut() {
+            let turn_ms = ctx.runner.monotonic_ms();
+            if !progress.admits(turn_ms) {
+                progress_turn(ctx, progress, false, turn_ms, &metro_resource.log)?;
+            }
+        }
         if probe_pid_identity(ctx.runner, &identity) == PidLiveness::Dead {
             return Err(Failure::new(
                 "build",
@@ -6303,6 +6476,14 @@ fn wait_ready_until(
                 }
             }
             Readiness::Pending => {}
+        }
+        if let Some(progress) = progress.as_mut() {
+            let at_ms = ctx.runner.monotonic_ms();
+            let sleep = progress_turn(ctx, progress, true, at_ms, &metro_resource.log)?;
+            if !sleep.is_zero() {
+                ctx.runner.sleep(sleep);
+            }
+            continue;
         }
         if ctx.runner.monotonic_ms() >= deadline {
             return Err(Failure::new(

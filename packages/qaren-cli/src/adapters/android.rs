@@ -47,6 +47,7 @@ fn ssh_base(host: &str, args: &[String], label: &str, timeout_seconds: u64) -> C
     full.extend(args.iter().cloned());
     CmdSpec {
         core_log: false,
+        count_lines: false,
         label: label.to_string(),
         program: "ssh".to_string(),
         args: full,
@@ -103,6 +104,7 @@ pub fn farm_stop_spec(host: &str, farm_path: &str, slot: u8) -> CmdSpec {
 pub fn tunnel_spec(host: &str, adb_port: u16) -> CmdSpec {
     CmdSpec {
         core_log: false,
+        count_lines: false,
         label: "ssh-tunnel".to_string(),
         program: "ssh".to_string(),
         args: vec![
@@ -1253,7 +1255,7 @@ pub fn build_spec(
     .env("EXPO_NO_TELEMETRY", "1")
     .env("ANDROID_SERIAL", serial)
     .env("ADB_SERVER_SOCKET", &server_socket(server_port));
-    with_gradle_opts(spec, gradle_opts)
+    with_gradle_opts(spec, gradle_opts).count_lines()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

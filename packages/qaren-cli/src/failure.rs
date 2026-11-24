@@ -264,6 +264,7 @@ impl LimitFacts {
             (LimitEnd::Window, Some(next)) => {
                 format!("set deadlines.build_seconds to {next}, then run again")
             }
+            (LimitEnd::Window, None) if self.phase == "expo_run_android" => "the window was already 7200 s and a higher deadlines.build_seconds cannot extend it: readiness was not confirmed within two hours on this machine; after cleanup, read the last lines of the build log for the step it stood on (when the log is withheld, run `pnpm exec expo run:android` in the project yourself), fix that, then run again".into(),
             (LimitEnd::Window, None) => "the build window was already 7200 s, so no setting helps: build the app with the project's own tools and hand QaReN the built app".into(),
             _ => "run again".into(),
         }
