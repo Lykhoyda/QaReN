@@ -1269,6 +1269,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
                     relaunchFailure = 'the walk budget ended during the restart';
                     // The builder receives attachTimeout itself and matches the decision by its error.
                     startDecided = { error: attachTimeout, counts: kept };
+                    throw relaunchError;
                   }
                   if (isAbort(relaunchError)) throw relaunchError;
                   relaunchFailure =
