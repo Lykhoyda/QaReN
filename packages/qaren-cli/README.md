@@ -859,13 +859,14 @@ The receipt's `outcomes` gains these keys:
   carries `unavailable(recording started; the run ended before it was finalized; the raw capture is kept in media/)`.
 - `video_file`: `media/video-published.mp4`, only when the status is `available`
   and that file exists.
-- `video_policy_verdict`: present only with `video_file`. It is the declared
-  [video policy](#video-publication)'s privacy verdict for that file alone
+- `video_policy_verdict`: present only with `video_file`. It is the effective
+  [media policy](#video-publication)'s privacy verdict for that file alone
   (`eligible`, or a withheld value with its reason and `keep this file local`),
   not permission from `qaren publish`.
 - `video_next_step`: when there is no video, what to change: shorten or split the
-  plan, install ffmpeg and ffprobe, declare `video: non-strict` for runs with
-  runtime inputs, use an API 34+ emulator, or rerun with `--record`.
+  plan, install ffmpeg and ffprobe, record runs with runtime inputs (this requires non-strict rules, a TEST-PII-only
+  inventory, and private output mode off; a standard run uses non-strict rules with
+  no video key or with video: non-strict; keep real secrets classified as SECRET), use an API 34+ emulator, or rerun with `--record`.
 
 The stderr summary prints the `video:` and `video file:` lines. Recording adds a
 recorder process and an encode and trim after the walk (each ffmpeg step is
@@ -2015,7 +2016,7 @@ value. Apart from that one replacement recovery and the ladder step below, faile
 keyboard typing is not retried. Before the pre-focus comparison, fallback tap or
 no-target typing dispatch, the value is protected under the
 [shared masking rules](#input-value-masking), and screenshots follow the
-[declared policy](#video-publication). For block persistence after fallback, see [Saved blocks](#saved-blocks).
+[effective media policy](#video-publication). For block persistence after fallback, see [Saved blocks](#saved-blocks).
 Eligibility is owned
 by the [resolver](../qaren-core/src/qa/resolve.ts), exact identity counting by
 the [shared identity model](../qaren-core/src/qa/identity.ts), and both are
@@ -2638,8 +2639,8 @@ cause, including streamed rows retained after an interrupted walk.
 `mediaWithheld.screenshots` holds the
 first `reason`, optional `kind` or `source`, `line` and withheld screenshot `count`.
 `mediaWithheld.video` holds the publication-window cause and line, without a
-count: the strict privacy cause for strict or undeclared runs, or the protected
-cause for non-strict runs. In non-strict mode, a later protected cause replaces
+count: the strict privacy cause for strict runs, or the protected
+cause for non-strict runs (including runs without a video key). In non-strict mode, a later protected cause replaces
 an earlier `runtime-input` or `echo` with source `input`, including its observation
 line. A successful pre-plan login resets the video window and, in non-strict mode,
 the screenshot cause and count; a retained cause then uses the new window's
@@ -2655,7 +2656,8 @@ These cases and any refusal before admission report
 which withholds video in either mode.
 When a privacy cause is recorded, the receipt includes one
 `media_withheld=<code>[/<kind|source>]@line <N>` note,
-preferring the video cause in non-strict mode and the screenshot cause otherwise.
+preferring the video cause in non-strict mode (also when the config has no video key) and the screenshot cause otherwise.
+For a run that declares video: strict outside installed-app mode, QaReN checks the first recorded screenshot cause, falling back to the video cause when there is no screenshot entry. If that cause is generic-value and the non-strict video verdict is eligible, the receipt hint MEDIA_WITHHELD_GENERIC_VALUE and the local report give the line, cause and next step.
 `report.md` marks each row with a recorded privacy cause and explains
 the first screenshot cause and line. Line 0 means privacy latched before the walk.
 
@@ -2663,15 +2665,15 @@ the first screenshot cause and line. Line 0 means privacy latched before the wal
 | --- | --- | --- |
 | `secure-field` | A secure field was on screen, even empty. | Start a new run already signed in, without visiting the secure field. |
 | `input-value` | An editable field showed text, including an Android label or hint. | Avoid the screen or clear the field in the app's test data. |
-| `generic-value` | A non-input element exposes an accessibility value; `kind` names its native category. | Check whether the accessibility value carries data. |
+| `generic-value` | A non-input element exposes an accessibility value; `kind` names its native category. | Check whether the accessibility value carries data. This cause alone permits capture under non-strict rules. For a run that declares video: strict outside installed-app mode, the receipt hint and local report give a next step when the first recorded screenshot cause (or the video cause when there is no screenshot entry) is generic-value and the non-strict video verdict is eligible. |
 | `echo` | A value already treated as private reappeared as text; `source` names its provenance. | For `typed`, use a test value the app does not echo, including saved-login literals. `observed` means a value previously seen in a field or other value carrier. `secret`, `code`, `input` and `concealed` are expected privacy guards. |
 | `runtime-input` | The run holds runtime inputs. | Expected for input runs; see [reusable sign-in](#reusable-sign-in-example) for login inputs. |
 | `concealed-fill` | A filled field could not be read back. | For a clean media window, the field must be seen and then leave the screen before login completes; strict screenshots require a new run. |
 | `code-row` | One-character boxes showed a typed value. | Expected for code-entry screens. |
 
-In strict or undeclared mode, the first screenshot cause remains sticky for the run,
+In strict mode, the first screenshot cause remains sticky for the run,
 even after the field leaves the screen. Start a new run on a screen without private
-data or runtime inputs to obtain strict screenshots. In non-strict mode, screenshots
+data or runtime inputs to obtain strict screenshots. In non-strict mode, which is also the default without a video key, screenshots
 use the same protected-value gate and pre-plan login window as video; ordinary
 accessibility values and TEST-PII inputs do not alone withhold them. See
 [video publication](#video-publication). These diagnostics do
@@ -3047,9 +3049,9 @@ masked whole. Structural masking remains unioned with value-based fragment maski
 
 Opaque tokens preserve complete-value identity for model comparisons. An
 unobserved protected value or hidden input content cannot prove an assertion.
-In strict or undeclared mode, once sensitive input pixels, code rows or a protected
+In strict mode, once sensitive input pixels, code rows or a protected
 value's visible echo are observed, screenshots are withheld for the rest of the walk.
-Non-strict screenshots follow the [declared policy](#video-publication). See the
+Non-strict screenshots follow the [effective media policy](#video-publication). See the
 [structural privacy regression cases](../qaren-core/test/unit/qa/split-digit-privacy.test.ts)
 and [Saved blocks](#saved-blocks).
 
@@ -3567,13 +3569,13 @@ and types retain their original hash operands, even at the filled field, and a r
 does not mask them to a constant. SECRET matches win on equal or overlapping values; a
 TEST-PII alias cannot leave a SECRET value unmasked in a label hash. Repeated declarations
 across the plan and configured login block must agree before device selection. Input tiers have no
-config or global opt-in and no inferred environment policy; media eligibility follows the separate [declared policy](#video-publication). Any extra `QAREN_INPUT_` variable
+config or global opt-in and no inferred environment policy; media eligibility follows the separate [effective media policy](#video-publication). Any extra `QAREN_INPUT_` variable
 in the environment, even one the plan does not use, keeps logs withheld.
 In a TEST-PII run only `core.log`,
 failure screen text and Fill readback come back redacted by the declared values; Metro and
 other subprocess logs stay withheld as in a SECRET run. Declared-value redaction includes
 an e-mail's local part, plus-less local part, domain and
-percent- or HTML-encoded forms; screenshots and video follow the [declared policy](#video-publication). Derived e-mail forms
+percent- or HTML-encoded forms; screenshots and video follow the [effective media policy](#video-publication). Derived e-mail forms
 shorter than 3 characters (for example a 2-letter local part) are not redacted on their own,
 while the full address and every longer derived form always are. Core evidence and CLI
 logs also redact Unicode case variants, including length-changing mappings such as
@@ -3617,8 +3619,8 @@ secret despite artifact redaction.
   marker, preflight/subprocess output excerpts and command summaries are withheld, and
   native runner output tails are not retained. After an input is promoted to SECRET before
   typing, subsequent core log writes and failure screen text are withheld. A run that
-  requires inputs skips screenshots and recording unless `video: non-strict`
-  is declared and the run holds only TEST-PII inputs; detected SECRET causes still
+  requires inputs skips screenshots and recording unless non-strict rules apply (no video key, or
+  video: non-strict) and the run holds only TEST-PII inputs; detected SECRET causes still
   withhold screenshot and video publication.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
@@ -3672,7 +3674,7 @@ secret despite artifact redaction.
   verified by the same guard before hashing. This includes later account screens and inputs
   supplied by a configured login block that was never replayed. No echo declaration is
   required for this masking; screenshots and video follow the
-  [declared policy](#video-publication), and output redaction remains active.
+  [effective media policy](#video-publication), and output redaction remains active.
 - After a block's `Expect input NAME on screen` line, until the block ends, a label whose
   whole-value strict echoes are all of declared inputs hashes as the same constant marker; a
   label that also holds an undeclared input's value uses verified redaction instead. Every
@@ -3770,7 +3772,7 @@ Other recovery reasons retain their existing 1-based rungs.
 
 Runs and evidence live under `$QAREN_HOME/runs/<run-id>/` (`~/.qaren` by default).
 
-**Process logs.** Process logs in a run's `logs/` folder may contain private app or tool output, such as your app's own console lines in the Metro log. For failures that previously quoted the last lines of a process log, newly created failures record the log's location in `failure.log.file` instead; the displayed path passes through receipt redaction. On Unix, the CLI requests mode `0600` when it creates a subprocess capture file in `logs/`. The process umask can restrict it further. If a coding agent reads log lines into its context, those lines can reach its model. A credential printed by your app or an install script can reach your coding agent when it reads a log or a failed-install receipt. QaReN's capture and summary paths mask known values and common secret patterns or withhold output, but an unrecognized credential can pass through. A planned opt-in privacy mode will omit captured install output from new failed-install receipts and direct raw-log inspection to a person. This version has no privacy-mode switch. For the failing-step detail and walked-row reasons, the findings comment uses fixed summaries for recognized cases and an omission notice for other reasons. A recorded scroll warning takes precedence. A capture-refusal row can also show QaReN's reconstructed capture diagnostic. Local reports, receipts, watch and ledgers keep their existing rendering and redaction. QaReN does not edit a findings comment it has already posted. A run folder is a working folder, not something to share, and QaReN cannot control an upload step you write: uploading a run folder uploads these logs. Run folders made by earlier versions keep their logs, and a failed run's `run.json` may still hold up to 25 log lines under `failure.evidence` until this version next saves that record. Other failure text can contain tool output. For example, a failed dependency install can include the last lines of the captured command. QaReN withholds that summary when the process creating it has any `QAREN_INPUT_*` variable. A later `qaren status` can still display a summary saved by an earlier run.
+**Process logs.** Process logs in a run's `logs/` folder may contain private app or tool output, such as your app's own console lines in the Metro log. For failures that previously quoted the last lines of a process log, newly created failures record the log's location in `failure.log.file` instead; the displayed path passes through receipt redaction. On Unix, the CLI requests mode `0600` when it creates a subprocess capture file in `logs/`. The process umask can restrict it further. If a coding agent reads log lines into its context, those lines can reach its model. A credential printed by your app or an install script can reach your coding agent when it reads a log or a failed-install receipt. QaReN's capture and summary paths mask known values and common secret patterns or withhold output, but an unrecognized credential can pass through. A planned opt-in privacy mode will omit captured install output from new failed-install receipts and direct raw-log inspection to a person. This version has no switch for suppressing captured install output. For the failing-step detail and walked-row reasons, the findings comment uses fixed summaries for recognized cases and an omission notice for other reasons. A recorded scroll warning takes precedence. A capture-refusal row can also show QaReN's reconstructed capture diagnostic. Local reports, receipts, watch and ledgers keep their existing rendering and redaction. QaReN does not edit a findings comment it has already posted. A run folder is a working folder, not something to share, and QaReN cannot control an upload step you write: uploading a run folder uploads these logs. Run folders made by earlier versions keep their logs, and a failed run's `run.json` may still hold up to 25 log lines under `failure.evidence` until this version next saves that record. Other failure text can contain tool output. For example, a failed dependency install can include the last lines of the captured command. QaReN withholds that summary when the process creating it has any `QAREN_INPUT_*` variable. A later `qaren status` can still display a summary saved by an earlier run.
 
 A receipt that names `artifacts.run_dir` also carries a short form of this notice in `outcomes.raw_logs` when that run has a `logs/` folder; `qaren doctor` reports it as the `raw-logs` policy row.
 
@@ -5472,10 +5474,10 @@ video also carries a closed `videoReason` code (`not-recorded`,
 `other`) in the receipt and `pr.json`, keeping the detail text unchanged; a
 too-large recording is its own outcome, and unrecognized detail text in older
 `pr.json` files loads as `other`. `qaren publish` stores the reason it published
-in `publication.json` and the receipt's `publicationVideoReason`. When no video
-is attached, the receipt's `video_summary`, `report.md` and `qaren publish`
-repeat the PR comment's video sentence: the withholding reason when the video
-is not eligible, otherwise the unavailability reason. A kept video can also have
+in `publication.json` and the receipt's `publicationVideoReason`. For withheld video, QaReN reports the selected policy's withholding reason. For
+unavailable video, the local report and run receipt can include recorder detail.
+Newly rendered public text and the publish receipt use fixed wording for the
+closed reason, with structured continuity information when available. A kept video can also have
 a `video_summary` explaining recorded runner recovery. The local recording stays
 complete; `qaren publish` uploads only
 `media/video-published.mp4`, trimmed under the [video publication contract](#video-publication).
@@ -5539,7 +5541,7 @@ section between `<!-- qaren-proof:start -->` and `<!-- qaren-proof:end -->` line
 pull request description: the verdict, the tested commit, a link to the comment, and the
 video. The video is the asset the comment upload already produced, used only when the comment
 attached it under the [video publication rules](#video-publication); a withheld or missing
-video shows the comment's own video sentence and no URL. Publishing a new `qaren pr` run
+video shows the comment's own video sentence and no URL. A proof section without a video URL uses the current public wording. Publishing a new `qaren pr` run
 replaces an existing section instead of adding one; re-publishing a run whose section was
 already written leaves it unchanged. Text outside the markers is kept byte for byte relative to the body
 publish last read; publish makes up to three reads and writes only after two consecutive
@@ -5585,16 +5587,11 @@ failed lookup cannot prove publication; the verified push or fallback path
 remains available. Reconciliation neither rewrites history nor claims earlier
 content passed the current privacy gate.
 
-Each step is recorded in `publication.json`. Before retrying an attempted post,
-publication regenerates the QA report from the current verdict file and walk rows,
-or the saved-block report from blocks admitted by the current publication gate,
-applying current identity redaction. It adopts an existing comment only when its
-author is the authenticated GitHub user and its first-line marker matches the
-run ID and SHA-256 fingerprint of that rendered body, excluding the marker line
-and before attachment rewriting. QA reports and saved-block comments each use
-their own fingerprint, so a lost attachment-post result can be reconciled without
-duplicating the report. Without a matching comment it writes `comment.md` or
-`blocks-comment.md` and posts the regenerated body.
+Each step is recorded in `publication.json`. On retry, QaReN regenerates each body. It can adopt the authenticated publisher's
+QA comment using the current marker or the validated marker from the previous
+`comment.md`. A saved-block comment must match the body generated from the currently
+admitted blocks. If no marker matches, QaReN posts the regenerated body. An
+already-posted comment retains its original wording.
 Cached bodies are not reused. Already-posted comments are neither edited nor deleted.
 
 Publication holds an exclusive file-descriptor lock on `publish.lock`; a
@@ -5604,25 +5601,25 @@ contention.
 
 ### Video publication
 
-Declare the video policy in the selected app config (`--config <path>` selects another file); screenshots use the same setting:
+Declare the video policy in the selected app config (`--config <path>` selects another file); screenshots use the same setting; without the key the run uses dev mode (non-strict rules):
 
 ```yaml
 video: non-strict
 ```
 
-- `strict`: today's privacy checks apply; clean walks can publish.
+- `strict`: privacy mode; today's privacy checks apply; clean walks can publish.
 - `non-strict`: use only when the app shows test data. Non-SECRET observations, literal fills and TEST-PII inputs can publish video and screenshots. Detected SECRET causes still withhold them: secure fields (including empty fields), fills into unreadable fields, concealed fills of protected values, code rows and echoes attributable to protected values. A readable, non-secure field whose native label may contain its value does not alone veto a PUBLIC or TEST-PII fill. A run holding SECRET runtime inputs also withholds video and screenshots, even if they are unused.
-- Absent: strict rules apply and doctor reminds you to declare a policy. Any other value, including null, refuses `SCENARIO_INVALID`.
+- Absent: dev mode, the default: non-strict rules apply, recorded as default-non-strict in the receipt, ledger.json and pr.json; doctor warns so the choice is visible. Runs recorded by earlier versions without a declaration keep their recorded undeclared policy and strict rules when published later. Any other value, including null, refuses SCENARIO_INVALID.
 
-The receipt, report and PR comment name the policy and the selected config: its app-relative path for files inside the invoking project, or its filename for external configs, with private values redacted. The path identifies the declaration, not the backend or dataset. Policy and eligibility are persisted with the run; `qaren publish` never re-reads the current app config. A missing or unknown eligibility verdict still withholds video. Saved-block publication retains strict rules; temporary tap-comparison screenshots follow the selected mode.
+The run receipt and local report name the selected config using the existing local redaction: its app-relative path for files inside the invoking project, or its filename for external configs, with private values redacted. The PR comment names the policy and refers to the selected app config. The optional proof section uses the same fixed reference when it gives legacy policy guidance. Both public bodies omit the config path. Policy and eligibility are persisted with the run; `qaren publish` never re-reads the current app config. A missing or unknown eligibility verdict still withholds video. Saved-block publication retains strict rules; temporary tap-comparison screenshots follow the selected mode.
 
-Feature artwork withheld solely for an ordinary accessibility value without a typed safe path (ANT-664) is eligible in non-strict mode and remains withheld in strict or undeclared mode. The [screenshot publication regression](tests/publish_flow.rs) covers this policy decision with synthetic artwork; it does not establish live device acceptance.
+Feature artwork withheld solely for an ordinary accessibility value without a typed safe path (ANT-664) is eligible in non-strict mode and remains withheld in strict mode and in runs recorded as undeclared by earlier versions. The [screenshot publication regression](tests/publish_flow.rs) covers this policy decision with synthetic artwork; it does not establish live device acceptance.
 
-The selected config declares the video mode. `qaren check --installed-app` forces
+The selected config can declare the video mode. `qaren check --installed-app` forces
 strict mode. `--record` turns on recording for a standard check and uses the
 configured video mode.
 
-Both policies mask SECRET runtime inputs in text output and apply the same readback restrictions to those inputs. When a capture contains a secure field, QaReN leaves its screen element's value unset, uses the private values it has learned to mask matching text in output, skips the row screenshot and withholds video publication for that window. Strict rules withhold subsequent row screenshots for the rest of the run. Under non-strict rules, a successful login replay before the first passing plan row restarts the screenshot window from the latest capture. A local recording can contain the screen, including content shown between captures. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in published media. QaReN does not mask media regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
+Both policies mask SECRET runtime inputs in text output and apply the same readback restrictions to those inputs. When a capture contains a secure field, QaReN leaves its screen element's value unset, uses the private values it has learned to mask matching text in output, skips the row screenshot and withholds video publication for that window. Strict rules withhold subsequent row screenshots for the rest of the run. Under non-strict rules, a successful login replay before the first passing plan row restarts the screenshot window from the latest capture. A local recording can contain the screen, including content shown between captures. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict rules apply by default or by explicit declaration. Neither establishes that the app contains only test data: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in published media. QaReN does not mask media regions or identify the backend. Use a matching CLI and runtime. CLIs that predate the video key reject configs containing it. Removing the key returns to dev mode (non-strict); declare video: strict for privacy mode.
 
 For non-strict privacy withholding, the report and PR comment name the protected
 cause. They offer the `(test-pii)` hint when a SECRET input is observed in a readable,
@@ -5631,7 +5628,7 @@ window. Secure fields, code rows, protected concealed fills and handler-detected
 private fills suppress that hint, even when runtime-input classification came first.
 An unused SECRET input still withholds video without the hint.
 
-The following eligibility rules describe strict and undeclared runs. Both modes keep the same admission/login window, continuity, media validity and size limits.
+The following eligibility rules describe strict runs and runs recorded as undeclared by earlier versions. Both modes keep the same admission/login window, continuity, media validity and size limits.
 
 Video publication eligibility and a value-free withholding reason are persisted
 in `pr.json`. A plan containing any fill/type step keeps the recording local,
@@ -5715,7 +5712,7 @@ For an interrupted video, `pr.json` records the selected counted signal in
 evidence over an earlier unresolved runner or missing-process observation.
 It includes the owner, epoch time, offset from admission, offset from the start
 of the untrimmed recording and optional plan line. Its `videoWithholdingReason`
-follows the declared video policy, so screenshot privacy is not reported as the
+follows the effective media policy, so screenshot privacy is not reported as the
 cause when non-strict video is eligible. A kept video's report names the first
 retained runner recovery inside its publication window; the runner frames remain
 in the copy. Displayed offsets are measured after admission and mark observation
