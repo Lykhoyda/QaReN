@@ -9,6 +9,7 @@ mod host_numbers;
 mod installed_app;
 #[path = "run_flow/non_development_notice.rs"]
 mod non_development_notice;
+use common::seed_cached_apk;
 use common::IosBuildRunner as MockRunner;
 
 use qaren::core::Budgets;
@@ -4946,6 +4947,15 @@ fn script_android_launch(mock: &mut MockRunner, no_pid_ticks: usize) {
 }
 
 fn script_android_install_launch(mock: &mut MockRunner, no_pid_ticks: usize) {
+    script_android_install_launch_probe(mock, no_pid_ticks, Some(CmdOutput::success("")));
+}
+
+// `probe` answers Metro's request probe before the manifest request; `None` when none is issued.
+fn script_android_install_launch_probe(
+    mock: &mut MockRunner,
+    no_pid_ticks: usize,
+    probe: Option<CmdOutput>,
+) {
     mock.expect_run(
         "install -r -d",
         CmdOutput::success("Performing Streamed Install\nSuccess\n"),
@@ -4968,6 +4978,9 @@ fn script_android_install_launch(mock: &mut MockRunner, no_pid_ticks: usize) {
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    if let Some(probe) = probe {
+        mock.expect_run("qaren-request-probe", probe);
+    }
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("am start", CmdOutput::success("Starting: Intent"));
     for _ in 0..no_pid_ticks {
@@ -4995,9 +5008,13 @@ fn script_android_walk_release(mock: &mut MockRunner, runner_running: bool) {
 
 // The walk, then teardown up to the borrowed-emulator release.
 fn script_android_walk(mock: &mut MockRunner) {
+    script_android_walk_result(mock, &pass_stdout(), 0);
+}
+
+fn script_android_walk_result(mock: &mut MockRunner, stdout: &str, exit: i32) {
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_drift_status(mock);
-    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    mock.expect_spawn_piped("walk.js", 9000, stdout, Some(exit));
     script_core_identity(mock);
     script_drift_status(mock);
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
@@ -5514,40 +5531,6 @@ fn android_check_does_not_require_the_shared_configs_ios_workspace() {
 }
 
 // A native cache entry whose APK matches the worktree, so the run decides Reuse.
-fn seed_cached_apk(repo: &Path, app: &Path) -> std::path::PathBuf {
-    use qaren::buildplan::{
-        hash_artifact, save_json, state_path, ArtifactKind, CachedArtifact, NativeCacheState,
-        CACHE_SCHEMA,
-    };
-    let apk = repo.join("cached").join("app-debug.apk");
-    std::fs::create_dir_all(apk.parent().unwrap()).unwrap();
-    std::fs::write(&apk, b"cached apk").unwrap();
-    let mut fp_runner = qaren::exec::MockRunner::new();
-    fp_runner.expect_run("ls-files", CmdOutput::success(""));
-    let fp = qaren::fingerprint::compute(&mut fp_runner, repo, app, "android").unwrap();
-    save_json(
-        &state_path(repo, "android", "com.rndevagent.testapp"),
-        &NativeCacheState {
-            schema: CACHE_SCHEMA.to_string(),
-            fingerprint_parts: fp.parts.clone(),
-            platform: "android".to_string(),
-            app_id: "com.rndevagent.testapp".to_string(),
-            worktree_root: repo.canonicalize().unwrap(),
-            fingerprint: fp.value,
-            built_at: "2026-10-11T00:00:00Z".to_string(),
-            candidate_sha: "b".repeat(40),
-            lockfile_sha256: String::new(),
-            generated_native_dirs: Vec::new(),
-            artifact: Some(CachedArtifact {
-                path: apk.clone(),
-                sha256: hash_artifact(&apk).unwrap(),
-                kind: ArtifactKind::Apk,
-            }),
-        },
-    )
-    .unwrap();
-    apk
-}
 
 #[test]
 fn android_check_reuse_installs_the_cached_apk_by_serial() {
@@ -5625,6 +5608,13 @@ fn android_check_reuse_installs_the_cached_apk_by_serial() {
     assert!(request["payload"]["target"]
         .get("metroBundleRequests")
         .is_none());
+    assert_eq!(
+        receipt
+            .outcomes
+            .get("bundle_request_count")
+            .map(String::as_str),
+        Some("unavailable")
+    );
     let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
     assert_eq!(record.resources.adb_reverse_port, Some(8791));
     let install = record.resources.app_install.as_ref().unwrap();
@@ -13072,6 +13062,7 @@ fn script_android_pr_ready(mock: &mut MockRunner) {
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("am start", CmdOutput::success("Starting: Intent"));
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
@@ -15185,4 +15176,236 @@ fn a_masked_runner_code_publishes_the_omission_notice() {
         "{ledger}"
     );
     assert!(ledger.contains(RUNNER_SEEN), "{ledger}");
+}
+
+// A cached APK, an Android check request, and the preflight through the dependency install.
+fn android_reuse_check() -> (RunRequest, MockRunner) {
+    let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    (req, mock)
+}
+
+// Metro's count files as the drain writes them: the values before the launch, then raised by it.
+fn seed_android_counts(mock: &mut MockRunner, runs_root: &Path) {
+    let logs = runs_root.join(run_id()).join("logs");
+    mock.observe = Some(Box::new(move |spec| {
+        let (requests, outcomes) = match spec.label.as_str() {
+            "metro-manifest" => ("3\n", "5 7\n"),
+            "adb-am-start" => ("4\n", "6 8\n"),
+            _ => return,
+        };
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(logs.join("metro.bundle-requests"), requests).unwrap();
+        std::fs::write(logs.join("metro.bundle-outcomes"), outcomes).unwrap();
+    }));
+}
+
+#[test]
+fn android_check_passes_the_bundle_counts_read_before_the_launch() {
+    let (req, mut mock) = android_reuse_check();
+    seed_android_counts(&mut mock, &req.runs_root);
+    script_android_launch_walk_teardown(&mut mock);
+
+    let (receipt, _) = run_with_events(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    let request: serde_json::Value = serde_json::from_str(mock.piped_stdin_text(0).trim()).unwrap();
+    let counts = &request["payload"]["target"]["metroBundleRequests"];
+    assert_eq!(counts["atLaunch"], 3, "{counts}");
+    assert_eq!(counts["completedAtLaunch"], 5, "{counts}");
+    assert_eq!(counts["failedAtLaunch"], 7, "{counts}");
+    assert!(counts["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("/logs/metro.bundle-requests"));
+    assert!(counts["outcomesPath"]
+        .as_str()
+        .unwrap()
+        .ends_with("/logs/metro.bundle-outcomes"));
+    assert!(!receipt.outcomes.contains_key("bundle_request_count"));
+}
+
+#[test]
+fn android_request_probe_runs_only_with_fifteen_seconds_of_warm_up_left() {
+    for advance in [15_000, 16_000] {
+        let (req, mut mock) = android_reuse_check();
+        let config = std::fs::read_to_string(&req.config_path).unwrap();
+        std::fs::write(
+            &req.config_path,
+            format!("{config}\ndeadlines:\n  build_seconds: 30\n"),
+        )
+        .unwrap();
+        mock.advance_on = Some(("install -r -d".into(), advance));
+        script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+        script_android_install_launch_probe(
+            &mut mock,
+            0,
+            (advance == 15_000).then(|| CmdOutput {
+                timed_out: true,
+                duration_ms: 5_000,
+                ..Default::default()
+            }),
+        );
+        script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+        script_android_walk_release(&mut mock, false);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0);
+        let labels = labels(&mock);
+        let probes: Vec<_> = mock
+            .calls
+            .iter()
+            .filter(|c| c.label == "metro-request-probe")
+            .collect();
+        let warmup = &receipt.outcomes["manifest_warmup"];
+        if advance == 15_000 {
+            assert_eq!(probes.len(), 1);
+            assert_eq!(probes[0].timeout_seconds, 5);
+            assert!(
+                warmup.contains("request_probe_timed_out=true; request_probe_limit_ms=5000"),
+                "{warmup}"
+            );
+            assert!(
+                receipt.outcomes["metro-request-probe_attempt_1"].contains("timeout_seconds=5"),
+                "{:?}",
+                receipt.outcomes
+            );
+            assert_subsequence(
+                &labels,
+                &["metro-request-probe", "metro-manifest", "adb-am-start"],
+            );
+        } else {
+            assert!(probes.is_empty());
+            assert!(warmup.contains("request_probe_limit_ms=0"), "{warmup}");
+            assert_subsequence(&labels, &["metro-manifest", "adb-am-start"]);
+        }
+        assert!(!labels
+            .iter()
+            .any(|label| label.contains("watchman") || label.contains("volume")));
+    }
+}
+
+// An Android check whose core refuses at the admission, then the ordinary teardown.
+fn script_android_launch_refused(mock: &mut MockRunner, refusal: &serde_json::Value) {
+    script_android_launch(mock, 0);
+    script_android_app_tick(mock, CmdOutput::success("4242\n"));
+    script_android_walk_result(
+        mock,
+        &(envelope(2, "result", &refusal.to_string()) + "\n"),
+        4,
+    );
+    script_borrowed_release(mock, false);
+}
+
+fn android_refusal_run(
+    facts: &serde_json::Value,
+    private: Option<&str>,
+) -> (qaren::receipt::Receipt, String) {
+    let (req, mut mock) = android_reuse_check();
+    let refusal = serde_json::json!({
+        "verdict": "REFUSED", "code": "CDP_NOT_CONNECTED", "message": "admission refused",
+        "admission": facts
+    });
+    script_android_launch_refused(&mut mock, &refusal);
+    let mut check = || {
+        let (receipt, _) = run_with_events(&mut mock, &req);
+        let json = receipt.to_json();
+        (receipt, json)
+    };
+    let outcome = match private {
+        Some(value) => {
+            let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+                std::ffi::OsString::from("QAREN_INPUT_STATE"),
+                std::ffi::OsString::from(value),
+            )]));
+            qaren::redact::with_input_scope(inputs, check)
+        }
+        None => check(),
+    };
+    assert_eq!(mock.remaining(), 0);
+    outcome
+}
+
+#[test]
+fn android_admission_refusal_gets_a_typed_recovery_and_ios_keeps_the_generic_step() {
+    let facts = serde_json::json!({
+        "attempt": 5, "lastStarted": "attach", "lastCompleted": "retry_wait",
+        "inner": "target_list_empty", "relaunches": 0, "relaunchFailed": false,
+        "liveness": "dead", "elapsedMs": 137500, "remainingMs": 1061500, "budgetMs": 1199000
+    });
+
+    let (receipt, _) = android_refusal_run(&facts, None);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.phase, "attach");
+    assert_eq!(failure.next_action.as_str(), "inspect_app_crash");
+    let serialized = serde_json::to_value(&receipt).unwrap();
+    let recovery = &serialized["failure"]["recovery"];
+    assert_eq!(recovery["cause"], "app_process_dead");
+    assert_eq!(recovery["action"], "inspect_app_crash");
+    assert_eq!(recovery["admission"], facts);
+    assert_eq!(recovery["ladder"].as_array().unwrap().len(), 5);
+    assert_eq!(serialized["failure"]["next_action"], "inspect_app_crash");
+    assert_eq!(serialized["next_action"], "inspect_app_crash");
+
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_provision(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let refusal = serde_json::json!({
+        "verdict": "REFUSED", "code": "CDP_NOT_CONNECTED", "message": "admission refused",
+        "admission": facts
+    });
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &(envelope(2, "result", &refusal.to_string()) + "\n"),
+        Some(4),
+    );
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+    let req = request(&repo, &app, 30);
+    let (receipt, _) = run_with_events(&mut mock, &req);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.phase, "prove");
+    assert_eq!(
+        failure.next_action.as_str(),
+        "resolve the refusal, then re-run"
+    );
+    let serialized = serde_json::to_value(&receipt).unwrap();
+    assert!(serialized["failure"]
+        .get("recovery")
+        .is_none_or(serde_json::Value::is_null));
+    let ledger: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(req.runs_root.join(run_id()).join("ledger.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ledger["admission"], facts);
+}
+
+#[test]
+fn android_admission_recovery_stays_private_inside_an_input_scope() {
+    let facts = serde_json::json!({
+        "attempt": 5, "lastStarted": "attach", "lastCompleted": "retry_wait",
+        "inner": "target_readiness_timeout", "relaunches": 0, "relaunchFailed": false,
+        "liveness": "alive", "bundleRequest": "not_received",
+        "elapsedMs": 123500, "remainingMs": 1075500, "budgetMs": 1199000
+    });
+    let (receipt, json) = android_refusal_run(&facts, Some("alive"));
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert!(!json.contains("alive"), "{json}");
+    assert!(json.contains("bundle_not_requested"), "{json}");
+    assert!(json.contains("retry_launch_once"), "{json}");
 }

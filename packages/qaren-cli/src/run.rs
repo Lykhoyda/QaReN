@@ -1658,11 +1658,12 @@ fn run_inner(
             {
                 Some(crate::failure::AdmissionCause::RunCancelled)
             } else {
-                outcome
-                    .ledger
-                    .admission
-                    .as_ref()
-                    .and_then(|facts| crate::failure::AdmissionCause::from_inner(&facts.inner))
+                outcome.ledger.admission.as_ref().and_then(|facts| {
+                    crate::failure::AdmissionCause::from_facts(
+                        facts,
+                        req.platform == Platform::Android,
+                    )
+                })
             };
             if let Some(cause) = cause {
                 if code != "RUN_CANCELLED" {

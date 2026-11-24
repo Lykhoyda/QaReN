@@ -9832,3 +9832,54 @@ fn l6_a_learned_limit_leaves_the_lock_wait_on_the_configured_limit() {
         .to_string()
         .contains("waited 150 s of the budget"));
 }
+
+#[test]
+fn android_reuse_dry_run_plans_the_request_probe_before_the_manifest() {
+    use qaren::adapters::metro;
+    use qaren::buildplan::BuildDecision;
+
+    let repo = common::temp_repo();
+    let yaml = common::android_scenario_yaml(8792).replace(
+        "  revision: HEAD\n",
+        "  revision: HEAD\n  dev_client_scheme: rndatest\n",
+    );
+    let scenario_path = write_scenario(&repo, &yaml);
+    let sdk = android_sdk(&repo);
+    common::seed_cached_apk(&repo, &repo.join("test-app"));
+
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, ANDROID_TOOLS);
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    let receipt = prepare(
+        &mut mock,
+        &prepare_args(
+            &scenario_path,
+            true,
+            Some(sdk.to_string_lossy().into_owned()),
+        ),
+    );
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Planned,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(
+        receipt.build.as_ref().unwrap().decision,
+        BuildDecision::Reuse
+    );
+    assert_eq!(mock.remaining(), 0);
+    let manifest = metro::manifest_spec(8792, "android").rendered();
+    let at = receipt
+        .planned_commands
+        .iter()
+        .position(|command| *command == manifest)
+        .unwrap_or_else(|| panic!("no manifest request in {:?}", receipt.planned_commands));
+    assert!(at > 0);
+    assert_eq!(
+        receipt.planned_commands[at - 1],
+        metro::request_probe_spec(8792).rendered()
+    );
+}
