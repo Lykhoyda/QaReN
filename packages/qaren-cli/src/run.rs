@@ -168,6 +168,16 @@ struct Device {
     lock_note: Option<String>,
 }
 
+// The stderr notice for a config without a `video` key (dev mode); an explicit policy prints none.
+fn video_policy_notice(policy: record::VideoPolicy, config_path: &Path) -> Option<String> {
+    (policy == record::VideoPolicy::DefaultNonStrict).then(|| {
+        crate::redact::redact_secrets(&format!(
+            "▸ video policy not declared in {}: dev-mode (non-strict) rules apply; declare video: strict for privacy mode",
+            config_path.display()
+        ))
+    })
+}
+
 fn platform_str(platform: Platform) -> &'static str {
     match platform {
         Platform::Ios => "ios",
@@ -492,14 +502,9 @@ fn run_inner(
     let input_owner = crate::redact::capture_input_scope().expect("run input scope");
     let resolved_inputs = input_owner.admit(&names)?;
     resolved_inputs.declare_test_pii(&non_secret_names(&inventory, &names)?);
-    if config.video == record::VideoPolicy::Undeclared {
-        eprintln!(
-            "{}",
-            crate::redact::redact_secrets(&format!(
-                "▸ video policy not declared in {}: strict rules apply",
-                req.config_path.display()
-            ))
-        );
+    // Installed-app mode set the policy to strict above, so it prints no notice.
+    if let Some(notice) = video_policy_notice(config.video, &req.config_path) {
+        eprintln!("{notice}");
     }
     let login_snapshot = inventory.get("loginSnapshot").cloned();
     let prepared = preflight_inputs(
@@ -1206,7 +1211,7 @@ fn run_inner(
         if !recording_requested {
             events::stage("recording", StageState::Skipped, None, None);
         } else if resolved_inputs.has_inputs()
-            && (config.video != record::VideoPolicy::NonStrict
+            && (config.video.rules() != record::VideoPolicy::NonStrict
                 || crate::redact::private_output_mode())
         {
             events::stage("recording", StageState::Skipped, None, None);
@@ -1286,7 +1291,7 @@ fn run_inner(
             run_dir: run_dir.clone(),
             lease: lease.wire(),
             login_block: config.login_block.clone(),
-            video_policy: config.video,
+            video_policy: config.video.rules(),
             login_marker: config.login_marker.clone(),
             app_source: req.installed_app.then_some("installed"),
             target: CoreTarget {
@@ -1602,7 +1607,7 @@ fn run_inner(
         }
 
         if let Some(entry) = outcome.ledger.media_withheld.as_ref().and_then(|media| {
-            if config.video == record::VideoPolicy::NonStrict {
+            if config.video.rules() == record::VideoPolicy::NonStrict {
                 media.video.as_ref().or(media.screenshots.as_ref())
             } else {
                 media.screenshots.as_ref().or(media.video.as_ref())
@@ -1610,6 +1615,10 @@ fn run_inner(
         }) {
             ctx.notes
                 .push(("media_withheld".to_string(), entry.receipt_note()));
+        }
+        // The ledger already carries the run's policy and its source (set above, before the ledger was written).
+        if let Some(hint) = report::generic_value_hint(&outcome.ledger, req.installed_app) {
+            hints.push(hint);
         }
         let boundary = |core: &dyn Fn() -> Failure| {
             walk_failure(
@@ -1865,7 +1874,8 @@ fn run_inner(
                     .map(str::to_string),
                 video_publication,
                 video_policy: config.video,
-                video_policy_source: Some(video_policy_source),
+                // Public records name no config path; the local ledger, report and receipt keep the redacted one.
+                video_policy_source: None,
                 non_strict_publication: outcome.ledger.non_strict_publication.clone(),
                 tested_older_commit: tested_older_commit.is_some(),
                 blocks,
