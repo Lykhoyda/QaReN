@@ -5187,8 +5187,9 @@ can precede visible pixels. One gate per admission reads at most every 2 s
 across readiness windows; loading keeps holding and loaded releases. Any other
 answer asks again until 15 s pass with no read showing the app's process,
 counted from the last loading answer or, before one, from the first read; then
-attachment is allowed as before for the rest of the admission. While it asks
-again, each readiness window ends as in a hold, so the wait spends no attach
+attachment is allowed as before until this launch ends or a restart re-arms the
+gate. While it asks again, each readiness window ends as in a hold, so the wait
+spends no attach
 budget. The walk budget bounds the hold, and the attach budget starts at the
 first target registration after it; a start still loading at the walk budget
 refuses `CDP_NOT_CONNECTED/target_readiness_timeout`. Admission-built attach
@@ -5205,47 +5206,85 @@ the manifest warm-up are left, it runs Metro's request probe with a 5 s limit
 before the manifest request, so Metro's bundle request count is armed before
 launch. Just before the launch it reads Metro's bundle request and outcome counts
 and passes them to the core when both count files are readable; otherwise the
-receipt notes `bundle_request_count=unavailable`. The `expo run:android` route, or
-a Metro that QaReN did not start, passes no counts: the request reads `unknown`
-and nothing is refused early. Admission refuses a start early on the request count
-alone, when all four hold: no readiness wait has returned a target; a wait failed
-with a readiness timeout of the attach step other than an unanswered target list,
-and the admission would retry it with walk time left; the attach budget has passed
-since the admission started (unlike the registered-target deadline above, this
-clock includes the first-views hold); and the count file is readable and equal to
-its value at launch. That refusal comes at the first such failed wait. A recorded
-bundle request prevents this early refusal even when the app's process has died:
-with no other refusal, such a start is held to the walk budget, where no time is
-left for a process read, so its refusal names Metro's counts and not the process.
-The process is read only after a refusal is decided, to describe it.
+receipt notes `bundle_request_count=unavailable`. The `expo run:android` route,
+or a Metro that QaReN did not start, passes no counts: the request reads
+`unknown` and the count never refuses. While no readiness wait has returned a
+target, each wait that fails with a readiness timeout of the attach step, and
+that the admission would retry with walk time left, is judged twice. First the
+count, from the attach budget on (unlike the registered-target deadline above,
+this clock includes the first-views hold), unless the wait was an unanswered
+target list: a count file that is readable and equal to its value at launch
+means no bundle request. Otherwise, unless the first-views gate's last decision
+was to hold, and only with at least 41.5 s of walk left, one process probe
+(below), cut at 11 s: two empty reads mean the app is dead, on every route.
+Either is refused at that wait, unless QaReN launched the app itself with its
+dev-client link and the walk budget can still hold the restarted start's own
+budget (below) after the restart's command allowances, 94 s in all: then QaReN
+restarts it, once per admission. If the reads before the stop take so long that
+the force-stop, its proof and the start (81 s of command allowances) could no
+longer return in time for that budget, nothing is stopped and the start is
+refused as without a restart. After a proven stop the start is always sent once;
+on a slow host the restarted start can then get less than its own budget, and
+the walk's end refuses it with its next step. Before the restart it reads the
+device's process table and refuses at once, without a restart, when a row
+matches another automation driver (UIAutomator, Maestro, agent-device or an
+instrumentation) or the table cannot be read; it then reads the reason again,
+and a start that has moved on, or whose count cannot be read again, is left
+alone. The restart is `am force-stop`, a `pidof` that proves the process gone,
+and the same `am start` as the launch, sent once and never repeated, even when
+it times out. The restarted start then has its own budget: the attach budget,
+but at least 60 s, counted from when the start command returned. The early death
+and zero-count rules begin at the end of that budget, with Metro's count rebased
+to the restart. An eligible held turn can check Metro's count. The death probe
+waits for gate release and sufficient walk time. If no probe fits, the walk can
+end with `not_probed`. Other admission failures retain their existing timing. A
+restart that fails after the force-stop is refused at once, and the app may be
+left stopped. `core.log` records an `android start: restart:` line once the app
+is proven stopped and one when the start command returns, without the link; a
+failed force-stop or proof writes neither. The walk deadline cancels
+pending waits and process probes; delayed timer delivery and writing the
+refusal's diagnostics can delay its publication. The CLI's own `adb-am-start`
+attempt notes are unchanged.
 
-Every refusal the Android admission builds itself makes one process probe while
-time is left in the walk budget: an `adb shell pidof` read that prints a process ID
-is `alive`; an empty read is followed one second later by a second read, and two
+Every refusal the Android admission builds itself names the app's process: the
+probe that decided it, or else one probe while time is left in the walk budget:
+an `adb shell pidof` read that prints a process ID is `alive`; an empty read is
+followed one second later by a second read, and two
 empty reads are `dead`; a failed or unexpected read is `probe_failed`. The probe
-is cut at the walk deadline, and with no time left liveness stays `not_probed`. When a refusal carries Metro's counts, they are the count it was
-decided on, or else the counts read at the refusal while no wait has returned a
+is cut at the walk deadline, and with no time left liveness stays `not_probed`.
+For other refusals, when a refusal carries Metro's counts, they are the count it
+was decided on, or else the counts read at the refusal while no wait has returned a
 target, or those of the idle `dev_runtime_unproven` refusal whose message prints
 them; they are what Metro's log recorded on the port at the count check, for every
 device on that port. After a wait has returned a target the counts are left out,
-except for the idle `dev_runtime_unproven` refusal.
+except for the idle `dev_runtime_unproven` refusal. When recovery fails, including
+at the walk deadline, the refusal keeps the request count observed on the
+deciding turn. If that turn read no count, it reports `unknown`. A count-only
+`received` names the recorded request without claiming a build outcome.
 `elapsedMs` is measured when the refusal is built, after the process read. The
 "likely cause" sentence about the dev client's manifest timeout is iOS-only. On
 Android, the note before the first-views note names the process (`the app's
 process was running`, `was not running` or `could not be checked`), Metro's counts
 (`at the count check Metro had recorded no bundle request on this port since the
 launch`, or a recorded request with a failed, a completed or no completed build,
-or with build outcomes that could not be read) and, for a deadline after the
-debugger was attached and React was ready, the step it ended in. Each Android
+or with build outcomes that could not be read, or a recorded request alone
+(`a bundle request was recorded on this Metro port since the launch`) when only
+the count was read) and, for a deadline after the debugger was attached and
+React was ready, the step it ended in. Each Android
 refusal the admission builds itself gets a cause, a `next_action` and the five
 rungs in `failure.recovery`, from the first matching end state:
 
 | End state | Cause | `next_action` |
 | --- | --- | --- |
 | every scoped target answered `__DEV__` false (`DEV_TARGET_MISSING`) | `non_dev_bundle` | `use_development_bundle` |
+| QaReN did not restart: a process-table row matched another automation driver | `app_restart_blocked_by_driver` | `wait_for_other_driver` |
+| QaReN did not restart: the device did not answer | `app_restart_blocked_unreadable` | `check_device_connection` |
+| the restart did not complete | `app_restart_failed` | `check_device_connection` |
+| the app's process not running after a restart | `app_process_dead_after_restart` | `inspect_app_crash` |
 | the app's process not running | `app_process_dead` | `inspect_app_crash` |
 | development mode unproven, React not ready | as on iOS | as on iOS |
 | attached; a deadline ended in the driver check, opening or proof | `attach_budget_after_connect` | `retry_attach_once` |
+| a target wait timed out with no bundle request recorded after a restart | `bundle_not_requested_after_restart` | `check_metro_reachable` |
 | a target wait timed out with no bundle request recorded | `bundle_not_requested` | `retry_launch_once` |
 | a target wait timed out with a request and a failed or no completed build | `bundle_not_built` | `inspect_metro_bundle` |
 | any other target wait timeout, including unreadable build outcomes | `no_attachable_target` | `inspect_app_screen` |
@@ -5255,8 +5294,10 @@ rungs in `failure.recovery`, from the first matching end state:
 and note carry the process. Refusals that pass the admission by keep their codes
 and next steps, and the CLI's own walk-expiry refusal is unchanged. With a strict
 input the refusal's text is withheld as before, and the facts and the recovery
-carry the state; with a TEST-PII input the text is kept and matching words are
-redacted. An older `qaren` cannot decode these causes and actions in a run folder
+carry the state; for a restart, `relaunches`, `relaunchFailed` and
+`relaunchBlocked` carry it, and no screen or input text is read; with a TEST-PII
+input the text is kept and matching words are redacted. An older `qaren` cannot
+decode these causes and actions in a run folder
 written by this version.
 Target readiness and attachment accept only a runtime Metro reports with the
 requested `appId` bundle identity (and on iOS, under the run's simulator name on
