@@ -38,7 +38,7 @@ fn container(repo: &Path, found: Found) -> CmdOutput {
 }
 
 // A workspace app whose verified build sits in the native cache, so a later default run reuses it.
-fn seeded_workspace() -> (PathBuf, PathBuf) {
+fn seeded_workspace() -> (common::TempRepo, PathBuf) {
     let (repo, app) = app_repo();
     common::write_ios_workspace(&app, "ios/First.xcworkspace");
     configure_workspace(&app, "ios/First.xcworkspace", "Debug");

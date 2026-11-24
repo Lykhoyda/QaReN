@@ -18,7 +18,7 @@ fn host(mock: MockRunner, memory: &[(u8, u64)], req: &RunRequest) -> HostRunner 
 }
 
 // A first iOS check that builds, launches and walks.
-fn building(memory: &[(u8, u64)]) -> (HostRunner, RunRequest) {
+fn building(memory: &[(u8, u64)]) -> (HostRunner, RunRequest, common::TempRepo) {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
@@ -29,11 +29,11 @@ fn building(memory: &[(u8, u64)]) -> (HostRunner, RunRequest) {
     script_core_identity(&mut mock);
     script_teardown(&mut mock);
     let req = request(&repo, &app, 30);
-    (host(mock, memory, &req), req)
+    (host(mock, memory, &req), req, repo)
 }
 
 // The same check scripted only up to its build plan: nothing may run after the wait.
-fn stopping_before_the_build(memory: &[(u8, u64)]) -> (HostRunner, RunRequest) {
+fn stopping_before_the_build(memory: &[(u8, u64)]) -> (HostRunner, RunRequest, common::TempRepo) {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
@@ -42,7 +42,7 @@ fn stopping_before_the_build(memory: &[(u8, u64)]) -> (HostRunner, RunRequest) {
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     let req = request(&repo, &app, 30);
-    (host(mock, memory, &req), req)
+    (host(mock, memory, &req), req, repo)
 }
 
 fn waits(events: &[serde_json::Value]) -> Vec<String> {
@@ -73,7 +73,7 @@ fn report(receipt: &qaren::receipt::Receipt) -> String {
 
 #[test]
 fn d1_low_memory_that_recovers_after_three_polls_waits_then_builds() {
-    let (mut runner, req) = building(&[LOW, LOW, LOW, OK]);
+    let (mut runner, req, _repo) = building(&[LOW, LOW, LOW, OK]);
     let (receipt, events) = run_with_events(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     let trail = stage_trail(&events);
@@ -98,7 +98,7 @@ fn d1_low_memory_that_recovers_after_three_polls_waits_then_builds() {
 
 #[test]
 fn d2_critical_pressure_for_the_whole_window_refuses_with_the_numbers_and_no_build() {
-    let (mut runner, req) = stopping_before_the_build(&[CRITICAL]);
+    let (mut runner, req, _repo) = stopping_before_the_build(&[CRITICAL]);
     let (receipt, events) = run_with_events(&mut runner, &req);
     assert_eq!(
         receipt.result,
@@ -136,7 +136,7 @@ fn d2_critical_pressure_for_the_whole_window_refuses_with_the_numbers_and_no_bui
 
 #[test]
 fn d3_constrained_but_not_critical_builds_after_the_window_with_a_note() {
-    let (mut runner, req) = building(&[WARNING]);
+    let (mut runner, req, _repo) = building(&[WARNING]);
     let (receipt, events) = run_with_events(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(
@@ -161,7 +161,7 @@ fn d3_constrained_but_not_critical_builds_after_the_window_with_a_note() {
 fn d8_a_ten_minute_wait_leaves_the_whole_build_budget() {
     let mut timeouts = Vec::new();
     for memory in [OK, WARNING] {
-        let (mut runner, req) = building(&[memory]);
+        let (mut runner, req, _repo) = building(&[memory]);
         // A 30 s budget would be gone twenty times over if the wait ran inside it.
         let config = std::fs::read_to_string(&req.config_path).unwrap();
         std::fs::write(
@@ -188,7 +188,7 @@ fn d8_a_ten_minute_wait_leaves_the_whole_build_budget() {
 
 #[test]
 fn d9_a_cancelled_run_leaves_the_wait_at_once_without_a_lock() {
-    let (mut runner, req) = stopping_before_the_build(&[CRITICAL]);
+    let (mut runner, req, _repo) = stopping_before_the_build(&[CRITICAL]);
     let started = runner.now_epoch_ms();
     // Between two 5 s polls, so a whole poll interval would show.
     runner.inner.cancel_at_ms = Some((started + 302_500, "SIGTERM".into()));
@@ -211,12 +211,12 @@ fn d9_a_cancelled_run_leaves_the_wait_at_once_without_a_lock() {
 #[test]
 fn d9_a_cancellation_during_the_last_sleep_wins_over_recovered_memory() {
     // An uncancelled run with the same steps up to the wait gives the poll's time.
-    let (mut probe, req) = building(&[LOW, OK]);
+    let (mut probe, req, _repo) = building(&[LOW, OK]);
     let _ = run(&mut probe, &req);
     // The first look, then the poll that would show memory recovered.
     let (first_look, poll) = (probe.sampled_at[1], probe.sampled_at[2]);
     assert_eq!(poll - first_look, 5_000);
-    let (mut runner, req) = stopping_before_the_build(&[LOW, OK]);
+    let (mut runner, req, _repo) = stopping_before_the_build(&[LOW, OK]);
     runner.inner.cancel_at_ms = Some((poll - 500, "SIGTERM".into()));
     let (receipt, events) = run_with_events(&mut runner, &req);
     let failure = receipt.failure.as_ref().unwrap();
@@ -231,7 +231,7 @@ fn d9_a_cancellation_during_the_last_sleep_wins_over_recovered_memory() {
 
 #[test]
 fn d4_high_load_with_normal_memory_never_waits() {
-    let (mut runner, req) = building(&[OK]);
+    let (mut runner, req, _repo) = building(&[OK]);
     runner.end_load = 50.0;
     let (receipt, events) = run_with_events(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
@@ -242,13 +242,13 @@ fn d4_high_load_with_normal_memory_never_waits() {
 
 #[test]
 fn d5_a_healthy_host_takes_one_sample_no_stage_and_no_time() {
-    let (mut runner, req) = building(&[]);
+    let (mut runner, req, _repo) = building(&[]);
     let (receipt, events) = run_with_events(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert!(waits(&events).is_empty());
     assert!(!receipt.outcomes.contains_key("host_wait"));
     assert_eq!(runner.samples(), 3);
-    let (mut bare, req) = building(&[]);
+    let (mut bare, req, _repo) = building(&[]);
     bare.timeout = true;
     let unprobed = run(&mut bare, &req);
     assert_eq!(receipt.timings_ms["total"], unprobed.timings_ms["total"]);
@@ -257,7 +257,7 @@ fn d5_a_healthy_host_takes_one_sample_no_stage_and_no_time() {
 #[test]
 fn d6_an_unreadable_host_never_waits_or_refuses_and_says_so() {
     for timeout in [false, true] {
-        let (mut runner, req) = building(&[CRITICAL]);
+        let (mut runner, req, _repo) = building(&[CRITICAL]);
         runner.malformed = !timeout;
         runner.timeout = timeout;
         let (receipt, events) = run_with_events(&mut runner, &req);
@@ -278,7 +278,7 @@ const NO_AVAILABLE: (u8, u64) = (1, 0);
 #[test]
 fn d6_a_poll_without_the_pressure_reading_keeps_waiting() {
     // Critical pressure with plenty available: without the pressure level a poll would look recovered.
-    let (mut runner, req) = building(&[CRITICAL, NO_PRESSURE, NO_PRESSURE, OK]);
+    let (mut runner, req, _repo) = building(&[CRITICAL, NO_PRESSURE, NO_PRESSURE, OK]);
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     let note = &receipt.outcomes["host_wait"];
@@ -290,7 +290,7 @@ fn d6_a_poll_without_the_pressure_reading_keeps_waiting() {
 #[test]
 fn d6_a_poll_without_the_available_memory_keeps_waiting() {
     // Low memory at normal pressure: without available memory a poll would look recovered.
-    let (mut runner, req) = building(&[LOW, NO_AVAILABLE, NO_AVAILABLE, OK]);
+    let (mut runner, req, _repo) = building(&[LOW, NO_AVAILABLE, NO_AVAILABLE, OK]);
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     let note = &receipt.outcomes["host_wait"];
@@ -300,7 +300,7 @@ fn d6_a_poll_without_the_available_memory_keeps_waiting() {
 
 #[test]
 fn d6_an_incomplete_final_poll_builds_instead_of_refusing() {
-    let (mut runner, req) = building(&[CRITICAL, NO_PRESSURE]);
+    let (mut runner, req, _repo) = building(&[CRITICAL, NO_PRESSURE]);
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     let note = &receipt.outcomes["host_wait"];
@@ -310,7 +310,7 @@ fn d6_an_incomplete_final_poll_builds_instead_of_refusing() {
 
 #[test]
 fn d6_a_critical_reading_never_refuses_once_the_probes_fail() {
-    let (mut runner, req) = building(&[CRITICAL, UNREAD]);
+    let (mut runner, req, _repo) = building(&[CRITICAL, UNREAD]);
     let receipt = run(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     let note = &receipt.outcomes["host_wait"];
@@ -322,7 +322,7 @@ fn d6_a_critical_reading_never_refuses_once_the_probes_fail() {
 #[test]
 fn d6_a_reading_that_fails_during_the_wait_keeps_waiting() {
     // An overloaded host can time out a probe; that is no evidence memory came back.
-    let (mut runner, req) = building(&[CRITICAL, UNREAD, UNREAD, OK]);
+    let (mut runner, req, _repo) = building(&[CRITICAL, UNREAD, UNREAD, OK]);
     let (receipt, events) = run_with_events(&mut runner, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert_eq!(runner.samples(), 6);
@@ -404,7 +404,7 @@ fn newly_observed_memory_signals_cannot_disappear_to_report_recovery() {
         vec![(0, LOW.1), CRITICAL, NO_PRESSURE, OK],
         vec![(4, 0), LOW, NO_AVAILABLE, OK],
     ] {
-        let (mut runner, req) = building(&memory);
+        let (mut runner, req, _repo) = building(&memory);
         let receipt = run(&mut runner, &req);
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         let note = &receipt.outcomes["host_wait"];
@@ -434,7 +434,7 @@ fn release_contended_lock_on_memory_recheck(
 
 #[test]
 fn critical_memory_after_lock_contention_refuses_without_building() {
-    let (mut runner, req) = stopping_before_the_build(&[OK, CRITICAL]);
+    let (mut runner, req, _repo) = stopping_before_the_build(&[OK, CRITICAL]);
     release_contended_lock_on_memory_recheck(&mut runner, &req, 3);
     let receipt = run(&mut runner, &req);
     assert_eq!(
@@ -453,7 +453,7 @@ fn critical_memory_after_lock_contention_refuses_without_building() {
 
 #[test]
 fn memory_wait_after_lock_contention_preserves_remaining_build_budget() {
-    let (mut runner, req) = building(&[OK, WARNING]);
+    let (mut runner, req, _repo) = building(&[OK, WARNING]);
     let config = std::fs::read_to_string(&req.config_path).unwrap();
     std::fs::write(
         &req.config_path,
@@ -476,12 +476,12 @@ fn memory_wait_after_lock_contention_preserves_remaining_build_budget() {
 
 #[test]
 fn two_lock_retries_share_one_ten_minute_memory_allowance() {
-    let (mut baseline, req) = building(&[OK]);
+    let (mut baseline, req, _repo) = building(&[OK]);
     let baseline_receipt = run(&mut baseline, &req);
     assert_eq!(baseline_receipt.result, ReceiptResult::Pass);
     let admission_at = baseline.sampled_at[1];
     for memory in [vec![WARNING], vec![OK, WARNING], vec![WARNING, OK, WARNING]] {
-        let (mut runner, req) = building(&memory);
+        let (mut runner, req, _repo) = building(&memory);
         let config = std::fs::read_to_string(&req.config_path).unwrap();
         std::fs::write(
             &req.config_path,
@@ -513,7 +513,7 @@ fn two_lock_retries_share_one_ten_minute_memory_allowance() {
 fn critical_final_poll_refuses_when_the_memory_allowance_is_spent() {
     let mut memory = vec![WARNING; 120];
     memory.push(CRITICAL);
-    let (mut runner, req) = stopping_before_the_build(&memory);
+    let (mut runner, req, _repo) = stopping_before_the_build(&memory);
     let receipt = run(&mut runner, &req);
     assert_eq!(
         receipt.result,
@@ -531,10 +531,10 @@ fn critical_final_poll_refuses_when_the_memory_allowance_is_spent() {
 
 #[test]
 fn slow_admission_probes_and_final_overrun_leave_the_build_budget_intact() {
-    let (mut baseline, req) = building(&[OK]);
+    let (mut baseline, req, _repo) = building(&[OK]);
     let baseline = run(&mut baseline, &req);
     assert_eq!(baseline.result, ReceiptResult::Pass);
-    let (mut runner, req) = building(&[OK, WARNING]);
+    let (mut runner, req, _repo) = building(&[OK, WARNING]);
     let config = std::fs::read_to_string(&req.config_path).unwrap();
     std::fs::write(
         &req.config_path,
@@ -566,7 +566,7 @@ fn slow_admission_probes_and_final_overrun_leave_the_build_budget_intact() {
 #[test]
 fn slow_first_sample_counts_toward_recovery_and_unavailable_notes() {
     for (memory, seconds) in [(vec![LOW, OK], 7), (vec![UNREAD], 2)] {
-        let (mut runner, req) = building(&memory);
+        let (mut runner, req, _repo) = building(&memory);
         runner.sample_probe_ms = vec![(0, 0), (1_000, 1_000), (1_000, 1_000)];
         let receipt = run(&mut runner, &req);
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
@@ -586,7 +586,7 @@ fn slow_first_sample_counts_toward_recovery_and_unavailable_notes() {
 #[test]
 fn slow_healthy_and_unreadable_rechecks_preserve_the_build_budget() {
     for memory in [OK, UNREAD] {
-        let (mut runner, req) = building(&[OK, memory]);
+        let (mut runner, req, _repo) = building(&[OK, memory]);
         let config = std::fs::read_to_string(&req.config_path).unwrap();
         std::fs::write(
             &req.config_path,
@@ -612,13 +612,13 @@ fn slow_healthy_and_unreadable_rechecks_preserve_the_build_budget() {
 
 #[test]
 fn slow_probes_stop_after_one_allowance_despite_repeated_lock_contention() {
-    let (mut baseline, req) = building(&[OK]);
+    let (mut baseline, req, _repo) = building(&[OK]);
     baseline.sample_probe_ms = vec![(3_000, 2_000); 256];
     let baseline_receipt = run(&mut baseline, &req);
     assert_eq!(baseline_receipt.result, ReceiptResult::Pass);
     let admission_at = baseline.sampled_at[1];
     for memory in [vec![WARNING], vec![OK, WARNING]] {
-        let (mut runner, req) = building(&memory);
+        let (mut runner, req, _repo) = building(&memory);
         let config = std::fs::read_to_string(&req.config_path).unwrap();
         std::fs::write(
             &req.config_path,
@@ -650,11 +650,11 @@ fn slow_probes_stop_after_one_allowance_despite_repeated_lock_contention() {
 
 #[test]
 fn a_contended_lock_wait_on_a_healthy_host_samples_memory_at_most_every_five_seconds() {
-    let (mut baseline, req) = building(&[OK]);
+    let (mut baseline, req, _repo) = building(&[OK]);
     assert_eq!(run(&mut baseline, &req).result, ReceiptResult::Pass);
     let admission_at = baseline.sampled_at[1];
     for (lock, seconds) in [("native-build-ios", 60), ("native-build-slot", 60)] {
-        let (mut runner, req) = building(&[OK]);
+        let (mut runner, req, _repo) = building(&[OK]);
         let path = req.lock_root.join(lock);
         std::fs::create_dir_all(&path).unwrap();
         runner.release_lock_at = Some((path, admission_at + seconds * 1000));
@@ -673,10 +673,10 @@ fn a_contended_lock_wait_on_a_healthy_host_samples_memory_at_most_every_five_sec
 
 #[test]
 fn host_memory_wait_in_the_ios_build_slot_queue_leaves_the_build_budget_whole() {
-    let (mut baseline, req) = building(&[OK]);
+    let (mut baseline, req, _repo) = building(&[OK]);
     assert_eq!(run(&mut baseline, &req).result, ReceiptResult::Pass);
     let admission_at = baseline.sampled_at[1];
-    let (mut runner, req) = building(&[OK, WARNING]);
+    let (mut runner, req, _repo) = building(&[OK, WARNING]);
     let config = std::fs::read_to_string(&req.config_path).unwrap();
     std::fs::write(
         &req.config_path,
@@ -703,11 +703,11 @@ fn host_memory_wait_in_the_ios_build_slot_queue_leaves_the_build_budget_whole() 
 
 #[test]
 fn host_memory_slot_wait_preserves_refusal_and_cancellation() {
-    let (mut baseline, req) = building(&[OK]);
+    let (mut baseline, req, _repo) = building(&[OK]);
     assert_eq!(run(&mut baseline, &req).result, ReceiptResult::Pass);
     let admission_at = baseline.sampled_at[1];
     for cancelled in [false, true] {
-        let (mut runner, req) = stopping_before_the_build(&[OK, CRITICAL]);
+        let (mut runner, req, _repo) = stopping_before_the_build(&[OK, CRITICAL]);
         let config = std::fs::read_to_string(&req.config_path).unwrap();
         std::fs::write(
             &req.config_path,

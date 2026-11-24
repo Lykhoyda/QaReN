@@ -26,7 +26,8 @@ fn lock_name_is_one_filesystem_safe_component_per_device() {
 
 #[test]
 fn acquire_writes_a_holder_and_release_removes_it() {
-    let root = common::temp_repo().join("locks");
+    let repo = common::temp_repo();
+    let root = repo.join("locks");
     let mut mock = MockRunner::new();
     let lease = acquire(
         &mut mock,
@@ -98,7 +99,8 @@ fn a_holder_under_qaren_home_records_that_home_instead_of_home() {
 
 #[test]
 fn contention_is_device_busy_and_a_live_holder_is_never_stolen() {
-    let root = common::temp_repo().join("locks");
+    let repo = common::temp_repo();
+    let root = repo.join("locks");
     let mut first = MockRunner::new();
     let lease = acquire(
         &mut first,
@@ -129,7 +131,8 @@ fn contention_is_device_busy_and_a_live_holder_is_never_stolen() {
 
 #[test]
 fn a_dead_holder_is_still_not_adopted() {
-    let root = common::temp_repo().join("locks");
+    let repo = common::temp_repo();
+    let root = repo.join("locks");
     let mut first = MockRunner::new();
     let lease = acquire(
         &mut first,
@@ -151,7 +154,8 @@ fn a_dead_holder_is_still_not_adopted() {
 
 #[test]
 fn release_refuses_a_foreign_holder() {
-    let root = common::temp_repo().join("locks");
+    let repo = common::temp_repo();
+    let root = repo.join("locks");
     let mut mock = MockRunner::new();
     let ours = acquire(&mut mock, &root, Platform::Ios, UDID, "check-1", None).unwrap();
     let foreign = qaren::lease::Lease {
@@ -167,7 +171,8 @@ fn release_refuses_a_foreign_holder() {
 
 #[test]
 fn a_rollback_release_that_fails_names_the_lock_in_the_failure() {
-    let root = common::temp_repo().join("locks");
+    let repo = common::temp_repo();
+    let root = repo.join("locks");
     let mut mock = MockRunner::new();
     let lease = acquire(
         &mut mock,
