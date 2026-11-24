@@ -1397,6 +1397,265 @@ impl Runner for Staged {
 
 const SECRET: &str = "Hunter2Fixture!Synth";
 
+// A run writes the policy's display source into ledger.json (run.rs, before the durable write); publish reads it there.
+fn set_ledger_source(dir: &Path, source: Option<&str>) {
+    let path = dir.join("ledger.json");
+    let mut ledger: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    match source {
+        Some(source) => ledger["videoPolicySource"] = source.into(),
+        None => {
+            ledger.as_object_mut().unwrap().remove("videoPolicySource");
+        }
+    }
+    std::fs::write(path, serde_json::to_vec(&ledger).unwrap()).unwrap();
+}
+
+// AI-725: public bodies name no config path, whatever the stored records hold.
+#[test]
+fn public_bodies_never_name_the_config_path() {
+    let canary = "ghp_syntheticCanary0000000000000000000000";
+    let path = format!("selected-{canary}.yaml");
+    // (PR record's source as an older version stored it, ledger's source)
+    for (record, ledger) in [
+        (Some(path.as_str()), Some(path.as_str())),
+        (None, Some(path.as_str())),
+        (Some(path.as_str()), None),
+    ] {
+        let (_repo, runs, dir) = run_dir(false);
+        set_ledger_source(&dir, ledger);
+        describe_pr(&dir, |pr| {
+            pr["videoPolicy"] = "strict".into();
+            pr["videoPublication"] = "withheld-privacy".into();
+            pr["videoPolicySource"] = record.map_or(serde_json::Value::Null, Into::into);
+            pr["blocks"] = serde_json::json!([]);
+        });
+        let mut runner = Git(MockRunner::new());
+        script_comment_and_label(&mut runner.0);
+        script_description(&mut runner.0, None, &[AUTHOR, AUTHOR], Some(CmdOutput::success("")));
+        let receipt = publish(&mut runner, &runs, RUN, &machine());
+        assert_eq!(receipt.result, ReceiptResult::Published, "{:?}", receipt.failure);
+        let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+        assert!(body.contains("Video policy: strict (declared in the selected app config)."), "{body}");
+        for public in [body, description(&dir), receipt.to_json()] {
+            assert!(!public.contains(canary) && !public.contains("selected-"), "{public}");
+        }
+    }
+    // A withheld legacy `undeclared` record gives policy guidance in both public bodies, without the path.
+    let (_repo, runs, dir) = run_dir(false);
+    set_ledger_source(&dir, Some(&path));
+    describe_pr(&dir, |pr| {
+        pr["videoPolicy"] = "undeclared".into();
+        pr["videoPublication"] = "withheld-privacy".into();
+        pr["videoPolicySource"] = path.clone().into();
+        pr["blocks"] = serde_json::json!([]);
+    });
+    let mut runner = Git(MockRunner::new());
+    script_comment_and_label(&mut runner.0);
+    script_description(&mut runner.0, None, &[AUTHOR, AUTHOR], Some(CmdOutput::success("")));
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+    assert_eq!(receipt.result, ReceiptResult::Published, "{:?}", receipt.failure);
+    let guidance = "If this app shows test data only, declare video: non-strict in the selected app config.";
+    for public in [std::fs::read_to_string(dir.join("comment.md")).unwrap(), description(&dir)] {
+        assert!(public.contains(guidance), "{public}");
+        assert!(!public.contains(canary) && !public.contains("selected-"), "{public}");
+    }
+}
+
+// AI-725: an unavailable video is described publicly only by its closed reason code.
+#[test]
+fn an_unavailable_video_is_published_only_by_its_reason_code() {
+    let sentence = "synthetic third-party recorder said: device busy at host-7731";
+    // (stored video status, its closed code's public text); the recorder code comes from the detail's fixed prefix
+    for (video, fixed, stored) in [
+        (format!("unavailable({sentence})"), "Video not published: the recorder did not produce a publishable video;", None),
+        (format!("unavailable({sentence})"), "Video not published: the recorder did not produce a publishable video;", Some("other")),
+        (format!("unavailable(recorder did not start (stop: {sentence}))"), "Video not published: the recorder failed;", None),
+        (format!("unavailable(recorder did not start (stop: {sentence}))"), "Video not published: the recorder failed;", Some("recorder-failed")),
+    ] {
+        let (_repo, runs, dir) = run_dir(false);
+        set_ledger_source(&dir, Some(".qaren/testing.yaml"));
+        describe_pr(&dir, |pr| {
+            pr["videoPolicy"] = "default-non-strict".into();
+            pr["videoPublication"] = "withheld-privacy".into();
+            pr["nonStrictPublication"] = "eligible".into();
+            pr["video"] = video.clone().into();
+            pr["blocks"] = serde_json::json!([]);
+            // Legacy records have no videoReason; current ones store the matching code.
+            match stored {
+                Some(code) => pr["videoReason"] = code.into(),
+                None => {
+                    pr.as_object_mut().unwrap().remove("videoReason");
+                }
+            }
+        });
+        let mut runner = Git(MockRunner::new());
+        script_comment_and_label(&mut runner.0);
+        script_description(&mut runner.0, None, &[AUTHOR, AUTHOR], Some(CmdOutput::success("")));
+        let receipt = publish(&mut runner, &runs, RUN, &machine());
+        assert_eq!(receipt.result, ReceiptResult::Published, "{video} {:?}", receipt.failure);
+        let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+        let written = description(&dir);
+        for public in [&body, &written, &receipt.outcomes["video_summary"]] {
+            assert!(public.contains(fixed), "{video}: {public}");
+            assert!(!public.contains("device busy") && !public.contains("host-7731"), "{video}: {public}");
+        }
+    }
+}
+
+// A first publish whose QA comment post times out after it was attempted.
+fn time_out_first_post(runs: &Path) -> ReceiptResult {
+    let mut first = Git(MockRunner::new());
+    first.0.expect_run(
+        "gh pr comment",
+        CmdOutput {
+            timed_out: true,
+            ..Default::default()
+        },
+    );
+    publish(&mut first, runs, RUN, &machine()).result
+}
+
+// AI-725: a lost response whose earlier body renders differently now is still adopted, never posted twice.
+#[test]
+fn a_lost_comment_from_an_earlier_rendering_is_adopted_not_posted_again() {
+    let (_repo, runs, dir) = run_dir(false);
+    assert_eq!(time_out_first_post(&runs), ReceiptResult::Failed);
+    assert!(publication(&dir).comment_attempted);
+    // As an earlier version wrote and posted it: the policy line named the config path.
+    let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+    let current = report_content(&body, "");
+    let policy_line = current.lines().find(|line| line.starts_with("Video policy: ")).unwrap();
+    let content = current.replacen(
+        policy_line,
+        "Video policy: not declared in .qaren/testing.yaml, so strict rules apply.",
+        1,
+    );
+    let old_marker = format!(
+        "<!-- qaren-run: {RUN} report={} -->",
+        qaren::candidate::sha256_hex(content.as_bytes())
+    );
+    let old = format!("{old_marker}\n{content}");
+    assert_ne!(old, body);
+    std::fs::write(dir.join("comment.md"), &old).unwrap();
+
+    let mut second = Git(MockRunner::new());
+    second.0.expect_run("gh api user", CmdOutput::success("publisher\n"));
+    second.0.expect_run(
+        "gh pr view 12 -R github.com/o/r --json comments",
+        CmdOutput::success(&serde_json::json!({"comments": [
+            {"body": old, "author": {"login": "publisher"}, "url": "https://github.com/o/r/pull/12#issuecomment-7"}
+        ]}).to_string()),
+    );
+    second.0.expect_run("gh pr view https://github.com/o/r/pull/12", view(""));
+    script_commit(&mut second.0);
+    second.0.expect_run("git push origin", CmdOutput::success(""));
+    let receipt = publish(&mut second, &runs, RUN, &machine());
+    assert_eq!(receipt.result, ReceiptResult::Published, "{:?}", receipt.failure);
+    assert!(!second.0.calls.iter().any(|c| c.label == "gh-pr-comment"));
+    assert_eq!(
+        publication(&dir).comment_url.as_deref(),
+        Some("https://github.com/o/r/pull/12#issuecomment-7")
+    );
+    assert_eq!(second.0.remaining(), 0);
+}
+
+// AI-725: an earlier QA body naming another run, or whose digest does not match, is never adopted.
+#[test]
+fn an_earlier_body_with_another_run_or_a_bad_digest_is_never_adopted() {
+    for tamper in ["other-run", "bad-digest"] {
+        let (_repo, runs, dir) = run_dir(false);
+        assert_eq!(time_out_first_post(&runs), ReceiptResult::Failed);
+        let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+        let content = report_content(&body, "").replacen("Video policy: ", "Video policy (earlier): ", 1);
+        let digest = qaren::candidate::sha256_hex(content.as_bytes());
+        let old_marker = match tamper {
+            "other-run" => format!("<!-- qaren-run: check-20261002T101500Z-000002 report={digest} -->"),
+            _ => format!("<!-- qaren-run: {RUN} report={} -->", "0".repeat(64)),
+        };
+        let old = format!("{old_marker}\n{content}");
+        std::fs::write(dir.join("comment.md"), &old).unwrap();
+
+        let mut second = Git(MockRunner::new());
+        second.0.expect_run("gh api user", CmdOutput::success("publisher\n"));
+        second.0.expect_run(
+            "gh pr view 12 -R github.com/o/r --json comments",
+            CmdOutput::success(&serde_json::json!({"comments": [
+                {"body": old, "author": {"login": "publisher"}, "url": "https://github.com/o/r/pull/12#issuecomment-7"}
+            ]}).to_string()),
+        );
+        second.0.expect_run(
+            "gh pr comment 12 -R github.com/o/r",
+            CmdOutput::success("https://github.com/o/r/pull/12#issuecomment-8\n"),
+        );
+        second.0.expect_run("gh pr view https://github.com/o/r/pull/12", view(""));
+        script_commit(&mut second.0);
+        second.0.expect_run("git push origin", CmdOutput::success(""));
+        let receipt = publish(&mut second, &runs, RUN, &machine());
+        assert_eq!(receipt.result, ReceiptResult::Published, "{tamper}: {:?}", receipt.failure);
+        assert_eq!(
+            publication(&dir).comment_url.as_deref(),
+            Some("https://github.com/o/r/pull/12#issuecomment-8"),
+            "{tamper}"
+        );
+        let posted = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+        assert!(!posted.contains("Video policy (earlier)"), "{tamper}: {posted}");
+        assert_eq!(second.0.remaining(), 0, "{tamper}");
+    }
+}
+
+// AI-725: a stored record without the policy field is a run from before the dev-mode default and keeps strict rules.
+#[test]
+fn a_legacy_record_without_a_policy_field_keeps_strict_rules() {
+    let (_repo, runs, dir) = run_dir(false);
+    set_ledger_source(&dir, Some(".qaren/testing.yaml"));
+    edit_pr(&dir, |pr| {
+        pr.as_object_mut().unwrap().remove("videoPolicy");
+        pr["videoPublication"] = "withheld-privacy".into();
+        pr["nonStrictPublication"] = "eligible".into();
+        pr["blocks"] = serde_json::json!([]);
+    });
+    let mut runner = Git(MockRunner::new());
+    script_comment_and_label(&mut runner.0);
+    let receipt = publish(&mut runner, &runs, RUN, &machine());
+    assert_eq!(receipt.result, ReceiptResult::Published, "{:?}", receipt.failure);
+    let comment = runner.0.calls.iter().find(|c| c.label == "gh-pr-comment").unwrap();
+    assert!(!comment.args.iter().any(|arg| arg == "./media/video-published.mp4"));
+    let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+    assert!(body.contains("Video policy: not declared in the selected app config, so strict rules apply."), "{body}");
+}
+
+// AI-725: in the PR description, too, a run without a video key follows the non-strict verdict.
+#[test]
+fn the_description_video_link_follows_the_dev_mode_verdict() {
+    for (non_strict, linked) in [("eligible", true), ("withheld-secret", false)] {
+        let (_repo, runs, dir) = run_dir(false);
+        set_ledger_source(&dir, Some(".qaren/testing.yaml"));
+        describe_pr(&dir, |pr| {
+            pr["videoPolicy"] = "default-non-strict".into();
+            pr["videoPublication"] = "withheld-privacy".into();
+            pr["nonStrictPublication"] = non_strict.into();
+        });
+        resume(&dir, true, Some("none"));
+        let mut runner = Git(MockRunner::new());
+        script_description(
+            &mut runner.0,
+            linked.then(|| comments_ending(ASSET)),
+            &[AUTHOR, AUTHOR],
+            Some(CmdOutput::success("")),
+        );
+        let receipt = publish(&mut runner, &runs, RUN, &machine());
+        assert_eq!(receipt.outcomes["description"], "written", "{non_strict}");
+        assert_eq!(runner.0.remaining(), 0, "{non_strict}");
+        let written = description(&dir);
+        let (_, video) = proof_section(&written);
+        if linked {
+            assert_eq!(video, ASSET);
+        } else {
+            assert!(!video.contains("https://"), "{video}");
+        }
+    }
+}
+
 fn edit_pr(dir: &Path, change: impl FnOnce(&mut serde_json::Value)) {
     let path = dir.join("pr.json");
     let mut pr: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -1845,9 +2104,10 @@ fn retry_regenerates_unposted_blocks_through_the_current_block_gate() {
         ReceiptResult::Failed
     );
     assert!(publication(&dir).blocks_comment_attempted);
-    assert!(std::fs::read_to_string(dir.join("blocks-comment.md"))
-        .unwrap()
-        .contains("qa-fixture-user"));
+    // AI-725: the earlier two-block comment was posted by this publisher and its response lost; the
+    // regenerated body admits only the safe block, so the earlier comment must not be adopted.
+    let earlier = std::fs::read_to_string(dir.join("blocks-comment.md")).unwrap();
+    assert!(earlier.contains("qa-fixture-user"));
     let posted_walk = std::fs::read(dir.join("comment.md")).unwrap();
     let mut second = Uploads {
         runner: Git(MockRunner::new()),
@@ -1857,10 +2117,12 @@ fn retry_regenerates_unposted_blocks_through_the_current_block_gate() {
         .runner
         .0
         .expect_run("gh api user", CmdOutput::success("publisher\n"));
-    second
-        .runner
-        .0
-        .expect_run("gh pr view 12", CmdOutput::success(r#"{"comments":[]}"#));
+    second.runner.0.expect_run(
+        "gh pr view 12",
+        CmdOutput::success(&serde_json::json!({"comments": [
+            {"body": earlier, "author": {"login": "publisher"}, "url": "https://github.com/o/r/pull/12#issuecomment-9"}
+        ]}).to_string()),
+    );
     second.runner.0.expect_run(
         "gh pr comment",
         CmdOutput::success("https://github.com/o/r/pull/12#issuecomment-2"),
@@ -1882,6 +2144,7 @@ fn retry_regenerates_unposted_blocks_through_the_current_block_gate() {
     assert!(!body.contains("qa-fixture-user"));
     assert_eq!(std::fs::read(dir.join("comment.md")).unwrap(), posted_walk);
     assert!(receipt.outcomes["writeback"].contains("withheld tasks"));
+    assert!(receipt.outcomes["writeback"].starts_with("attached https://github.com/o/r/pull/12#issuecomment-2"), "{}", receipt.outcomes["writeback"]);
 
     let mut again = Git(MockRunner::new());
     assert_eq!(
@@ -3176,7 +3439,8 @@ fn privacy_comment_names_only_the_video_cause() {
 
 #[test]
 fn screenshots_follow_the_persisted_video_mode_from_walk_to_pr_comment() {
-    for policy in ["absent", "strict", "non-strict"] {
+    // "absent" is a record from a version before the dev-mode default; "default" is a current run without a video key.
+    for policy in ["absent", "strict", "non-strict", "default"] {
         for carrier in ["artwork", "test-pii", "secret", "secure"] {
             let (_repo, runs, dir) = run_dir(false);
             let output = std::process::Command::new("node")
@@ -3199,7 +3463,7 @@ const nodes = [{ ref: '@artwork', type: carrier === 'secure' ? 'SecureTextField'
   value: carrier === 'secure' ? undefined : value }];
 const observed = applyNativePrivateInputs(join(nodes, []), nodes);
 const f = walker([observed], scriptedJudge(() => assert.fail('literal checks are model-free')));
-f.deps.videoPolicy = policy === 'absent' ? undefined : policy;
+f.deps.videoPolicy = policy === 'absent' ? undefined : policy === 'default' ? 'non-strict' : policy;
 f.deps.screenshot = async () => 'screenshots/01.png';
 const privacy = new ObservedPrivacy();
 f.deps.privacy = privacy;
@@ -3221,11 +3485,16 @@ process.stdout.write(JSON.stringify(ledger));
             std::fs::write(dir.join("ledger.json"), &output.stdout).unwrap();
             edit_pr(&dir, |pr| {
                 pr["blocks"] = serde_json::json!([]);
-                pr["videoPolicy"] = ledger["videoPolicy"].clone();
+                pr["videoPolicy"] = if policy == "default" {
+                    "default-non-strict".into()
+                } else {
+                    ledger["videoPolicy"].clone()
+                };
                 pr["videoPolicySource"] = ".qaren/testing.yaml".into();
                 pr["videoPublication"] = ledger["videoPublication"].clone();
                 pr["nonStrictPublication"] = ledger["nonStrictPublication"].clone();
             });
+            set_ledger_source(&dir, Some(".qaren/testing.yaml"));
             let mut runner = Git(MockRunner::new());
             script_comment_and_label(&mut runner.0);
             let receipt = publish(&mut runner, &runs, RUN, &machine());
@@ -3241,7 +3510,8 @@ process.stdout.write(JSON.stringify(ledger));
                 .iter()
                 .find(|call| call.label == "gh-pr-comment")
                 .unwrap();
-            let expected = policy == "non-strict" && matches!(carrier, "artwork" | "test-pii");
+            let expected = matches!(policy, "non-strict" | "default")
+                && matches!(carrier, "artwork" | "test-pii");
             assert_eq!(
                 comment
                     .args
@@ -3260,12 +3530,35 @@ process.stdout.write(JSON.stringify(ledger));
                 expected,
                 "{policy} {carrier}: {body}"
             );
+            assert_eq!(
+                comment
+                    .args
+                    .iter()
+                    .any(|arg| arg == "./media/video-published.mp4"),
+                expected,
+                "{policy} {carrier}"
+            );
+            // Dev mode names a withheld video the way non-strict does.
+            if matches!(policy, "non-strict" | "default") {
+                let withheld = match carrier {
+                    "secure" => Some("Video withheld: a protected field or value was on screen in the published window (secure-field)."),
+                    "secret" => Some("Video withheld: a protected field or value was on screen in the published window (echo)."),
+                    _ => None,
+                };
+                if let Some(withheld) = withheld {
+                    assert!(body.contains(withheld), "{policy} {carrier}: {body}");
+                }
+            }
             let wording = if policy == "absent" {
-                "Video policy: not declared in .qaren/testing.yaml, so strict rules apply."
+                "Video policy: not declared in the selected app config, so strict rules apply."
+                    .to_string()
+            } else if policy == "default" {
+                "Video policy: not declared in the selected app config, so dev-mode (non-strict) rules apply."
                     .to_string()
             } else {
-                format!("Video policy: {policy} (declared in .qaren/testing.yaml).")
+                format!("Video policy: {policy} (declared in the selected app config).")
             };
+            assert!(!body.contains(".qaren/testing.yaml"), "{body}");
             assert!(body.contains(&wording), "{body}");
             assert!(!body.contains("synthetic-screenshot-canary"));
             assert_eq!(runner.0.remaining(), 0);
@@ -3290,9 +3583,11 @@ fn persisted_non_strict_video_contract_never_relaxes_saved_blocks() {
             Some("future-status"),
             None,
         ] {
+            for word in ["non-strict", "default-non-strict"] {
             let (_repo, runs, dir) = run_dir(false);
+            set_ledger_source(&dir, Some(".qaren/testing.yaml"));
             edit_pr(&dir, |pr| {
-                pr["videoPolicy"] = "non-strict".into();
+                pr["videoPolicy"] = word.into();
                 pr["videoPolicySource"] = ".qaren/testing.yaml".into();
                 if let Some(value) = &strict {
                     pr["videoPublication"] = value.clone();
@@ -3331,10 +3626,12 @@ fn persisted_non_strict_video_contract_never_relaxes_saved_blocks() {
                 "{strict:?} {non_strict:?}"
             );
             let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
-            assert!(
-                body.contains("Video policy: non-strict (declared in .qaren/testing.yaml)."),
-                "{body}"
-            );
+            let policy_line = if word == "non-strict" {
+                "Video policy: non-strict (declared in the selected app config)."
+            } else {
+                "Video policy: not declared in the selected app config, so dev-mode (non-strict) rules apply."
+            };
+            assert!(body.contains(policy_line), "{body}");
             assert_eq!(
                 body.contains("Video of the walk is attached below."),
                 expected
@@ -3344,7 +3641,10 @@ fn persisted_non_strict_video_contract_never_relaxes_saved_blocks() {
                 receipt.outcomes["writeback"],
                 "withheld tasks: the walk was not eligible for publication"
             );
+            // No saved block is posted to GitHub either (no second comment).
+            assert_eq!(runner.0.calls.iter().filter(|c| c.label == "gh-pr-comment").count(), 1, "{word}");
             assert_eq!(runner.0.remaining(), 0);
+            }
         }
     }
 }
@@ -3387,6 +3687,8 @@ fn unavailable_video_reasons_agree_across_publication_surfaces_and_retries() {
         let note = &receipt.outcomes["video_summary"];
         let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
         assert!(body.contains(&note.replace('`', "\\`")), "{body}\n{note}");
+        // AI-725: the arbitrary legacy explanation is never published; its closed code's text is.
+        assert!(!body.contains("legacy recorder explanation"), "{body}");
         assert!(note.starts_with("Video not published: "));
         assert_eq!(std::fs::read(dir.join("pr.json")).unwrap(), original);
         let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();

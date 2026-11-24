@@ -217,7 +217,8 @@ fn non_strict_secret_causes_get_specific_wording_and_eligible_inputs_get_the_esc
             &VideoStatus::Available,
             &VideoPublication::WithheldFill,
         );
-        assert!(body.contains("Video policy: non-strict (declared in .qaren/target.yaml)."));
+        assert!(body.contains("Video policy: non-strict (declared in the selected app config)."));
+        assert!(!body.contains(".qaren/target.yaml"), "{body}");
         assert!(!body.contains("Video of the walk is attached"));
         if reason == "runtime-input" {
             assert!(
