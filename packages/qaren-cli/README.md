@@ -6489,6 +6489,26 @@ the slot until the run's group is retired. iOS recovery follows the
 [cleanup and orphaned-lock proof rules](#ios-admission-and-cleanup).
 The lock is released after publication (iOS), after preparation (Android) or
 by cleanup, only when owned build authority is retired.
+On Android under `prepare`, the wait for `expo run:android` to build, install
+and start the app follows the compile step's progress rule above from the
+wait's own start: a time cut first becomes eligible at or after
+`deadlines.build_seconds`; past it the wait goes on while it observes the count
+of output lines increasing within the idle window. The window is three times
+the limit, capped at 7200 s. Each turn checks admission after the slot poll and
+cancellation check. A turn admitted by the end of the window finishes its
+probes. A pending or refused turn also finishes its count read. Scheduling,
+probe execution and file I/O can delay the return beyond the window. The limit
+of this wait is not learned. When it ends by `no_progress` or `window` the
+failure stays `READY_DEADLINE_EXCEEDED` and carries the `limit` block with
+`phase` `expo_run_android` and the `build_time_limit` recovery; when the window
+was already 7200 s, its remedy says no higher `deadlines.build_seconds` extends
+the window and, after cleanup, to read the last lines of the build log (or run
+`pnpm exec expo run:android` yourself when the log is withheld) for the step it
+stood on, fix that and run again. At a time cut QaReN sends no signal. Run
+this run's `qaren cleanup` and check its result.
+Cleanup can report unresolved group ownership or retain the slot. A pass
+records `expo_run_android` in `timings_ms`, and a pass after the limit also the
+`build_limit` outcome.
 
 **Credential-authorized dependency prewarming.** Under `deps.policy:
 require-prewarm`, `qaren prewarm <scenario>` is the one deliberate network

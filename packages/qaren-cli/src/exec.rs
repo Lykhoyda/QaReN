@@ -16,6 +16,9 @@ pub mod log;
 pub struct CmdSpec {
     #[serde(skip)]
     pub(crate) core_log: bool,
+    // A spawn_group drain also keeps a count of output lines beside the log.
+    #[serde(skip)]
+    pub(crate) count_lines: bool,
     pub label: String,
     pub program: String,
     pub args: Vec<String>,
@@ -34,6 +37,7 @@ impl CmdSpec {
     pub fn new(label: &str, program: &str, args: &[&str], timeout_seconds: u64) -> Self {
         CmdSpec {
             core_log: false,
+            count_lines: false,
             label: label.to_string(),
             program: program.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
@@ -43,6 +47,11 @@ impl CmdSpec {
             registry_auth_env: Vec::new(),
             timeout_seconds,
         }
+    }
+
+    pub fn count_lines(mut self) -> Self {
+        self.count_lines = true;
+        self
     }
 
     pub fn cwd(mut self, dir: &Path) -> Self {
@@ -629,6 +638,7 @@ impl Runner for RealRunner {
         let started = Instant::now();
         crate::progress::started(&spec.label, true);
         crate::events::cmd(&spec.label, crate::events::Edge::Start, None, None);
+        let line_count = spec.count_lines.then(|| log::line_count_path(log_path));
         let result = (|| {
             let (drain, output, error) = log::LogDrain::spawn_paired(
                 &self.log_executable,
@@ -637,7 +647,7 @@ impl Runner for RealRunner {
                 spec.env
                     .iter()
                     .any(|(key, value)| key == "DEBUG" && value == log::METRO_REQUEST_LOG),
-                None,
+                line_count.as_deref(),
             )?;
             let mut cmd = Command::new(&spec.program);
             cmd.args(&spec.args)

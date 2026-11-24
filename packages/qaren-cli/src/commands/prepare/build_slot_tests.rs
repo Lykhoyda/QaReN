@@ -15,6 +15,15 @@ struct TestRunner {
     saw_slot: bool,
     spawn_error: bool,
     fault: Option<&'static str>,
+    // The path of every log_lines call, in order.
+    reads: Vec<PathBuf>,
+    // (read number, ms): that read, the first being 1, takes that long on the scripted clock.
+    slow_reads: Vec<(usize, u64)>,
+    // (sleep number, ms): that sleep after the first read, the first being 1, ends that much late.
+    late_sleep: Option<(usize, u64)>,
+    sleeps_after_read: usize,
+    // The scripted clock at each readiness identity probe of the expo process.
+    probe_ms: Vec<u64>,
 }
 
 impl Runner for TestRunner {
@@ -25,6 +34,9 @@ impl Runner for TestRunner {
         self.inner.env_names()
     }
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
+        if spec.rendered().contains("ps -p 6000 -o stat=") {
+            self.probe_ms.push(self.inner.monotonic_ms());
+        }
         self.inner.execute(spec, interruptible)
     }
     fn spawn_piped_unchecked(&mut self, spec: &CmdSpec, log: &Path) -> std::io::Result<PipedChild> {
@@ -122,10 +134,24 @@ impl Runner for TestRunner {
         self.inner.spawn_group_unchecked(spec, log)
     }
     fn log_lines(&mut self, log: &Path) -> Option<u64> {
+        self.reads.push(log.to_path_buf());
+        let read = self.reads.len();
+        if let Some(&(_, ms)) = self.slow_reads.iter().find(|(n, _)| *n == read) {
+            self.inner.sleep(Duration::from_millis(ms));
+        }
         self.inner.log_lines(log)
     }
     fn sleep(&mut self, duration: Duration) {
         self.inner.sleep(duration);
+        if !self.reads.is_empty() {
+            self.sleeps_after_read += 1;
+            if let Some((_, ms)) = self
+                .late_sleep
+                .filter(|(n, _)| *n == self.sleeps_after_read)
+            {
+                self.inner.sleep(Duration::from_millis(ms));
+            }
+        }
         if let Some(path) = self.release_on_sleep.take() {
             if self.fault == Some("wait-root") {
                 let root = path.parent().unwrap();
@@ -212,6 +238,11 @@ fn fixture(name: &str, platform: Platform) -> Fixture {
             saw_slot: false,
             spawn_error: false,
             fault: None,
+            reads: Vec::new(),
+            slow_reads: Vec::new(),
+            late_sleep: None,
+            sleeps_after_read: 0,
+            probe_ms: Vec::new(),
         },
         record,
     }
@@ -456,6 +487,16 @@ fn expo_script(f: &mut Fixture, log: &str, ready: bool) {
 }
 
 fn expo_script_with_identity(f: &mut Fixture, log: &str, ready: bool, identity: bool) {
+    expo_spawn_script(f, log, identity);
+    if !identity {
+        return;
+    }
+    for _ in 0..if ready { 1 } else { 3 } {
+        expo_turn(f, ready);
+    }
+}
+
+fn expo_spawn_script(f: &mut Fixture, log: &str, identity: bool) {
     f.record.resources.adb_server = Some(crate::runrecord::AdbServerResource {
         spawned: Spawned {
             pid: 7100,
@@ -487,40 +528,24 @@ fn expo_script_with_identity(f: &mut Fixture, log: &str, ready: bool, identity: 
         "ps -p 6000 -o command=",
         CmdOutput::success("expo run:android"),
     );
-    if !identity {
+}
+
+fn expo_turn(f: &mut Fixture, ready: bool) {
+    let runner = &mut f.runner.inner;
+    runner.expect_run("ps -p 6000 -o lstart=", CmdOutput::success(BIRTH));
+    runner.expect_run("ps -p 6000 -o stat=", CmdOutput::success("S"));
+    if !ready {
+        runner.expect_run("lsof", CmdOutput::failed(1, ""));
         return;
     }
-    for _ in 0..if ready { 1 } else { 2 } {
-        f.runner
-            .inner
-            .expect_run("ps -p 6000 -o lstart=", CmdOutput::success(BIRTH));
-        f.runner
-            .inner
-            .expect_run("ps -p 6000 -o stat=", CmdOutput::success("S"));
-        f.runner.inner.expect_run(
-            "lsof",
-            if ready {
-                CmdOutput::success("6001\n")
-            } else {
-                CmdOutput::failed(1, "")
-            },
-        );
-        if ready {
-            f.runner
-                .inner
-                .expect_run("ps", CmdOutput::success("6000\n"));
-            f.runner
-                .inner
-                .expect_run("curl", CmdOutput::success("packager-status:running"));
-            f.runner.inner.expect_run(
-                "shell pm path",
-                CmdOutput::success("package:/data/app/base.apk\n"),
-            );
-            f.runner
-                .inner
-                .expect_run("shell pidof", CmdOutput::success("12345\n"));
-        }
-    }
+    runner.expect_run("lsof", CmdOutput::success("6001\n"));
+    runner.expect_run("ps", CmdOutput::success("6000\n"));
+    runner.expect_run("curl", CmdOutput::success("packager-status:running"));
+    runner.expect_run(
+        "shell pm path",
+        CmdOutput::success("package:/data/app/base.apk\n"),
+    );
+    runner.expect_run("shell pidof", CmdOutput::success("12345\n"));
 }
 
 #[test]
@@ -565,10 +590,10 @@ fn s10_s14_readiness_timeout_retains_slot_until_metro_retirement_is_proven() {
         let mut f = fixture(&format!("expo-timeout-{retired}"), Platform::Android);
         expo_script(&mut f, "compiling\n", false);
         let mut ctx = f.ctx();
-        assert_eq!(
-            build_and_ready(&mut ctx).unwrap_err().code,
-            FailureCode::ReadyDeadlineExceeded
-        );
+        let failure = build_and_ready(&mut ctx).unwrap_err();
+        assert_eq!(failure.code, FailureCode::ReadyDeadlineExceeded);
+        let limit = failure.limit.as_deref().unwrap();
+        assert_eq!((limit.ended_by, limit.elapsed_s), (LimitEnd::Window, 9));
         assert!(ctx.record.resources.metro.is_some());
         ctx.record.resources.adb_server = None;
         ctx.record.resources.adb_local_serial = None;
@@ -577,6 +602,7 @@ fn s10_s14_readiness_timeout_retains_slot_until_metro_retirement_is_proven() {
             ctx.record.resources.metro.as_mut().unwrap().identity = None;
         }
         ctx.save().unwrap();
+        assert_reads(&f, 4);
         assert!(f.root.join("locks/native-build-slot").exists());
         f.runner.inner.expect_run(
             &format!("ps -p {} -o lstart=", std::process::id()),
@@ -947,17 +973,14 @@ fn s9_repeated_release_errors_add_only_one_readiness_note() {
     std::fs::write(slot.lock_dir.join("holder.json"), "{").unwrap();
     std::fs::write(log, "BUILD SUCCESSFUL in 12s\n").unwrap();
     f.record = ctx.record.clone();
-    for _ in 0..2 {
-        f.runner
-            .inner
-            .expect_run("ps -p 6000 -o lstart=", CmdOutput::success(BIRTH));
-        f.runner
-            .inner
-            .expect_run("ps -p 6000 -o stat=", CmdOutput::success("S"));
-        f.runner.inner.expect_run("lsof", CmdOutput::failed(1, ""));
+    for _ in 0..3 {
+        expo_turn(&mut f, false);
     }
+    f.runner.reads.clear();
     let mut ctx = f.ctx();
-    assert!(wait_ready(&mut ctx).is_err());
+    let failure = wait_ready(&mut ctx).unwrap_err();
+    let limit = failure.limit.as_deref().unwrap();
+    assert_eq!((limit.ended_by, limit.elapsed_s), (LimitEnd::Window, 9));
     assert_eq!(
         ctx.notes
             .iter()
@@ -965,6 +988,7 @@ fn s9_repeated_release_errors_add_only_one_readiness_note() {
             .count(),
         1
     );
+    assert_reads(&f, 4);
 }
 
 #[test]
@@ -1725,4 +1749,638 @@ fn g3_a_learned_limit_is_per_platform_and_per_app() {
     learn_build_limit(&mut ctx);
     assert_eq!(build_limit_seconds(&ctx), 3);
     assert!(ctx.notes.is_empty());
+}
+
+// AI-471 slice 4a: the expo run:android wait goes on past its limit while the count grows.
+
+enum TurnEnd {
+    Pending,
+    Ready,
+    Dead,
+}
+
+fn expo_wait(
+    f: &mut Fixture,
+    limit: u64,
+    counts: VecDeque<Option<u64>>,
+    pending: usize,
+    end: TurnEnd,
+) {
+    f.record.scenario.deadlines.build_seconds = limit;
+    expo_spawn_script(f, "compiling\n", true);
+    for _ in 0..pending {
+        expo_turn(f, false);
+    }
+    match end {
+        TurnEnd::Pending => {}
+        TurnEnd::Ready => expo_turn(f, true),
+        TurnEnd::Dead => f
+            .runner
+            .inner
+            .expect_run("ps -p 6000 -o lstart=", CmdOutput::failed(1, "")),
+    }
+    f.runner.inner.scripted_log_lines = counts;
+}
+
+// Every count read was of the recorded log, the count queue is used up and the script is exhausted.
+fn assert_reads(f: &Fixture, reads: usize) {
+    let log = RunRecord::run_dir(&f.root, "check-slot").join("logs/build.log");
+    assert_eq!(f.runner.reads, vec![log; reads]);
+    assert!(f.runner.inner.scripted_log_lines.is_empty());
+    assert_eq!(f.runner.inner.remaining(), 0);
+}
+
+// A passing wait's timings and notes.
+fn waited(f: &mut Fixture) -> (Vec<(String, u64)>, Vec<(String, String)>) {
+    let mut ctx = f.ctx();
+    build_and_ready(&mut ctx).unwrap();
+    (ctx.timings, ctx.notes)
+}
+
+fn flat(mut counts: VecDeque<Option<u64>>, value: u64, times: usize) -> VecDeque<Option<u64>> {
+    counts.extend(std::iter::repeat_n(Some(value), times));
+    counts
+}
+
+fn timing(timings: &[(String, u64)]) -> Vec<u64> {
+    timings
+        .iter()
+        .filter(|(key, _)| key == "expo_run_android")
+        .map(|(_, ms)| *ms)
+        .collect()
+}
+
+fn limit_note(notes: &[(String, String)]) -> Vec<&str> {
+    notes
+        .iter()
+        .filter(|(key, _)| key == "build_limit")
+        .map(|(_, note)| note.as_str())
+        .collect()
+}
+
+// (ended_by, elapsed_s, last_progress_age_s, next_limit_s, window_s)
+fn cut_facts(failure: &Failure) -> (LimitEnd, u64, Option<u64>, Option<u64>, u64) {
+    assert_eq!(
+        failure.code,
+        FailureCode::ReadyDeadlineExceeded,
+        "{failure:?}"
+    );
+    assert_eq!(failure.phase, "build");
+    let limit = failure.limit.as_deref().expect("limit facts");
+    assert_eq!(limit.phase, "expo_run_android");
+    (
+        limit.ended_by,
+        limit.elapsed_s,
+        limit.last_progress_age_s,
+        limit.next_limit_s,
+        limit.window_s,
+    )
+}
+
+#[test]
+fn r1_a_wait_that_keeps_growing_passes_after_its_limit() {
+    let mut f = fixture("wait-growing", Platform::Android);
+    expo_wait(&mut f, 2400, growing(660), 660, TurnEnd::Ready);
+    let (timings, notes) = waited(&mut f);
+    assert_eq!(timing(&timings), vec![3_300_000]);
+    assert_eq!(
+        limit_note(&notes),
+        vec!["limit 2400 s; readiness was confirmed after 3300 s; window 7200 s"]
+    );
+    let spec = f
+        .runner
+        .inner
+        .calls
+        .iter()
+        .find(|call| call.label == "expo-run-android")
+        .unwrap();
+    assert!(spec.count_lines);
+    assert_eq!(
+        f.runner.inner.spawned_logs,
+        vec![RunRecord::run_dir(&f.root, "check-slot").join("logs/build.log")]
+    );
+    assert_reads(&f, 661);
+}
+
+fn r2_counts() -> VecDeque<Option<u64>> {
+    flat(growing(401), 401, 120)
+}
+
+#[test]
+fn r2_growth_that_ends_is_cut_one_idle_window_after_it() {
+    let mut f = fixture("wait-idle", Platform::Android);
+    expo_wait(&mut f, 2400, r2_counts(), 521, TurnEnd::Pending);
+    let log = RunRecord::run_dir(&f.root, "check-slot").join("logs/build.log");
+    let mut ctx = f.ctx();
+    let failure = build_and_ready(&mut ctx).unwrap_err();
+    assert_eq!(failure.code, FailureCode::ReadyDeadlineExceeded);
+    assert_eq!(failure.phase, "build");
+    assert_eq!(
+        failure.limit.as_deref().unwrap(),
+        &LimitFacts {
+            phase: "expo_run_android".into(),
+            setting: "deadlines.build_seconds".into(),
+            limit_s: 2400,
+            window_s: 7200,
+            idle_s: Some(600),
+            elapsed_s: 2600,
+            ended_by: LimitEnd::NoProgress,
+            last_progress_age_s: Some(600),
+            next_limit_s: Some(2400),
+            learned: false,
+        }
+    );
+    assert_eq!(
+        failure.build_recovery().unwrap().reason,
+        RecoveryReason::BuildTimeLimit
+    );
+    assert_eq!(
+        failure.detail.to_string(),
+        format!(
+            "QaReN stopped waiting for expo run:android after 2600 s. The 2400 s limit was reached and the wait observed no increase in the output count for 600 s. QaReN sent no signal to the process; run this run's cleanup to retire its recorded group; see {}",
+            log.display()
+        )
+    );
+    assert_eq!(failure.next_action.to_string(), "run again");
+    assert_eq!(
+        failure.log.as_ref().unwrap().file.to_string(),
+        log.display().to_string()
+    );
+    assert!(ctx.record.resources.metro.is_some());
+    assert!(ctx.record.resources.build_slot.is_some());
+    assert_reads(&f, 522);
+}
+
+#[test]
+fn r2b_a_count_on_the_turn_the_idle_cut_was_due_keeps_the_wait() {
+    let mut f = fixture("wait-idle-late", Platform::Android);
+    let counts = flat(flat(growing(401), 401, 119), 402, 121);
+    expo_wait(&mut f, 2400, counts, 641, TurnEnd::Pending);
+    let failure = build_and_ready(&mut f.ctx()).unwrap_err();
+    assert_eq!(
+        cut_facts(&failure),
+        (LimitEnd::NoProgress, 3200, Some(600), Some(2400), 7200)
+    );
+    assert_reads(&f, 642);
+}
+
+#[test]
+fn r3_a_silent_wait_is_cut_at_its_limit_or_window() {
+    for (name, limit, counts, pending, want) in [
+        (
+            "a",
+            2400,
+            VecDeque::new(),
+            481,
+            (LimitEnd::NoProgress, 2400, Some(2400), Some(2400), 7200),
+        ),
+        (
+            "b",
+            100,
+            flat(growing(19), 19, 42),
+            61,
+            (LimitEnd::Window, 300, Some(210), Some(300), 300),
+        ),
+        (
+            "c",
+            3,
+            VecDeque::new(),
+            3,
+            (LimitEnd::Window, 9, Some(9), Some(9), 9),
+        ),
+    ] {
+        let mut f = fixture(&format!("wait-silent-{name}"), Platform::Android);
+        expo_wait(&mut f, limit, counts, pending, TurnEnd::Pending);
+        let failure = build_and_ready(&mut f.ctx()).unwrap_err();
+        assert_eq!(cut_facts(&failure), want, "R3{name}");
+        assert_reads(&f, pending + 1);
+    }
+}
+
+#[test]
+fn r4_a_wait_that_always_grows_ends_at_its_window() {
+    for (name, limit, counts, pending, want) in [
+        (
+            "a",
+            600,
+            growing(361),
+            361,
+            (LimitEnd::Window, 1800, Some(0), Some(1800), 1800),
+        ),
+        (
+            "b",
+            2400,
+            growing(1441),
+            1441,
+            (LimitEnd::Window, 7200, Some(0), None, 7200),
+        ),
+        (
+            "c",
+            2400,
+            flat(growing(1321), 1321, 120),
+            1441,
+            (LimitEnd::Window, 7200, Some(600), None, 7200),
+        ),
+    ] {
+        let mut f = fixture(&format!("wait-window-{name}"), Platform::Android);
+        expo_wait(&mut f, limit, counts, pending, TurnEnd::Pending);
+        let failure = build_and_ready(&mut f.ctx()).unwrap_err();
+        assert_eq!(cut_facts(&failure), want, "R4{name}");
+        if name == "b" {
+            assert!(
+                failure.next_action.contains("cannot extend it"),
+                "{failure:?}"
+            );
+            assert!(failure.detail.starts_with(
+                "QaReN stopped waiting for expo run:android after 7200 s: the wait reached the end of its window of 7200 s; the age since the last observed count increase, or since wait entry if none was observed, was 0 s; QaReN sent no signal to the process; run this run's cleanup to retire its recorded group; see "
+            ), "{failure:?}");
+        }
+        assert_reads(&f, pending + 1);
+    }
+}
+
+#[test]
+fn r5_the_cut_receipt_names_cleanup_then_the_limits_remedy() {
+    let mut f = fixture("wait-receipt", Platform::Android);
+    expo_wait(&mut f, 2400, r2_counts(), 521, TurnEnd::Pending);
+    let mut ctx = f.ctx();
+    let failure = build_and_ready(&mut ctx).unwrap_err();
+    let receipt = ctx.fail(failure);
+    let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+    assert_eq!(json["result"], "failed");
+    assert_eq!(json["failure"]["limit"]["phase"], "expo_run_android");
+    let next = "qaren cleanup check-slot --json; only after cleanup completes: run again";
+    assert_eq!(json["failure"]["next_action"], next);
+    assert_eq!(json["next_action"], next);
+    for recovery in [&json["recovery"], &json["failure"]["recovery"]] {
+        assert_eq!(recovery["reason"], "build_time_limit", "{json}");
+        assert_eq!(recovery["next_rung"], 1);
+        assert_eq!(recovery["own_run_id"], "check-slot");
+        assert_eq!(
+            recovery["ladder"][0]["instruction"],
+            "after `qaren cleanup <own-run-id> --json` has succeeded: run again"
+        );
+    }
+    assert!(json["outcomes"].get("build_failure_next_action").is_none());
+    assert_reads(&f, 522);
+}
+
+#[test]
+fn r6_a_process_proven_dead_while_growing_is_a_build_failure() {
+    let mut f = fixture("wait-dead", Platform::Android);
+    expo_wait(&mut f, 2400, growing(600), 600, TurnEnd::Dead);
+    let failure = build_and_ready(&mut f.ctx()).unwrap_err();
+    assert_eq!(failure.code, FailureCode::BuildFailed);
+    assert!(failure.detail.starts_with("build/metro process exited"));
+    assert!(failure.limit.is_none());
+    assert_reads(&f, 601);
+}
+
+#[test]
+fn r8a_a_ready_result_that_returns_after_the_window_passes() {
+    let mut f = fixture("wait-late-ready", Platform::Android);
+    expo_wait(&mut f, 3, VecDeque::new(), 0, TurnEnd::Ready);
+    f.runner.inner.advance_on = Some(("pm path".into(), 12_000));
+    let (timings, notes) = waited(&mut f);
+    assert_eq!(timing(&timings), vec![12_000]);
+    assert_eq!(
+        limit_note(&notes),
+        vec!["limit 3 s; readiness was confirmed after 12 s; window 9 s"]
+    );
+    assert_reads(&f, 1);
+}
+
+#[test]
+fn r8b_a_pending_result_that_returns_after_the_window_is_cut() {
+    let mut f = fixture("wait-late-pending", Platform::Android);
+    expo_wait(&mut f, 3, VecDeque::new(), 1, TurnEnd::Pending);
+    f.runner.inner.advance_on = Some(("lsof".into(), 12_000));
+    let failure = build_and_ready(&mut f.ctx()).unwrap_err();
+    assert_eq!(
+        cut_facts(&failure),
+        (LimitEnd::Window, 12, Some(12), Some(9), 9)
+    );
+    assert_reads(&f, 2);
+}
+
+#[test]
+fn r8c_a_late_wake_past_the_window_probes_no_more() {
+    let mut f = fixture("wait-late-wake", Platform::Android);
+    expo_wait(
+        &mut f,
+        3,
+        [0, 1, 1, 2].into_iter().map(Some).collect(),
+        2,
+        TurnEnd::Pending,
+    );
+    f.runner.late_sleep = Some((2, 1000));
+    let failure = build_and_ready(&mut f.ctx()).unwrap_err();
+    assert_eq!(
+        cut_facts(&failure),
+        (LimitEnd::Window, 10, Some(0), Some(9), 9)
+    );
+    assert_eq!(f.runner.probe_ms.len(), 2);
+    assert_reads(&f, 4);
+}
+
+#[test]
+fn r8d_a_slow_read_across_the_limit_lets_the_next_turn_probe_at_once() {
+    let mut f = fixture("wait-slow-silent", Platform::Android);
+    expo_wait(&mut f, 2400, VecDeque::new(), 480, TurnEnd::Ready);
+    f.runner.slow_reads = vec![(481, 6000)];
+    let (timings, _) = waited(&mut f);
+    assert_eq!(timing(&timings), vec![2_401_000]);
+    assert_reads(&f, 481);
+}
+
+#[test]
+fn r8e_growth_returned_by_a_slow_read_is_dated_at_its_return() {
+    let mut f = fixture("wait-slow-growth", Platform::Android);
+    let counts = flat(flat(VecDeque::new(), 0, 480), 1, 121);
+    expo_wait(&mut f, 2400, counts, 600, TurnEnd::Pending);
+    f.runner.slow_reads = vec![(481, 6000)];
+    let failure = build_and_ready(&mut f.ctx()).unwrap_err();
+    assert_eq!(
+        cut_facts(&failure),
+        (LimitEnd::NoProgress, 3001, Some(600), Some(2400), 7200)
+    );
+    assert_reads(&f, 601);
+}
+
+#[test]
+fn r8f_slow_reads_past_the_window_report_at_the_last_reads_return() {
+    let mut f = fixture("wait-slow-window", Platform::Android);
+    expo_wait(&mut f, 3, VecDeque::new(), 2, TurnEnd::Pending);
+    f.runner.slow_reads = vec![(3, 45_000), (4, 50_000)];
+    let start = f.runner.inner.monotonic_ms();
+    let failure = build_and_ready(&mut f.ctx()).unwrap_err();
+    assert_eq!(
+        cut_facts(&failure),
+        (LimitEnd::Window, 100, Some(100), Some(9), 9)
+    );
+    assert_eq!(f.runner.probe_ms, vec![start, start + 5000]);
+    assert_reads(&f, 4);
+}
+
+#[test]
+fn r9_ready_or_dead_on_the_limit_turn_of_a_silent_wait_is_returned() {
+    let mut f = fixture("wait-limit-ready", Platform::Android);
+    expo_wait(&mut f, 2400, VecDeque::new(), 480, TurnEnd::Ready);
+    let (timings, notes) = waited(&mut f);
+    assert_eq!(timing(&timings), vec![2_400_000]);
+    assert!(limit_note(&notes).is_empty());
+    assert_reads(&f, 481);
+
+    let mut f = fixture("wait-limit-dead", Platform::Android);
+    expo_wait(&mut f, 2400, VecDeque::new(), 480, TurnEnd::Dead);
+    let failure = build_and_ready(&mut f.ctx()).unwrap_err();
+    assert_eq!(failure.code, FailureCode::BuildFailed);
+    assert!(failure.limit.is_none());
+    assert_reads(&f, 481);
+}
+
+const S: u64 = 1000;
+
+fn progress_at(limit_s: u64, last_count: u64, last_growth_ms: u64) -> ReadyProgress {
+    ReadyProgress {
+        last_count,
+        last_growth_ms,
+        ..ReadyProgress::new(0, limit_s, None)
+    }
+}
+
+fn pend(at_ms: u64, read_ms: u64, count: Option<u64>) -> Turn {
+    Turn {
+        probed: true,
+        at_ms,
+        count,
+        read_ms,
+    }
+}
+
+fn cut_ms(ended_by: LimitEnd, elapsed_ms: u64, age_ms: u64) -> Step {
+    Step::Cut {
+        ended_by,
+        elapsed_ms,
+        age_ms,
+    }
+}
+
+#[test]
+fn u_decide_rows() {
+    use LimitEnd::{NoProgress, Window};
+    let p3 = |c, g| progress_at(3, c, g);
+    let p2400 = |c, g| progress_at(2400, c, g);
+    // (row, state before, turn, step, (last_count, last_growth_ms) after)
+    #[rustfmt::skip]
+    let rows = [
+        ("U1", p3(0, 0), pend(5 * S, 5 * S, Some(0)), Step::Sleep(4 * S), (0, 0)),
+        ("U2", p3(0, 0), pend(9 * S, 9 * S, Some(0)), cut_ms(Window, 9 * S, 9 * S), (0, 0)),
+        ("U3", p3(1, 0), Turn { probed: false, at_ms: 10 * S, count: Some(2), read_ms: 10 * S },
+            cut_ms(Window, 10 * S, 0), (2, 10 * S)),
+        ("U4", p3(0, 0), pend(12 * S, 12 * S, Some(0)), cut_ms(Window, 12 * S, 12 * S), (0, 0)),
+        ("U5", p2400(0, 0), pend(2395 * S, 2395 * S, Some(0)), Step::Sleep(5 * S), (0, 0)),
+        ("U6", p2400(0, 0), pend(2400 * S, 2400 * S, Some(0)),
+            cut_ms(NoProgress, 2400 * S, 2400 * S), (0, 0)),
+        ("U7", p2400(0, 0), pend(2_399_990, 2_400_010, Some(0)), Step::Sleep(0), (0, 0)),
+        ("U8", p2400(0, 0), pend(2395 * S, 2401 * S, Some(1)), Step::Sleep(5 * S), (1, 2401 * S)),
+        ("U9", p2400(1, 2401 * S), pend(2996 * S, 2996 * S, Some(1)), Step::Sleep(5 * S),
+            (1, 2401 * S)),
+        ("U10", p2400(1, 2401 * S), pend(3001 * S, 3001 * S, Some(2)), Step::Sleep(5 * S),
+            (2, 3001 * S)),
+        ("U11", p2400(1, 2401 * S), pend(3001 * S, 3001 * S, Some(1)),
+            cut_ms(NoProgress, 3001 * S, 600 * S), (1, 2401 * S)),
+        ("U12", p2400(1, 2401 * S), pend(2995 * S, 2995 * S, Some(1)), Step::Sleep(5 * S),
+            (1, 2401 * S)),
+        ("U13", p2400(1321, 6600 * S), pend(7200 * S, 7200 * S, Some(1321)),
+            cut_ms(Window, 7200 * S, 600 * S), (1321, 6600 * S)),
+        ("U14", p2400(401, 2000 * S), pend(2600 * S, 2600 * S, Some(402)), Step::Sleep(5 * S),
+            (402, 2600 * S)),
+        ("U15", p2400(1440, 7195 * S), pend(7200 * S, 7200 * S, Some(1441)),
+            cut_ms(Window, 7200 * S, 0), (1441, 7200 * S)),
+        ("U16", p3(0, 0), pend(12 * S, 13 * S, Some(1)), cut_ms(Window, 13 * S, 0), (1, 13 * S)),
+        ("U17", p2400(10, 2000 * S), pend(2600 * S, 2600 * S, Some(3)),
+            cut_ms(NoProgress, 2600 * S, 600 * S), (3, 2000 * S)),
+        ("U18", p2400(5, 2000 * S), pend(2600 * S, 2600 * S, None),
+            cut_ms(NoProgress, 2600 * S, 600 * S), (5, 2000 * S)),
+        ("U19", p2400(0, 0), pend(2_399_999, 2_399_999, Some(0)), Step::Sleep(1), (0, 0)),
+        ("U20", p3(0, 0), pend(8 * S, 9_500, Some(0)), Step::Sleep(0), (0, 0)),
+        ("U21", p2400(7, 6599 * S), pend(7_199_990, 7_200_010, Some(7)),
+            cut_ms(NoProgress, 7_200_010, 601_010), (7, 6599 * S)),
+        ("U22", p2400(0, 0), pend(2400 * S, 2401 * S, Some(0)),
+            cut_ms(NoProgress, 2401 * S, 2401 * S), (0, 0)),
+        ("U23", p2400(0, 0), pend(2400 * S, 2401 * S, Some(1)), Step::Sleep(5 * S), (1, 2401 * S)),
+        ("U24", p3(0, 0), pend(12 * S, 60 * S, Some(0)), cut_ms(Window, 60 * S, 60 * S), (0, 0)),
+        ("U25", p3(0, 0), pend(12 * S, 60 * S, Some(1)), cut_ms(Window, 60 * S, 0), (1, 60 * S)),
+        ("U26", progress_at(200, 0, 0), pend(300 * S, 300 * S, Some(0)),
+            cut_ms(NoProgress, 300 * S, 300 * S), (0, 0)),
+        ("U27", progress_at(100, 0, 0), pend(300 * S, 300 * S, Some(0)),
+            cut_ms(Window, 300 * S, 300 * S), (0, 0)),
+        ("U28", progress_at(200, 0, 0), pend(295 * S, 295 * S, Some(0)), Step::Sleep(5 * S),
+            (0, 0)),
+        ("U29", p2400(1, 2000 * S), pend(2599 * S, 2601 * S, Some(1)), Step::Sleep(0),
+            (1, 2000 * S)),
+    ];
+    assert_eq!(rows.len(), 29);
+    for (row, mut state, turn, want, after) in rows {
+        assert_eq!(state.decide(turn), want, "{row}");
+        assert_eq!((state.last_count, state.last_growth_ms), after, "{row}");
+    }
+    let p = p3(0, 0);
+    assert!(p.admits(9 * S));
+    assert!(!p.admits(9 * S + 1));
+    assert!(!p.admits(10 * S));
+    assert!(p2400(0, 0).admits(2400 * S));
+}
+
+// xorshift64*, a fixed seed: no crate.
+struct Rng(u64);
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+    // Mostly small, sometimes large.
+    fn delay(&mut self, usual: u64, rare: u64) -> u64 {
+        let max = if self.below(10) == 0 { rare } else { usual };
+        self.below(max + 1)
+    }
+}
+
+#[test]
+fn p_seeded_turns_keep_the_invariants() {
+    let tick = READY_TICK.as_millis() as u64;
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
+    let (mut idle_cuts, mut window_cuts, mut readies, mut refused) = (0u32, 0u32, 0u32, 0u32);
+    for case in 0..20_000u32 {
+        let limit_s = [30, 60, 100, 200, 400, 1200, 2400, 7200][rng.below(8) as usize];
+        // Publication instants of the count file, ms from the wait's start, ascending.
+        let mut publications = Vec::new();
+        let mut t = 0u64;
+        let horizon = limit_s * 3 * 1000 + 600_000;
+        let style = rng.below(4);
+        while t < horizon {
+            t += match style {
+                0 => 1_000 + rng.below(30_000),
+                1 => 1_000 + rng.below(700_000),
+                2 => horizon,
+                _ => 1_000 + rng.below(310_000),
+            };
+            if style != 2 && rng.below(40) == 0 {
+                break;
+            }
+            publications.push(t);
+        }
+        let ready_at = (rng.below(3) == 0).then(|| rng.below(horizon));
+
+        let mut now = 0u64;
+        let mut progress = ReadyProgress::new(0, limit_s, Some(0));
+        let (limit_ms, idle_ms, window_ms) =
+            (progress.limit_ms, progress.idle_ms, progress.window_ms);
+        let mut zero_sleeps = 0u32;
+        // The sample instant of the read that last saw growth, or the baseline's.
+        let mut growth_sample = 0u64;
+        for turns in 1u32.. {
+            assert!(turns < 2_000_000, "case {case}: the wait does not end");
+            let admitted = progress.admits(now);
+            if admitted {
+                // Invariant 3: no turn with a sample after the window probes.
+                assert!(now <= window_ms, "case {case}");
+                now += rng.delay(800, 120_000);
+                if ready_at.is_some_and(|r| r <= now) {
+                    readies += 1;
+                    break;
+                }
+            } else {
+                refused += 1;
+            }
+            let at_ms = now;
+            // A read samples the file somewhere inside its own duration.
+            let read_takes = rng.delay(5, 20_000);
+            let sample = now + rng.below(read_takes + 1);
+            now += read_takes;
+            let before = progress.last_count;
+            let count = publications.partition_point(|&p| p <= sample) as u64;
+            let step = progress.decide(Turn {
+                probed: admitted,
+                at_ms,
+                count: Some(count),
+                read_ms: now,
+            });
+            if count > before {
+                growth_sample = sample;
+                // Invariant 1: growth is stamped at the read's return.
+                assert_eq!(progress.last_growth_ms, now, "case {case}");
+            }
+            match step {
+                Step::Sleep(ms) => {
+                    assert!(admitted, "case {case}: a refused turn went on");
+                    assert!(
+                        at_ms < window_ms,
+                        "case {case}: pending at the window went on"
+                    );
+                    assert!(ms <= tick);
+                    zero_sleeps = if ms == 0 { zero_sleeps + 1 } else { 0 };
+                    assert!(zero_sleeps <= 2, "case {case}: the loop spins");
+                    now += ms + rng.delay(3, 90_000);
+                }
+                Step::Cut {
+                    ended_by,
+                    elapsed_ms,
+                    age_ms,
+                } => {
+                    // Invariant 6 and the facts at the read's return.
+                    assert!(
+                        elapsed_ms >= limit_ms,
+                        "case {case}: a cut before the limit"
+                    );
+                    assert_eq!(elapsed_ms, now, "case {case}");
+                    assert_eq!(age_ms, now - progress.last_growth_ms, "case {case}");
+                    match ended_by {
+                        LimitEnd::NoProgress => {
+                            idle_cuts += 1;
+                            assert!(admitted, "case {case}");
+                            assert!(
+                                at_ms >= limit_ms && at_ms < window_ms && age_ms >= idle_ms,
+                                "case {case}"
+                            );
+                            assert!(
+                                at_ms - progress.last_growth_ms >= idle_ms,
+                                "case {case}: idle was not due at the pending result"
+                            );
+                            // Invariant 4: no observed increase for the idle window.
+                            assert!(sample - growth_sample >= idle_ms, "case {case}");
+                            assert!(
+                                !publications
+                                    .iter()
+                                    .any(|&p| p > at_ms - idle_ms && p <= sample),
+                                "case {case}: cut although the count grew within the idle window"
+                            );
+                        }
+                        LimitEnd::Window => {
+                            window_cuts += 1;
+                            assert!(elapsed_ms >= window_ms, "case {case}");
+                            assert!(
+                                at_ms > window_ms || (admitted && at_ms == window_ms),
+                                "case {case}: the window was not due at the deciding observation"
+                            );
+                        }
+                        LimitEnd::CommandLimit => {
+                            panic!("case {case}: the wait has no command limit")
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+    assert!(
+        idle_cuts > 1000 && window_cuts > 1000 && readies > 1000 && refused > 100,
+        "no_progress {idle_cuts}, window {window_cuts}, ready {readies}, refused {refused}"
+    );
 }
