@@ -3254,6 +3254,10 @@ process.stdout.write(JSON.stringify(ledger));
                 expected,
                 "{policy} {carrier}"
             );
+            if carrier == "secure" {
+                let video = "./media/video-published.mp4";
+                assert!(!comment.args.iter().any(|arg| arg == video), "{policy}");
+            }
             let body = std::fs::read_to_string(dir.join("comment.md")).unwrap();
             assert_eq!(
                 body.contains("![Failing step]"),
