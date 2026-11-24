@@ -63,7 +63,6 @@ fn watchman_cookies_do_not_change_candidate_cleanliness_or_fingerprints() {
             None => assert!(result.is_ok(), "{result:?}"),
         }
         assert_eq!(runner.remaining(), 0);
-        std::fs::remove_dir_all(repo).unwrap();
     }
 }
 
@@ -111,7 +110,6 @@ fn check_integration_drift(extra_path: Option<&str>, tracked: bool) -> bool {
         write(path, "changed\n");
     }
     let result = verify_unchanged_with(&mut runner, &integrated_baseline, true);
-    std::fs::remove_dir_all(&repo).unwrap();
     println!("{extra_path:?} (tracked={tracked}): {result:?}");
     result.is_ok()
 }
@@ -193,7 +191,6 @@ fn phrase_named_files_preserve_native_fingerprints_and_drift_detection() {
             "tracked={tracked}"
         );
         assert!(verify_unchanged_with(&mut runner, &baseline, false).is_err());
-        std::fs::remove_dir_all(repo).unwrap();
     }
 }
 
@@ -288,11 +285,10 @@ fn same_status_dirty_and_untracked_content_changes_during_install_are_rejected()
             qaren::failure::FailureCode::CandidateDrifted
         );
         assert!(verify_unchanged_with(&mut RealRunner::new(), &baseline, false).is_err());
-        std::fs::remove_dir_all(repo).unwrap();
     }
 }
 
-fn mock_baseline(status: &str) -> (std::path::PathBuf, qaren::candidate::Candidate) {
+fn mock_baseline(status: &str) -> (common::TempRepo, qaren::candidate::Candidate) {
     mock_baseline_with(status, |_| {})
 }
 
@@ -327,7 +323,7 @@ fn a_failed_git_read_is_unreadable_never_drift() {
         )
     };
     for head in [not_a_repo(), git_timeout(), git_spawn_failure()] {
-        let (repo, baseline) = mock_baseline("");
+        let (_repo, baseline) = mock_baseline("");
         let mut runner = MockRunner::new();
         runner.expect_run("git", head);
         assert_unreadable(
@@ -335,7 +331,6 @@ fn a_failed_git_read_is_unreadable_never_drift() {
             "git rev-parse HEAD failed",
         );
         assert_eq!(runner.remaining(), 0);
-        std::fs::remove_dir_all(repo).unwrap();
     }
     for status in [
         not_a_repo(),
@@ -344,7 +339,7 @@ fn a_failed_git_read_is_unreadable_never_drift() {
         git_timeout(),
         git_spawn_failure(),
     ] {
-        let (repo, baseline) = mock_baseline("");
+        let (_repo, baseline) = mock_baseline("");
         let mut runner = MockRunner::new();
         runner.expect_run("git", CmdOutput::success("abc"));
         runner.expect_run("git", status);
@@ -353,7 +348,6 @@ fn a_failed_git_read_is_unreadable_never_drift() {
             "git status --porcelain=v1 -z failed",
         );
         assert_eq!(runner.remaining(), 0);
-        std::fs::remove_dir_all(repo).unwrap();
     }
 }
 
@@ -368,7 +362,6 @@ fn a_missing_repository_or_project_root_is_unreadable_without_running_git() {
             expected,
         );
         assert!(runner.calls.is_empty(), "no git call may run");
-        let _ = std::fs::remove_dir_all(repo);
     }
 }
 
@@ -376,7 +369,7 @@ fn a_missing_repository_or_project_root_is_unreadable_without_running_git() {
 fn an_integration_filter_read_failure_is_unreadable_not_a_cleanliness_flip() {
     let modified = " M test-app/package.json\0";
     // git show HEAD:<path> fails.
-    let (repo, baseline) = mock_baseline("");
+    let (_repo, baseline) = mock_baseline("");
     let mut runner = MockRunner::new();
     runner.expect_run("git", CmdOutput::success("abc"));
     runner.expect_run("git", CmdOutput::success(modified));
@@ -386,10 +379,9 @@ fn an_integration_filter_read_failure_is_unreadable_not_a_cleanliness_flip() {
         "git show HEAD:test-app/package.json failed",
     );
     assert_eq!(runner.remaining(), 0);
-    std::fs::remove_dir_all(repo).unwrap();
 
     // The tracked-identity git read fails after an integration-only delta.
-    let (repo, baseline) = mock_baseline("");
+    let (_repo, baseline) = mock_baseline("");
     let mut runner = MockRunner::new();
     runner.expect_run("git", CmdOutput::success("abc"));
     runner.expect_run("git", CmdOutput::success(modified));
@@ -404,7 +396,6 @@ fn an_integration_filter_read_failure_is_unreadable_not_a_cleanliness_flip() {
         "git ls-tree HEAD failed",
     );
     assert_eq!(runner.remaining(), 0);
-    std::fs::remove_dir_all(repo).unwrap();
 
     // The working file cannot be read.
     let (repo, baseline) = mock_baseline("");
@@ -419,10 +410,9 @@ fn an_integration_filter_read_failure_is_unreadable_not_a_cleanliness_flip() {
         "cannot read test-app/package.json",
     );
     assert_eq!(runner.remaining(), 0);
-    std::fs::remove_dir_all(repo).unwrap();
 
     // A readable but non-integration delta stays a cleanliness flip.
-    let (repo, baseline) = mock_baseline("");
+    let (_repo, baseline) = mock_baseline("");
     let mut runner = MockRunner::new();
     runner.expect_run("git", CmdOutput::success("abc"));
     runner.expect_run("git", CmdOutput::success(modified));
@@ -432,12 +422,11 @@ fn an_integration_filter_read_failure_is_unreadable_not_a_cleanliness_flip() {
         matches!(&result, Err(CandidateCheck::Drifted(d)) if d.contains("cleanliness changed")),
         "{result:?}"
     );
-    std::fs::remove_dir_all(repo).unwrap();
 }
 
 #[test]
 fn readable_changes_stay_drift_and_unchanged_deletions_and_renames_verify() {
-    let (repo, baseline) = mock_baseline("");
+    let (_repo, baseline) = mock_baseline("");
     let mut runner = MockRunner::new();
     runner.expect_run("git", CmdOutput::success("def"));
     let result = verify_unchanged_with(&mut runner, &baseline, false);
@@ -445,7 +434,6 @@ fn readable_changes_stay_drift_and_unchanged_deletions_and_renames_verify() {
         matches!(&result, Err(CandidateCheck::Drifted(d)) if d.contains("HEAD moved")),
         "{result:?}"
     );
-    std::fs::remove_dir_all(repo).unwrap();
 
     let dirty = " D test-app/gone.ts\0R  test-app/new.ts\0test-app/old.ts\0";
     let (repo, baseline) = mock_baseline_with(dirty, |repo| {
@@ -465,13 +453,12 @@ fn readable_changes_stay_drift_and_unchanged_deletions_and_renames_verify() {
         matches!(&result, Err(CandidateCheck::Drifted(d)) if d.contains("contents changed")),
         "{result:?}"
     );
-    std::fs::remove_dir_all(repo).unwrap();
 }
 
 fn mock_baseline_with(
     status: &str,
     prepare: impl FnOnce(&Path),
-) -> (std::path::PathBuf, qaren::candidate::Candidate) {
+) -> (common::TempRepo, qaren::candidate::Candidate) {
     let repo = common::temp_repo();
     prepare(&repo);
     let scenario = common::scenario_from(&common::ios_scenario_yaml(8793));
@@ -504,7 +491,6 @@ fn a_deleted_lockfile_is_drift_but_an_unreadable_lockfile_is_unreadable() {
         verify_unchanged_with(&mut runner, &baseline, false),
         Err(CandidateCheck::Drifted("pnpm-lock.yaml changed".into()))
     );
-    std::fs::remove_dir_all(repo).unwrap();
 
     let (repo, baseline) = mock_baseline("");
     std::fs::remove_file(lockfile(&repo)).unwrap();
@@ -516,7 +502,6 @@ fn a_deleted_lockfile_is_drift_but_an_unreadable_lockfile_is_unreadable() {
         verify_unchanged_with(&mut runner, &baseline, false),
         "cannot read pnpm-lock.yaml",
     );
-    std::fs::remove_dir_all(repo).unwrap();
 }
 
 #[test]
@@ -577,5 +562,4 @@ fn a_real_checkout_whose_path_or_repository_vanishes_is_unreadable_but_a_new_com
         matches!(&result, Err(CandidateCheck::Drifted(d)) if d.contains("HEAD moved")),
         "{result:?}"
     );
-    std::fs::remove_dir_all(&repo).unwrap();
 }

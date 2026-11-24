@@ -50,8 +50,8 @@ fn record_path(home: &std::path::Path) -> PathBuf {
         .join("suite.json")
 }
 
-fn setup() -> (MockRunner, PathBuf) {
-    let home = common::temp_repo().canonicalize().unwrap();
+fn setup() -> (MockRunner, common::TempRepo) {
+    let home = common::temp_repo();
     let mut runner = MockRunner::new();
     runner
         .environment
@@ -265,7 +265,7 @@ fn absent_hosts(runner: &mut MockRunner) {
 
 #[test]
 fn scoped_cleanup_releases_despite_an_unrelated_controller_without_post_admission() {
-    let (mut runner, _) = setup();
+    let (mut runner, _home) = setup();
     preflight(&mut runner, "Booted");
     suite(&mut runner, Some(65));
     runner.expect_run("ps -A", CmdOutput::success("1 1 S\n777 777 S\n"));
@@ -357,7 +357,7 @@ fn scoped_cleanup_requires_exact_readable_supported_simulator_inventory() {
             ..CmdOutput::success(&inventory("Shutdown"))
         },
     ] {
-        let (mut runner, _, record) = abandoned();
+        let (mut runner, _home, record) = abandoned();
         runner.expect_run("lstart=", CmdOutput::failed(1, ""));
         absent_group(&mut runner);
         for _ in 0..3 {
@@ -386,7 +386,7 @@ fn old_successful_missing_lock_evidence_is_not_relabelled_as_scoped_proof() {
 
 #[test]
 fn exact_shutdown_inventory_releases_without_launchctl_or_post_admission() {
-    let (mut runner, _, record) = abandoned();
+    let (mut runner, _home, record) = abandoned();
     runner.expect_run("lstart=", CmdOutput::failed(1, ""));
     absent_group(&mut runner);
     runner.expect_run(
@@ -474,7 +474,7 @@ fn exact_shutdown_and_booted_targets_run_only_after_durable_ownership() {
     }
 }
 
-fn abandoned() -> (MockRunner, PathBuf, native_suite::NativeSuite) {
+fn abandoned() -> (MockRunner, common::TempRepo, native_suite::NativeSuite) {
     let (mut runner, home) = setup();
     preflight(&mut runner, "Booted");
     suite(&mut runner, Some(0));
@@ -490,7 +490,7 @@ fn abandoned() -> (MockRunner, PathBuf, native_suite::NativeSuite) {
 #[test]
 fn recovery_refuses_live_or_unknown_original_owner_without_signals() {
     for live in [true, false] {
-        let (mut runner, _, record) = abandoned();
+        let (mut runner, _home, record) = abandoned();
         if live {
             runner.expect_run("lstart=", CmdOutput::success(BIRTH));
             runner.expect_run("stat=", CmdOutput::success("S"));
@@ -604,7 +604,7 @@ fn absent_group_still_requires_fresh_scoped_host_absence() {
 #[test]
 fn failure_signal_and_lost_exit_are_not_replaced_by_cleanup_success() {
     for exit in [Some(65), Some(-1), None] {
-        let (mut runner, _) = setup();
+        let (mut runner, _home) = setup();
         preflight(&mut runner, "Shutdown");
         suite(&mut runner, exit);
         absent_group(&mut runner);
@@ -699,7 +699,7 @@ fn unsupported_simulators_and_non_exact_selectors_never_get_a_lease() {
         "AAAABBBB",
         "AAAABBBB-1111-2222-3333-44445555666G",
     ] {
-        let (mut runner, _) = setup();
+        let (mut runner, _home) = setup();
         assert!(native_suite::run(&mut runner, device).is_err());
         assert!(runner.calls.is_empty());
     }
@@ -795,20 +795,20 @@ fn spawn_and_identity_persistence_gaps_recover_after_owner_death_without_sending
     }
 }
 
-fn pending_spawn() -> Witness {
+fn pending_spawn() -> (Witness, common::TempRepo) {
     let (mut mock, home) = setup();
     preflight(&mut mock, "Shutdown");
     admission(&mut mock, "clear");
     mock.expect_spawn_piped("/bin/bash", 9000, "", None);
     let mut runner = Witness::new(mock, &home, Fault::SpawnGap);
     assert!(native_suite::run(&mut runner, DEVICE).is_err());
-    runner
+    (runner, home)
 }
 
 #[test]
 fn pending_recovery_refuses_live_unknown_or_foreign_holders_without_mutation() {
     for fault in ["live", "unknown", "foreign", "birth", "group"] {
-        let mut runner = pending_spawn();
+        let (mut runner, _home) = pending_spawn();
         let record = runner.record();
         let lock = Path::new(record["lock_dir"].as_str().unwrap());
         let mut holder = qaren::buildplan::read_holder(lock).unwrap();
@@ -853,7 +853,7 @@ fn pending_recovery_requires_runner_host_absence() {
         ),
         (CmdOutput::failed(1, "unknown inventory"), 3),
     ] {
-        let mut runner = pending_spawn();
+        let (mut runner, _home) = pending_spawn();
         let record = runner.record();
         runner.mock.expect_run("lstart=", CmdOutput::failed(1, ""));
         for _ in 0..reads {
@@ -871,7 +871,7 @@ fn pending_recovery_requires_runner_host_absence() {
 
 #[test]
 fn pending_recovery_retains_the_lease_when_its_transition_cannot_be_saved() {
-    let mut runner = pending_spawn();
+    let (mut runner, _home) = pending_spawn();
     let record = runner.record();
     runner.fault = Fault::CleanupSave;
     runner.mock.expect_run("lstart=", CmdOutput::failed(1, ""));
@@ -1169,7 +1169,7 @@ impl ChildHandle for TrackedChild {
 struct HybridRunner {
     mock: MockRunner,
     real: RealRunner,
-    home: PathBuf,
+    home: common::TempRepo,
     child: Option<Arc<Mutex<Box<dyn ChildHandle + Send>>>>,
     pid: i32,
     saw_zombie: bool,

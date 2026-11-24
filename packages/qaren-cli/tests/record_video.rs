@@ -90,15 +90,6 @@ fn real_publication_of_the_pr1142_timeline_has_no_dark_frame() {
         .count();
     assert_eq!(dark, 0);
     assert_eq!(std::fs::read(&source).unwrap(), original);
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-struct Remove(PathBuf);
-
-impl Drop for Remove {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 const BURSTS: &str = "color=c=black:s=320x240:r=60:d=6,geq=lum='if(lt(N,100),20+N*5,if(lt(N,250),85+(N-180)*5,155+(N-300)*5))':cb=128:cr=128,select='lt(t,0.2)+between(t,3,3.2)+between(t,5,5.2)'";
@@ -154,7 +145,6 @@ fn parse_pairs<T: std::str::FromStr>(value: &str) -> Vec<(T, T)> {
 #[ignore = "requires ffmpeg and ffprobe on PATH"]
 fn bursty_capture_keeps_each_picture_at_its_time() {
     let dir = common::temp_repo();
-    let _remove = Remove(dir.clone());
     std::fs::create_dir_all(dir.join("media")).unwrap();
     let raw = dir.join("media/raw.mov");
     common::checked_stdout(
@@ -221,7 +211,6 @@ fn kept_capture_keeps_each_picture_at_its_time() {
     };
     let kept = PathBuf::from(kept);
     let dir = common::temp_repo();
-    let _remove = Remove(dir.clone());
     std::fs::create_dir_all(dir.join("media")).unwrap();
     let raw = if kept.extension().is_some_and(|ext| ext == "mp4") {
         dir.join("media/raw.mp4")
@@ -275,7 +264,7 @@ fn kept_capture_keeps_each_picture_at_its_time() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-fn walking_record() -> (PathBuf, RunRecord) {
+fn walking_record() -> (common::TempRepo, RunRecord) {
     let repo = common::temp_repo();
     let record = common::base_record(
         &repo,
@@ -468,7 +457,7 @@ impl qaren::exec::Runner for GitRemoves {
     }
 }
 
-fn pr_run_record() -> (PathBuf, RunRecord, PathBuf) {
+fn pr_run_record() -> (common::TempRepo, RunRecord, PathBuf) {
     let (root, mut record) = walking_record();
     record.resources.recorder = Some(RecorderResource {
         pid: Some(7100),
@@ -485,7 +474,7 @@ fn pr_run_record() -> (PathBuf, RunRecord, PathBuf) {
     let wt = qaren::worktree::pr_worktree_path(&RunRecord::run_dir(&root, &record.run_id));
     std::fs::create_dir_all(&wt).unwrap();
     record.resources.pr_worktree = Some(qaren::runrecord::PrWorktreeResource {
-        repo_root: root.clone(),
+        repo_root: root.to_path_buf(),
         path: wt.clone(),
     });
     record.save(&root).unwrap();
@@ -851,7 +840,7 @@ fn cancellation_during_recorder_readiness_stops_and_retires_the_recorder() {
     assert_eq!(mock.remaining(), 0);
 }
 
-fn android_walking_record() -> (PathBuf, RunRecord) {
+fn android_walking_record() -> (common::TempRepo, RunRecord) {
     use qaren::runrecord::BorrowedEmulatorResource;
     let (root, mut record) = walking_record();
     record.scenario.platform = qaren::scenario::Platform::Android;
@@ -884,7 +873,7 @@ fn android_walking_record() -> (PathBuf, RunRecord) {
     (root, record)
 }
 
-fn android_recording_record() -> (PathBuf, RunRecord) {
+fn android_recording_record() -> (common::TempRepo, RunRecord) {
     let (root, mut record) = android_walking_record();
     record.resources.recorder = Some(RecorderResource {
         pid: Some(7100),

@@ -103,7 +103,7 @@ fn machine() -> MachineIdentity {
     }
 }
 
-fn run_dir(cross_repository: bool) -> (PathBuf, PathBuf) {
+fn run_dir(cross_repository: bool) -> (common::TempRepo, PathBuf, PathBuf) {
     let repo = common::temp_repo();
     let runs = repo.join("runs");
     let dir = runs.join(RUN);
@@ -127,7 +127,7 @@ fn run_dir(cross_repository: bool) -> (PathBuf, PathBuf) {
         head_ref_oid: TESTED.into(),
         head_ref_name: "feat/tasks".into(),
         is_cross_repository: cross_repository,
-        repo_root: repo.clone(),
+        repo_root: repo.to_path_buf(),
         app_rel: "test-app".into(),
         platform: "ios".into(),
         app_id: "com.rndevagent.testapp".into(),
@@ -161,7 +161,7 @@ fn run_dir(cross_repository: bool) -> (PathBuf, PathBuf) {
     std::fs::write(dir.join("media/video.mp4"), "mp4").unwrap();
     std::fs::write(dir.join("media/video-published.mp4"), "mp4").unwrap();
     std::fs::write(dir.join("screenshots/01.png"), "png").unwrap();
-    (runs, dir)
+    (repo, runs, dir)
 }
 
 fn final_terminal() -> TerminalResult {
@@ -264,7 +264,7 @@ fn publication(dir: &Path) -> Publication {
 #[test]
 fn cancelled_runs_refuse_new_and_resumed_publication_without_side_effects() {
     for resumed in [false, true] {
-        let (runs, dir) = run_dir(false);
+        let (_repo, runs, dir) = run_dir(false);
         let mut record = qaren::runrecord::RunRecord::load(&runs, RUN).unwrap();
         record.terminal = Some(TerminalResult {
             cancelled: true,
@@ -312,7 +312,7 @@ fn cancelled_runs_refuse_new_and_resumed_publication_without_side_effects() {
 
 #[test]
 fn publish_comments_removes_the_label_and_pushes_the_blocks_with_the_exact_lease() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     seed_logs(&dir);
     let mut runner = Staged(Git(MockRunner::new()), Vec::new(), Vec::new());
     script_comment_and_label(&mut runner.0 .0);
@@ -406,7 +406,7 @@ fn publish_comments_removes_the_label_and_pushes_the_blocks_with_the_exact_lease
 
 #[test]
 fn a_rerun_after_the_comment_posts_no_second_comment() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     let mut first = Git(MockRunner::new());
     first.0.expect_run(
         "gh pr comment",
@@ -445,7 +445,7 @@ fn a_rerun_after_the_comment_posts_no_second_comment() {
 
 #[test]
 fn a_lost_attached_comment_is_adopted_after_github_rewrites_its_body() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     let mut first = Git(MockRunner::new());
     first.0.expect_run(
         "gh pr comment",
@@ -506,7 +506,7 @@ fn a_lost_attached_comment_is_adopted_after_github_rewrites_its_body() {
 
 #[test]
 fn a_rejected_lease_attaches_the_yaml_in_a_second_comment() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     seed_logs(&dir);
     let mut runner = Staged(Git(MockRunner::new()), Vec::new(), Vec::new());
     script_comment_and_label(&mut runner.0 .0);
@@ -546,7 +546,7 @@ fn a_rejected_lease_attaches_the_yaml_in_a_second_comment() {
 
 #[test]
 fn a_fork_pr_gets_the_yaml_comment_and_no_push() {
-    let (runs, dir) = run_dir(true);
+    let (_repo, runs, dir) = run_dir(true);
     let mut runner = Git(MockRunner::new());
     script_comment_and_label(&mut runner.0);
     runner.0.expect_run(
@@ -673,7 +673,7 @@ const DETAIL: &str = "+12025550142";
 
 #[test]
 fn neither_published_body_carries_failure_text() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     seed_logs(&dir);
     let moved = format!("TARGET_NOT_FOUND: \"Alpha plan\" is text hidden from accessibility; its unnamed button no longer resolved to exactly one element on the next read after one scroll, so nothing was tapped; \"Alpha plan\" is inside a button that hides its children from accessibility and has no accessibilityLabel (the button at 14,161.7,374,90), so no element carries it. Give the button an accessibilityLabel; its unnamed button at 14,161.7,374,90 was not tapped: the runner refused the press: FOCUS_TARGET_OCCLUDED: {ROW}");
     let ledger = serde_json::json!({
@@ -746,7 +746,7 @@ fn neither_published_body_carries_failure_text() {
 
 #[test]
 fn description_is_written_after_the_comment() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     seed_logs(&dir);
     describe_pr(&dir, |_| {});
     let mut runner = Staged(Git(MockRunner::new()), Vec::new(), Vec::new());
@@ -799,7 +799,7 @@ fn description_is_written_after_the_comment() {
 #[test]
 fn a_new_head_replaces_the_section() {
     use qaren::report::{PROOF_END, PROOF_START};
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     describe_pr(&dir, |_| {});
     resume(&dir, true, Some("none"));
     let before = "Author ![img](https://github.com/user-attachments/assets/author-image)\r\n\r\n";
@@ -831,7 +831,7 @@ fn a_new_head_replaces_the_section() {
 
 #[test]
 fn a_changing_body_is_reread_once_then_skipped() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     describe_pr(&dir, |_| {});
     resume(&dir, true, Some("none"));
     let mut runner = Git(MockRunner::new());
@@ -846,7 +846,7 @@ fn a_changing_body_is_reread_once_then_skipped() {
     assert!(description(&dir).starts_with("B\n\n<!-- qaren-proof:start -->\n"));
     assert_eq!(runner.0.remaining(), 0);
 
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     describe_pr(&dir, |_| {});
     resume(&dir, true, Some("none"));
     let mut runner = Git(MockRunner::new());
@@ -869,7 +869,7 @@ fn a_changing_body_is_reread_once_then_skipped() {
 
 #[test]
 fn a_withheld_video_never_reaches_the_description() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     describe_pr(&dir, |pr| {
         pr["videoPublication"] = serde_json::to_value(VideoPublication::WithheldFill).unwrap();
     });
@@ -909,7 +909,7 @@ fn a_withheld_video_never_reaches_the_description() {
 fn a_trailing_url_is_ignored_unless_the_owner_attached_it() {
     // An unknown policy or an unattached video never reads the comment back.
     for (attached, policy) in [(true, "unknown"), (false, "strict")] {
-        let (runs, dir) = run_dir(false);
+        let (_repo, runs, dir) = run_dir(false);
         describe_pr(&dir, |pr| pr["videoPolicy"] = policy.into());
         resume(&dir, attached, Some("none"));
         let mut runner = Git(MockRunner::new());
@@ -932,7 +932,7 @@ fn a_trailing_url_is_ignored_unless_the_owner_attached_it() {
         "https://github.com/user-attachments/assets/a b",
         COMMENT_URL,
     ] {
-        let (runs, dir) = run_dir(false);
+        let (_repo, runs, dir) = run_dir(false);
         describe_pr(&dir, |_| {});
         resume(&dir, true, Some("none"));
         let mut runner = Git(MockRunner::new());
@@ -960,7 +960,7 @@ fn a_moved_head_skips_the_description() {
         (false, Some(COMMIT)),
         (true, Some(COMMIT)),
     ] {
-        let (runs, dir) = run_dir(false);
+        let (_repo, runs, dir) = run_dir(false);
         describe_pr(&dir, |_| {});
         resume(&dir, true, Some("none"));
         let mut state = publication(&dir);
@@ -995,7 +995,7 @@ fn a_moved_head_skips_the_description() {
 
 #[test]
 fn ambiguous_markers_skip_the_description_for_good() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     describe_pr(&dir, |_| {});
     resume(&dir, true, Some("none"));
     let body = format!("Author\n{}\n", qaren::report::PROOF_START);
@@ -1028,7 +1028,7 @@ fn ambiguous_markers_skip_the_description_for_good() {
 
 #[test]
 fn a_refused_edit_is_reported_not_failed() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     describe_pr(&dir, |_| {});
     let mut runner = Git(MockRunner::new());
     script_comment_and_label(&mut runner.0);
@@ -1095,7 +1095,7 @@ fn a_refused_edit_is_reported_not_failed() {
 
 #[test]
 fn a_failed_read_is_a_retryable_skip() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     describe_pr(&dir, |_| {});
     resume(&dir, true, Some("none"));
     let mut runner = Git(MockRunner::new());
@@ -1131,7 +1131,7 @@ fn a_failed_read_is_a_retryable_skip() {
 
 #[test]
 fn a_fork_pr_is_described_like_any_other() {
-    let (runs, dir) = run_dir(true);
+    let (_repo, runs, dir) = run_dir(true);
     describe_pr(&dir, |_| {});
     let mut runner = Git(MockRunner::new());
     script_comment_and_label(&mut runner.0);
@@ -1164,7 +1164,7 @@ fn a_fork_pr_is_described_like_any_other() {
 
 #[test]
 fn a_resumed_publication_only_describes() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     describe_pr(&dir, |_| {});
     resume(&dir, true, None);
     let mut runner = Git(MockRunner::new());
@@ -1198,7 +1198,7 @@ fn a_resumed_publication_only_describes() {
 
 #[test]
 fn without_the_key_nothing_changes() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     // A pr.json written before the key existed.
     let path = dir.join("pr.json");
     let mut pr: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -1225,7 +1225,7 @@ fn without_the_key_nothing_changes() {
 
 #[test]
 fn an_origin_that_is_not_the_pr_repository_gets_the_yaml_comment_and_no_push() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     let mut runner = Git(MockRunner::new());
     script_comment_and_label(&mut runner.0);
     runner.0.expect_run(
@@ -1286,7 +1286,7 @@ impl Runner for SymlinkedCorpus {
 
 #[test]
 fn a_symlinked_corpus_in_the_pr_tree_is_refused_and_the_yaml_is_attached() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     let mut runner = SymlinkedCorpus(Git(MockRunner::new()));
     let mock = &mut runner.0 .0;
     script_comment_and_label(mock);
@@ -1330,7 +1330,7 @@ fn a_symlinked_corpus_in_the_pr_tree_is_refused_and_the_yaml_is_attached() {
 
 #[test]
 fn a_live_publisher_holds_the_run() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     use std::os::fd::AsRawFd;
     let held = std::fs::File::create(dir.join("publish.lock")).unwrap();
     assert_eq!(
@@ -1351,7 +1351,7 @@ fn a_live_publisher_holds_the_run() {
 
 #[test]
 fn an_unreadable_publication_state_fails_closed() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     std::fs::write(dir.join("publication.json"), "{not json").unwrap();
     let mut runner = Git(MockRunner::new());
     let receipt = publish(&mut runner, &runs, RUN, &machine());
@@ -1410,7 +1410,7 @@ fn calls_named(runner: &MockRunner, label: &str) -> usize {
 
 #[test]
 fn the_raw_plan_is_never_published() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     std::fs::write(
         dir.join("plan.md"),
         format!("fill password with \"{SECRET}\"\n"),
@@ -1441,7 +1441,7 @@ fn blocks_from_a_walk_that_is_not_eligible_are_withheld() {
         Some(serde_json::json!("unknown")),
         None,
     ] {
-        let (runs, dir) = run_dir(false);
+        let (_repo, runs, dir) = run_dir(false);
         std::fs::write(
             dir.join("blocks/tasks.yaml"),
             format!("steps:\n  - inputText: \"{SECRET}\"\n"),
@@ -1486,7 +1486,7 @@ fn blocks_from_a_walk_that_is_not_eligible_are_withheld() {
 
 #[test]
 fn an_eligible_parameterised_block_is_committed_byte_identical() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     let source = "steps:\n  - inputText: ${PASSWORD}\n    into: \"Password\"\n";
     std::fs::write(dir.join("blocks/tasks.yaml"), source).unwrap();
     let mut runner = Staged(Git(MockRunner::new()), Vec::new(), Vec::new());
@@ -1516,7 +1516,7 @@ fn a_block_the_redaction_would_change_is_withheld_never_rewritten() {
         "steps:\n  - device: emulator-5554\n".to_string(),
         "steps:\n  - key: |\n      -----BEGIN PRIVATE KEY-----\n      FAKEFIXTUREBODY\n      -----END PRIVATE KEY-----\n".to_string(),
     ] {
-        let (runs, dir) = run_dir(false);
+        let (_repo, runs, dir) = run_dir(false);
         std::fs::write(dir.join("blocks/tasks.yaml"), &content).unwrap();
         edit_pr(&dir, |pr| pr["identityValues"] = serde_json::json!(["emulator-5554"]));
         let mut runner = Staged(Git(MockRunner::new()), Vec::new(), Vec::new());
@@ -1547,7 +1547,7 @@ fn fixture_machine() -> MachineIdentity {
 
 #[test]
 fn the_runs_identity_values_and_tool_vocabulary_never_reach_the_comment() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     edit_pr(&dir, |pr| {
         pr["blocks"] = serde_json::json!([]);
         pr["identityValues"] = serde_json::json!(["emulator-5554", "R58M00SYNTH0", "8081", "8791"]);
@@ -1601,7 +1601,7 @@ fn withheld_or_unknown_eligibility_never_uploads_video() {
         Some(serde_json::json!({"invalid": true})),
         Some(serde_json::Value::Null),
     ] {
-        let (runs, dir) = run_dir(false);
+        let (_repo, runs, dir) = run_dir(false);
         let path = dir.join("pr.json");
         let mut pr: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -1647,7 +1647,7 @@ fn withheld_or_unknown_eligibility_never_uploads_video() {
 
 #[test]
 fn withheld_fill_reason_holds_when_the_plan_fill_never_ran() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     let path = dir.join("pr.json");
     let mut pr: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     pr["blocks"] = serde_json::json!([]);
@@ -1681,7 +1681,7 @@ fn withheld_fill_reason_holds_when_the_plan_fill_never_ran() {
 
 #[test]
 fn publishing_an_older_head_retains_the_qa_request_and_receipt() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     let path = dir.join("pr.json");
     let mut pr: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     pr["blocks"] = serde_json::json!([]);
@@ -1715,7 +1715,7 @@ fn publishing_an_older_head_retains_the_qa_request_and_receipt() {
 #[test]
 fn an_abandoned_empty_or_partial_lock_does_not_block_publication() {
     for content in ["", "not-a-pid", "12"] {
-        let (runs, dir) = run_dir(false);
+        let (_repo, runs, dir) = run_dir(false);
         std::fs::write(dir.join("publish.lock"), content).unwrap();
         let path = dir.join("pr.json");
         let mut pr: serde_json::Value =
@@ -1773,7 +1773,7 @@ impl Runner for Uploads {
 
 #[test]
 fn retry_regenerates_an_unposted_walk_comment_with_current_privacy() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     edit_pr(&dir, |pr| pr["blocks"] = serde_json::json!([]));
     let ledger_path = dir.join("ledger.json");
     let mut ledger: serde_json::Value =
@@ -1825,7 +1825,7 @@ fn retry_regenerates_an_unposted_walk_comment_with_current_privacy() {
 
 #[test]
 fn retry_regenerates_unposted_blocks_through_the_current_block_gate() {
-    let (runs, dir) = run_dir(true);
+    let (_repo, runs, dir) = run_dir(true);
     edit_pr(&dir, |pr| {
         pr["blocks"] = serde_json::json!(["tasks", "safe"])
     });
@@ -1921,7 +1921,7 @@ fn producer_block(plan_hash: &str) -> String {
 
 #[test]
 fn a_block_in_the_producers_format_from_an_eligible_walk_is_committed_byte_identical() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     let slug = "onboarding-to-the-tasks-tab";
     let source = producer_block(&"3f".repeat(32));
     std::fs::write(dir.join(format!("blocks/{slug}.yaml")), &source).unwrap();
@@ -2043,7 +2043,7 @@ fn patched_blocks_keep_their_extension_through_preservation_and_publication() {
     }
     for extension in ["yml", "yaml"] {
         for fallback in [false, true] {
-            let (runs, dir) = run_dir(fallback);
+            let (_repo, runs, dir) = run_dir(fallback);
             let app = runs.parent().unwrap().join("patched-app");
             let actions = app.join(".qaren/actions");
             std::fs::create_dir_all(&actions).unwrap();
@@ -2195,7 +2195,7 @@ fn cached_writeback_retries_apply_current_admission_without_rewriting_history() 
         "fallback",
         "ancestor",
     ] {
-        let (runs, dir) = run_dir(false);
+        let (_repo, runs, dir) = run_dir(false);
         let repo = runs.parent().unwrap();
         let remote = repo.join("remote.git");
         std::fs::create_dir(&remote).unwrap();
@@ -2364,12 +2364,11 @@ fn cached_writeback_retries_apply_current_admission_without_rewriting_history() 
                 old
             );
         }
-        std::fs::remove_dir_all(repo).unwrap();
     }
 }
 
-fn local_publication_fixture() -> (PathBuf, PathBuf, String) {
-    let (runs, dir) = run_dir(false);
+fn local_publication_fixture() -> (PathBuf, PathBuf, String, common::TempRepo) {
+    let (tmp, runs, dir) = run_dir(false);
     let repo = runs.parent().unwrap();
     let remote = repo.join("remote.git");
     std::fs::create_dir(&remote).unwrap();
@@ -2394,7 +2393,7 @@ fn local_publication_fixture() -> (PathBuf, PathBuf, String) {
         .unwrap(),
     )
     .unwrap();
-    (runs, dir, base)
+    (runs, dir, base, tmp)
 }
 
 #[test]
@@ -2405,7 +2404,7 @@ fn effective_push_urls_must_all_be_the_pr_repository() {
         vec!["git@github.com:o/r.git", "unproved-local-path"],
         vec!["git@github.com:other/repo.git", "git@github.com:o/r.git"],
     ] {
-        let (runs, dir, base) = local_publication_fixture();
+        let (runs, dir, base, _repo) = local_publication_fixture();
         let repo = runs.parent().unwrap();
         for url in &urls {
             local_git(repo, &["config", "--add", "remote.origin.pushurl", url]);
@@ -2438,14 +2437,13 @@ fn effective_push_urls_must_all_be_the_pr_repository() {
             .trim(),
             base
         );
-        std::fs::remove_dir_all(repo).unwrap();
     }
 }
 
 #[test]
 fn new_and_replacement_commits_with_converted_bytes_fall_back_without_pushing() {
     for replacement in [false, true] {
-        let (runs, dir, _) = local_publication_fixture();
+        let (runs, dir, _, _repo) = local_publication_fixture();
         let repo = runs.parent().unwrap();
         std::fs::rename(dir.join("blocks/tasks.yaml"), dir.join("blocks/tasks.yml")).unwrap();
         std::fs::write(dir.join("blocks/tasks.yml"), "steps: []\n").unwrap();
@@ -2512,7 +2510,6 @@ fn new_and_replacement_commits_with_converted_bytes_fall_back_without_pushing() 
             base
         );
         assert!(!dir.join("writeback-wt").exists());
-        std::fs::remove_dir_all(repo).unwrap();
     }
 }
 
@@ -2568,7 +2565,7 @@ fn real_git_readback_requires_the_pr_fetch_destination_with_a_fake_forge() {
         "fallback",
         "rewrite",
     ] {
-        let (runs, dir, base) = local_publication_fixture();
+        let (runs, dir, base, _repo) = local_publication_fixture();
         let repo = runs.parent().unwrap();
         let mut old_runner = LocalPublication {
             calls: Vec::new(),
@@ -2699,13 +2696,12 @@ fn real_git_readback_requires_the_pr_fetch_destination_with_a_fake_forge() {
             Some(cached.as_str())
         );
         assert_eq!(local_git(repo, &["rev-parse", "HEAD"]).trim(), base);
-        std::fs::remove_dir_all(repo).unwrap();
     }
 }
 
 #[test]
 fn only_the_admission_trimmed_copy_is_ever_uploaded() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     std::fs::remove_file(dir.join("media/video-published.mp4")).unwrap();
     let mut runner = Git(MockRunner::new());
     script_comment_and_label(&mut runner.0);
@@ -2734,7 +2730,7 @@ fn only_the_admission_trimmed_copy_is_ever_uploaded() {
 
 #[test]
 fn a_missing_failing_screenshot_is_not_claimed_or_uploaded() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     std::fs::remove_file(dir.join("screenshots/01.png")).unwrap();
     let mut runner = Git(MockRunner::new());
     script_comment_and_label(&mut runner.0);
@@ -2764,7 +2760,7 @@ fn a_missing_failing_screenshot_is_not_claimed_or_uploaded() {
 
 #[test]
 fn a_post_admission_interruption_withholds_the_copy_and_upload() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     let mut ledger: qaren::core::Ledger =
         serde_json::from_slice(&std::fs::read(dir.join("ledger.json")).unwrap()).unwrap();
     ledger.publication_interrupted = true;
@@ -2854,7 +2850,7 @@ fn only_a_final_uncancelled_verified_owned_terminal_result_admits_publication() 
         (Some(unreadable), FailureCode::CandidateUnavailable),
         (Some(unowned), FailureCode::OwnershipUnproven),
     ] {
-        let (runs, dir) = run_dir(false);
+        let (_repo, runs, dir) = run_dir(false);
         let mut record = qaren::runrecord::RunRecord::load(&runs, RUN).unwrap();
         record.terminal = terminal;
         record.save(&runs).unwrap();
@@ -2868,7 +2864,7 @@ fn only_a_final_uncancelled_verified_owned_terminal_result_admits_publication() 
 
 #[test]
 fn publication_uses_only_the_projected_ledger_and_structured_verdict() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     edit_pr(&dir, |pr| pr["blocks"] = serde_json::json!([]));
     let output = std::process::Command::new("node")
         .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../qaren-core"))
@@ -3007,7 +3003,7 @@ fn both_comment_paths_reconcile_only_the_authenticated_authors_report_fingerprin
         "missing-author",
         "matching",
     ] {
-        let (runs, dir) = run_dir(true);
+        let (_repo, runs, dir) = run_dir(true);
         let mut first = Git(MockRunner::new());
         script_comment_and_label(&mut first.0);
         first
@@ -3104,7 +3100,7 @@ fn both_comment_paths_reconcile_only_the_authenticated_authors_report_fingerprin
 #[test]
 fn non_strict_interruption_names_the_signal_instead_of_screenshot_privacy() {
     for named in [true, false] {
-        let (runs, dir) = run_dir(false);
+        let (_repo, runs, dir) = run_dir(false);
         let path = dir.join("ledger.json");
         let mut ledger: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -3157,7 +3153,7 @@ fn non_strict_interruption_names_the_signal_instead_of_screenshot_privacy() {
 
 #[test]
 fn privacy_comment_names_only_the_video_cause() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     edit_pr(&dir, |pr| {
         pr["videoPublication"] = "withheld-privacy".into();
         pr["blocks"] = serde_json::json!([]);
@@ -3182,7 +3178,7 @@ fn privacy_comment_names_only_the_video_cause() {
 fn screenshots_follow_the_persisted_video_mode_from_walk_to_pr_comment() {
     for policy in ["absent", "strict", "non-strict"] {
         for carrier in ["artwork", "test-pii", "secret", "secure"] {
-            let (runs, dir) = run_dir(false);
+            let (_repo, runs, dir) = run_dir(false);
             let output = std::process::Command::new("node")
                 .current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../qaren-core"))
                 .env("SCREENSHOT_POLICY", policy)
@@ -3294,7 +3290,7 @@ fn persisted_non_strict_video_contract_never_relaxes_saved_blocks() {
             Some("future-status"),
             None,
         ] {
-            let (runs, dir) = run_dir(false);
+            let (_repo, runs, dir) = run_dir(false);
             edit_pr(&dir, |pr| {
                 pr["videoPolicy"] = "non-strict".into();
                 pr["videoPolicySource"] = ".qaren/testing.yaml".into();
@@ -3365,7 +3361,7 @@ fn unavailable_video_reasons_agree_across_publication_surfaces_and_retries() {
         ),
         ("too-large", None, false),
     ] {
-        let (runs, dir) = run_dir(false);
+        let (_repo, runs, dir) = run_dir(false);
         edit_pr(&dir, |pr| {
             pr["video"] = status.into();
             pr["blocks"] = serde_json::json!([]);
@@ -3424,7 +3420,7 @@ fn admitted_refusal_secret_gates_and_capture_unknown_never_attach_video() {
         "capture-unknown",
         "native-incomplete",
     ] {
-        let (runs, dir) = run_dir(false);
+        let (_repo, runs, dir) = run_dir(false);
         edit_pr(&dir, |pr| {
             pr["blocks"] = serde_json::json!([]);
             pr["videoPolicy"] = "non-strict".into();
@@ -3485,7 +3481,7 @@ fn admitted_refusal_secret_gates_and_capture_unknown_never_attach_video() {
 
 #[test]
 fn video_detail_uses_the_same_output_redaction_as_the_comment() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     edit_pr(&dir, |pr| {
         pr["blocks"] = serde_json::json!([]);
         pr["video"] = "unavailable(password=synthetic-detail-canary)".into();
@@ -3505,7 +3501,7 @@ fn video_detail_uses_the_same_output_redaction_as_the_comment() {
 #[test]
 fn publish_binary_keeps_stdout_json_and_explains_unavailable_video_on_stderr() {
     use std::os::unix::fs::PermissionsExt;
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     edit_pr(&dir, |pr| {
         pr["blocks"] = serde_json::json!([]);
         pr["video"] = "unavailable(encode failed)".into();
@@ -3547,7 +3543,7 @@ fn publish_binary_keeps_stdout_json_and_explains_unavailable_video_on_stderr() {
 
 #[test]
 fn retries_keep_the_attempted_missing_copy_finding_even_if_the_file_returns() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     edit_pr(&dir, |pr| pr["blocks"] = serde_json::json!([]));
     std::fs::remove_file(dir.join("media/video-published.mp4")).unwrap();
     let mut first = Git(MockRunner::new());
@@ -3593,7 +3589,7 @@ fn retries_keep_the_attempted_missing_copy_finding_even_if_the_file_returns() {
 
 #[test]
 fn a_lost_video_upload_response_reconciles_its_report_after_the_local_copy_vanishes() {
-    let (runs, dir) = run_dir(false);
+    let (_repo, runs, dir) = run_dir(false);
     edit_pr(&dir, |pr| pr["blocks"] = serde_json::json!([]));
     let mut first = Git(MockRunner::new());
     first

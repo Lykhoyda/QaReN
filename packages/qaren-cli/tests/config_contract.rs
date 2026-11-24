@@ -272,7 +272,8 @@ fn deadline_parse_refusals_stay_generic() {
         "deadlines:\n  buildSeconds: 5400\n",
         "deadlineBudget: mistaken-value\n",
     ];
-    let repo = common::temp_repo().join("deadline-5400");
+    let tmp = common::temp_repo();
+    let repo = tmp.join("deadline-5400");
     std::fs::create_dir_all(&repo).unwrap();
     let config_path = repo.join("config.yaml");
     for block in blocks {

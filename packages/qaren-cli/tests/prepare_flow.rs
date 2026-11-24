@@ -4421,7 +4421,7 @@ fn farm_lease_is_recorded_before_start_command() {
 
     let mut probing = RecordProbeRunner {
         inner: mock,
-        repo: repo.clone(),
+        repo: repo.to_path_buf(),
         run_id: run_id.clone(),
         probe_label: "farm-start".to_string(),
         observed: None,
@@ -4479,7 +4479,7 @@ fn simulator_allocation_is_recorded_before_create() {
 
     let mut probing = RecordProbeRunner {
         inner: mock,
-        repo: repo.clone(),
+        repo: repo.to_path_buf(),
         run_id: run_id.clone(),
         probe_label: "simctl-create".to_string(),
         observed: None,
@@ -4911,7 +4911,7 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
         fingerprint_parts: Default::default(),
         platform: "ios".to_string(),
         app_id: scenario.candidate.app_id.clone(),
-        worktree_root: repo.clone(),
+        worktree_root: repo.to_path_buf(),
         fingerprint: fp.value,
         built_at: "2026-10-05T00:00:00Z".to_string(),
         candidate_sha: "b".repeat(40),
@@ -5041,7 +5041,7 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                     fingerprint_parts: Default::default(),
                     platform: platform.to_string(),
                     app_id: scenario.candidate.app_id.clone(),
-                    worktree_root: repo.clone(),
+                    worktree_root: repo.to_path_buf(),
                     fingerprint: if incomplete {
                         fp.value
                     } else {
@@ -5498,7 +5498,7 @@ fn recording_a_build_retires_run_output_and_publishes_to_the_machine_store_witho
 
     let mut probing = RecordProbeRunner {
         inner: mock,
-        repo: repo.clone(),
+        repo: repo.to_path_buf(),
         run_id: format!(
             "ios-simulator-{}",
             qaren::timefmt::compact_utc(1_770_000_000_000)
@@ -5621,7 +5621,7 @@ fn recording_a_build_retains_source_on_cache_or_evidence_publication_failure() {
         }
         let mut probing = RecordProbeRunner {
             inner: mock,
-            repo: repo.clone(),
+            repo: repo.to_path_buf(),
             run_id: format!(
                 "ios-simulator-{}",
                 qaren::timefmt::compact_utc(1_770_000_000_000)
@@ -5727,7 +5727,7 @@ fn recording_a_build_does_not_retire_symlinked_paths() {
         common::script_xcode(&mut mock);
         let mut probing = RecordProbeRunner {
             inner: mock,
-            repo: repo.clone(),
+            repo: repo.to_path_buf(),
             run_id: format!(
                 "ios-simulator-{}",
                 qaren::timefmt::compact_utc(1_770_000_000_000)
@@ -5811,7 +5811,7 @@ fn unproven_or_unpersisted_build_group_absence_retains_run_output() {
         );
         let mut probing = RecordProbeRunner {
             inner: mock,
-            repo: repo.clone(),
+            repo: repo.to_path_buf(),
             run_id: format!(
                 "ios-simulator-{}",
                 qaren::timefmt::compact_utc(1_770_000_000_000)
@@ -6065,7 +6065,7 @@ fn recording_a_build_cancelled_mid_copy_preserves_previous_cache() {
     common::script_xcode(&mut mock);
     let mut probing = RecordProbeRunner {
         inner: mock,
-        repo: repo.clone(),
+        repo: repo.to_path_buf(),
         run_id: run_id.clone(),
         probe_label: "git-head#2".into(),
         observed: None,
@@ -7952,7 +7952,7 @@ fn pool_recount_under_the_creation_lock_falls_back_when_a_parallel_prepare_fille
     common::script_xcode(&mut mock);
     mock.expect_run("simctl list devices -j", member_inventory("Booted"));
     mock.expect_run("simctl create", CmdOutput::failed(1, "boom"));
-    let parallel = repo.clone();
+    let parallel = repo.to_path_buf();
     let mut enrolled = false;
     mock.observe = Some(Box::new(move |spec| {
         if !enrolled && spec.label == "lsof-port" {
@@ -9090,7 +9090,7 @@ fn an_unresolved_build_lock_release_stops_before_install_and_keeps_the_lock() {
     let unreadable = lock.clone();
     let mut probing = RecordProbeRunner {
         inner: mock,
-        repo: repo.clone(),
+        repo: repo.to_path_buf(),
         run_id: format!(
             "ios-simulator-{}",
             qaren::timefmt::compact_utc(1_770_000_000_000)
@@ -9494,7 +9494,7 @@ fn script_ios_ready_with_build(
 fn timed_out_ios_build(
     build_seconds: Option<u64>,
     counts: std::collections::VecDeque<Option<u64>>,
-) -> (qaren::receipt::Receipt, std::path::PathBuf) {
+) -> qaren::receipt::Receipt {
     timed_out_ios_build_seeded(build_seconds, counts, |_| {})
 }
 
@@ -9503,7 +9503,7 @@ fn timed_out_ios_build_seeded(
     build_seconds: Option<u64>,
     counts: std::collections::VecDeque<Option<u64>>,
     seed: impl FnOnce(&std::path::Path),
-) -> (qaren::receipt::Receipt, std::path::PathBuf) {
+) -> qaren::receipt::Receipt {
     let repo = common::temp_repo();
     seed(&repo);
     let deadlines = build_seconds
@@ -9534,7 +9534,7 @@ fn timed_out_ios_build_seeded(
     assert!(record.resources.build_process().is_none(), "build stopped");
     assert!(record.resources.build_lock.is_none());
     assert!(!args.lock_root.join("native-build-ios").exists());
-    (receipt, repo)
+    receipt
 }
 
 fn limit_of(receipt: &qaren::receipt::Receipt) -> &qaren::failure::LimitFacts {
@@ -9609,7 +9609,7 @@ fn b2_waiting_for_the_lock_is_not_build_time() {
 
 #[test]
 fn b3_b6_b7_a_build_that_stands_still_is_cut_and_says_what_ran_out() {
-    let (receipt, _repo) = timed_out_ios_build(None, growing(2000));
+    let receipt = timed_out_ios_build(None, growing(2000));
     let limit = limit_of(&receipt);
     assert_eq!(limit.phase, "native_build");
     assert_eq!(limit.setting, "deadlines.build_seconds");
@@ -9655,12 +9655,12 @@ fn b3_b6_b7_a_build_that_stands_still_is_cut_and_says_what_ran_out() {
 #[test]
 fn b3_the_idle_window_floor_at_small_limits() {
     // 400 s: the last line at 300 s is 100 s old at the limit; cut 300 s after it.
-    let (receipt, _repo) = timed_out_ios_build(Some(400), growing(300));
+    let receipt = timed_out_ios_build(Some(400), growing(300));
     let limit = limit_of(&receipt);
     assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
     assert_eq!((limit.elapsed_s, limit.idle_s), (600, Some(300)));
     // 100 s: the window (300 s) ends before the idle window can run out after the limit.
-    let (receipt, _repo) = timed_out_ios_build(Some(100), growing(90));
+    let receipt = timed_out_ios_build(Some(100), growing(90));
     let limit = limit_of(&receipt);
     assert_eq!(limit.ended_by, qaren::failure::LimitEnd::Window);
     assert_eq!((limit.elapsed_s, limit.window_s), (300, 300));
@@ -9674,7 +9674,7 @@ fn b4_a_build_with_no_progress_is_cut_at_its_limit_exactly() {
         std::iter::repeat_n(Some(7), 2500).collect(),
         std::collections::VecDeque::new(),
     ] {
-        let (receipt, _repo) = timed_out_ios_build(None, counts);
+        let receipt = timed_out_ios_build(None, counts);
         let limit = limit_of(&receipt);
         assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
         assert_eq!(
@@ -9686,7 +9686,7 @@ fn b4_a_build_with_no_progress_is_cut_at_its_limit_exactly() {
 
 #[test]
 fn b5_a_build_that_always_writes_ends_with_its_window() {
-    let (receipt, _repo) = timed_out_ios_build(None, growing(7300));
+    let receipt = timed_out_ios_build(None, growing(7300));
     let limit = limit_of(&receipt);
     assert_eq!(limit.ended_by, qaren::failure::LimitEnd::Window);
     assert_eq!((limit.elapsed_s, limit.window_s), (7200, 7200));
@@ -9699,7 +9699,7 @@ fn b5_a_build_that_always_writes_ends_with_its_window() {
     assert!(failure
         .next_action
         .contains("build the app with the project's own tools"));
-    let (receipt, _repo) = timed_out_ios_build(Some(600), growing(1900));
+    let receipt = timed_out_ios_build(Some(600), growing(1900));
     let limit = limit_of(&receipt);
     assert_eq!(
         (limit.ended_by, limit.elapsed_s),
@@ -9754,7 +9754,7 @@ fn l1_l3_a_passing_build_is_recorded_and_the_next_run_uses_the_learned_limit() {
     assert_eq!(receipt.outcomes["build_next_limit"], "4500 s");
     // Second run on the same machine: a build that stands still is cut at the learned 4500 s.
     let recorded = std::fs::read(timings_file(&first)).unwrap();
-    let (receipt, _repo) = timed_out_ios_build_seeded(None, Default::default(), |root| {
+    let receipt = timed_out_ios_build_seeded(None, Default::default(), |root| {
         std::fs::create_dir_all(timings_file(root).parent().unwrap()).unwrap();
         std::fs::write(timings_file(root), &recorded).unwrap();
     });
@@ -9772,7 +9772,7 @@ fn l1_l3_a_passing_build_is_recorded_and_the_next_run_uses_the_learned_limit() {
 #[test]
 fn l4_a_cut_with_a_learned_limit_names_the_next_limit_by_its_end() {
     // Learned 6000 s: the window is the 7200 s maximum, so no setting helps.
-    let (receipt, _repo) =
+    let receipt =
         timed_out_ios_build_seeded(None, growing(7300), |root| seed_timings(root, &[4000]));
     let limit = limit_of(&receipt);
     assert_eq!(
@@ -9782,7 +9782,7 @@ fn l4_a_cut_with_a_learned_limit_names_the_next_limit_by_its_end() {
     assert!(limit.learned);
     assert_eq!(limit.next_limit_s, None);
     // Learned 1200 s over a configured 600 s: the window just used (3600 s) is the next limit.
-    let (receipt, _repo) =
+    let receipt =
         timed_out_ios_build_seeded(Some(600), growing(3700), |root| seed_timings(root, &[800]));
     let limit = limit_of(&receipt);
     assert_eq!(
@@ -9795,7 +9795,7 @@ fn l4_a_cut_with_a_learned_limit_names_the_next_limit_by_its_end() {
 
 #[test]
 fn l5_a_corrupt_record_leaves_the_configured_limit_and_a_note() {
-    let (receipt, _repo) = timed_out_ios_build_seeded(None, Default::default(), |root| {
+    let receipt = timed_out_ios_build_seeded(None, Default::default(), |root| {
         std::fs::create_dir_all(timings_file(root).parent().unwrap()).unwrap();
         std::fs::write(timings_file(root), "{half").unwrap();
     });

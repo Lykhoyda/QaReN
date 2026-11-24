@@ -14,21 +14,53 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-pub fn temp_repo() -> PathBuf {
+pub struct TempRepo(PathBuf);
+
+impl std::ops::Deref for TempRepo {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempRepo {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for TempRepo {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+
+impl Drop for TempRepo {
+    fn drop(&mut self) {
+        match std::fs::remove_dir_all(&self.0) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                eprintln!("cannot remove {}: {e}", self.0.display())
+            }
+            _ => {}
+        }
+    }
+}
+
+pub fn temp_repo() -> TempRepo {
     use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     // A recycled PID must not reopen a leftover tree that already contains runs.
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
+    let dir = std::env::temp_dir().canonicalize().unwrap().join(format!(
         "qaren-test-{}-{}-{}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::SeqCst),
         nonce
     ));
     std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
-    let dir = dir.canonicalize().unwrap();
+    let dir = TempRepo(dir);
     std::fs::create_dir_all(dir.join("test-app")).unwrap();
     std::fs::write(dir.join("test-app").join("package.json"), "{}").unwrap();
     std::fs::create_dir_all(dir.join("test-app/node_modules/.bin")).unwrap();

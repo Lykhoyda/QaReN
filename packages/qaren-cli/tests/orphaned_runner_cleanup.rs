@@ -34,7 +34,7 @@ fn argv(family: &str) -> Vec<String> {
     ]
 }
 
-fn fixture(family: &str) -> (PathBuf, RunRecord, FakeRunner) {
+fn fixture(family: &str) -> (common::TempRepo, RunRecord, FakeRunner) {
     let root = common::temp_repo();
     let mut record = common::base_record(
         &root,
@@ -75,7 +75,7 @@ fn fixture(family: &str) -> (PathBuf, RunRecord, FakeRunner) {
         exit_after: 3,
         signals: vec![],
         fault: "",
-        root: root.clone(),
+        root: root.to_path_buf(),
         sleeps: vec![],
         observations: 0,
         step_inventory_reads: 0,
@@ -417,7 +417,7 @@ fn explicit_cleanup_reaps_both_lossless_command_families_and_is_idempotent() {
 #[test]
 fn escalation_stops_after_each_proven_exit() {
     for count in [1, 2] {
-        let (_, _, mut fake) = fixture("QarenIosRunner");
+        let (_root, _, mut fake) = fixture("QarenIosRunner");
         fake.exit_after = count;
         assert_eq!(
             fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver)
@@ -445,7 +445,7 @@ fn unknown_or_foreign_evidence_never_gets_a_signal_or_releases_the_lease() {
         "stat_stderr",
         "lease_changed_during_observation",
     ] {
-        let (_, record, mut fake) = fixture("QarenIosRunner");
+        let (_root, record, mut fake) = fixture("QarenIosRunner");
         fake.fault = fault;
         fake.host_bundles = vec![qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID];
         let lease = record.resources.lease.unwrap().lock_dir;
@@ -546,7 +546,7 @@ fn lossless_command_and_lease_gates_refuse_without_signaling() {
 
 #[test]
 fn identity_loss_after_term_withholds_kill_and_keeps_ownership() {
-    let (_, record, mut fake) = fixture("QarenIosRunner");
+    let (_root, record, mut fake) = fixture("QarenIosRunner");
     fake.fault = "change_after_term";
     fake.exit_after = 99;
     let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
@@ -582,7 +582,7 @@ fn retained_helpers_host_or_driver_prevent_release_and_temporary_device_cleanup(
 
 #[test]
 fn automatic_cleanup_stays_graceful_and_projects_the_supported_next_step() {
-    let (_, record, mut fake) = fixture("QarenIosRunner");
+    let (_root, record, mut fake) = fixture("QarenIosRunner");
     fake.exit_after = 99;
     let receipt = fake.run_cleanup(RunnerCleanupPolicy::GracefulOnly);
     assert_eq!(fake.signals, ["-INT"]);
@@ -669,7 +669,7 @@ fn host_absence_storage_failure_retains_the_device_and_lease() {
 
 #[test]
 fn final_save_failure_reports_the_lease_that_was_actually_released() {
-    let (_, record, mut fake) = fixture("QarenIosRunner");
+    let (_root, record, mut fake) = fixture("QarenIosRunner");
     fake.fault = "final_storage";
     let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
     assert_eq!(receipt.result, ReceiptResult::Failed);
@@ -907,7 +907,7 @@ fn explicit_cleanup_terminates_only_constant_hosts_after_driver_retirement() {
 
 #[test]
 fn explicit_host_cleanup_uses_the_existing_settle_polls() {
-    let (_, _, mut fake) = fixture("QarenIosRunner");
+    let (_root, _, mut fake) = fixture("QarenIosRunner");
     fake.alive = false;
     fake.host_bundles = vec![qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID];
     fake.fault = "host_delayed";
@@ -926,7 +926,7 @@ fn explicit_host_cleanup_uses_the_existing_settle_polls() {
 
 #[test]
 fn automatic_host_cleanup_never_terminates_and_keeps_its_existing_advice() {
-    let (_, record, mut fake) = fixture("QarenIosRunner");
+    let (_root, record, mut fake) = fixture("QarenIosRunner");
     fake.exit_after = 1;
     fake.host_bundles = vec![qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID];
     let receipt = fake.run_cleanup(RunnerCleanupPolicy::GracefulOnly);
@@ -1024,7 +1024,7 @@ fn failed_explicit_host_cleanup_retains_the_lease_and_selects_exact_shutdown_adv
 fn explicit_host_cleanup_rechecks_inventory_before_the_second_bundle() {
     use qaren::adapters::ios::{RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID};
     for fault in ["host_foreign_runner_after", "host_unknown_after"] {
-        let (_, record, mut fake) = fixture("QarenIosRunner");
+        let (_root, record, mut fake) = fixture("QarenIosRunner");
         fake.alive = false;
         fake.host_bundles = vec![RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID];
         fake.fault = fault;
@@ -1100,7 +1100,7 @@ fn invalid_explicit_host_authority_never_terminates() {
 #[test]
 fn explicit_host_cleanup_preserves_a_holder_that_changes_between_bundles() {
     use qaren::adapters::ios::{RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID};
-    let (_, record, mut fake) = fixture("QarenIosRunner");
+    let (_root, record, mut fake) = fixture("QarenIosRunner");
     fake.alive = false;
     fake.host_bundles = vec![RUNNER_HOST_BUNDLE_ID, RUNNER_TEST_HOST_BUNDLE_ID];
     fake.fault = "host_lease_changed_after";
@@ -1117,7 +1117,7 @@ fn explicit_host_cleanup_preserves_a_holder_that_changes_between_bundles() {
 
 #[test]
 fn a_running_app_without_a_qaren_host_does_not_block_explicit_cleanup() {
-    let (_, record, mut fake) = fixture("QarenIosRunner");
+    let (_root, record, mut fake) = fixture("QarenIosRunner");
     fake.alive = false;
     fake.fault = "host_app";
     let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
@@ -1164,7 +1164,7 @@ fn explicit_host_cleanup_refuses_a_live_or_unknown_owner_after_recorded_driver_r
 #[test]
 fn a_foreign_runner_without_qaren_hosts_retains_the_lease() {
     for fault in ["host_foreign_runner", "host_foreign_prefix"] {
-        let (_, record, mut fake) = fixture("QarenIosRunner");
+        let (_root, record, mut fake) = fixture("QarenIosRunner");
         fake.alive = false;
         fake.fault = fault;
         let receipt = fake.run_cleanup(RunnerCleanupPolicy::ReapRecordedDriver);
@@ -1181,7 +1181,7 @@ fn a_foreign_runner_without_qaren_hosts_retains_the_lease() {
 #[test]
 fn foreign_or_unreadable_final_inventory_retains_the_lease_without_retry() {
     for fault in ["host_foreign_runner_after", "host_transient_unknown_after"] {
-        let (_, record, mut fake) = fixture("QarenIosRunner");
+        let (_root, record, mut fake) = fixture("QarenIosRunner");
         fake.alive = false;
         fake.host_bundles = vec![qaren::adapters::ios::RUNNER_HOST_BUNDLE_ID];
         fake.fault = fault;
