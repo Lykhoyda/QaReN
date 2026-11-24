@@ -1382,3 +1382,50 @@ fn a_test_pii_only_run_withholds_subprocess_logs_and_summaries_from_startup() {
     assert_eq!(test_pii, "[private output withheld]\n");
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+// Lets a waiting child end on every exit path of the test, a failed assertion included.
+struct Release(std::path::PathBuf);
+impl Drop for Release {
+    fn drop(&mut self) {
+        let _ = std::fs::write(&self.0, "");
+    }
+}
+
+#[test]
+fn r7_a_group_child_asked_to_count_is_counted_while_it_lives() {
+    let dir = common::temp_repo();
+    let _release = Release(dir.join("release"));
+    let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+    let wait =
+        "n=0; while [ ! -f release ] && [ \"$n\" -lt 1000 ]; do n=$((n+1)); sleep 0.01; done";
+    let counted = dir.join("build.log");
+    runner
+        .spawn_group(
+            &shell(
+                &format!("printf 'compiling\\nsee the private key file\\n'\n{wait}"),
+                &dir,
+            )
+            .count_lines(),
+            &counted,
+        )
+        .unwrap();
+    let plain = dir.join("metro.log");
+    runner
+        .spawn_group(&shell(&format!("printf 'one\\n'\n{wait}"), &dir), &plain)
+        .unwrap();
+    until(|| qaren::exec::log::read_line_count(&counted) == Some(2));
+    runner.flush_logs().unwrap();
+    let live = std::fs::read_to_string(&counted).unwrap();
+    assert!(live.contains(PRIVATE_KEY_WITHHELD), "{live}");
+    assert!(!live.contains("compiling"), "{live}");
+    until(|| {
+        runner.flush_logs().unwrap();
+        std::fs::read_to_string(&plain)
+            .unwrap_or_default()
+            .contains("one")
+    });
+    assert!(!qaren::exec::log::line_count_path(&plain).exists());
+    drop(_release);
+    std::thread::sleep(Duration::from_millis(100));
+    std::fs::remove_dir_all(dir).unwrap();
+}
