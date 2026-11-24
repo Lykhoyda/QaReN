@@ -1450,7 +1450,11 @@ Resolution, frame comparison and hit testing share one 300 ms deadline.
 Missing retained identity, a generation mismatch, zero or ambiguous live
 matches, and failed or over-budget checks leave the check unavailable and
 permit ordinary dispatch as before; the [strict overlay path](#covered-target-recovery)
-instead requires a proven live hit. Stable taps check `XCUIElement.isHittable`; ordinary exact
+instead requires a proven live hit. Such an ordinary tap's reply names why the
+check was unavailable (`expired`, `no-identity`, `absent`, `ambiguous`,
+`exception`, `deadline` or `read-failed`), and its ledger row counts it in
+`inconclusivePresses`; an authorised tap whose outcome stayed unknown is counted in
+`pressOutcomeUnknown` (see [presses sent after an inconclusive live check](#press-guard-evidence)). Stable taps check `XCUIElement.isHittable`; ordinary exact
 fills use the frame guard without an extra hittability read, then keep the
 existing focus-point check when a focus tap is needed. An input's hit test
 applies only when the focus point lies inside its frame; a wrapper-centre focus
@@ -4939,6 +4943,82 @@ fields are omitted, including on older runners or paths that skip native work;
 a measured zero is retained. Focused Fill records zero settle probes when
 client settle is disabled and native send measurements are available. Availability
 depends on the platform and dispatch path; absent fields do not mean zero cost.
+
+<a id="press-guard-evidence"></a>
+
+**Presses sent after an inconclusive live check.** An ordinary iOS point tap
+whose live hit check is unavailable is still sent as before; QaReN records it
+and does not refuse, delay or change the press. The runner's tap reply carries
+`liveCheckReason`, one of `expired` (the captured target belongs to an older
+snapshot), `no-identity` (the target has neither identifier nor label),
+`absent` (no live match), `ambiguous` (more than one live match), `exception`
+(the live search threw), `deadline` (the 300 ms deadline passed) or
+`read-failed` (the frame or hittability read threw). The core records
+`unreported` when a reply says the check was unavailable without a listed word,
+for example from a runner without this field. The strict path keeps its
+message: `deadline` and `read-failed` still read `unavailable` there.
+
+- Row `inconclusivePresses`: `{word: count}`, the presses of that row sent after
+  an unavailable check.
+- Row `pressOutcomeUnknown`: the authorised press commands of that row with no
+  usable reply, direct or recovered, whose command journal answered `unknown`
+  or could not be read. The step still fails as before; whether the gesture ran
+  is unknown.
+
+Both fields are omitted when nothing was recorded, and the CLI reads them
+passively: an unlisted word or a zero or negative count drops that field and
+keeps the row. Counts are exact for the rows that were written; a press whose
+row was never written, for example because the run was killed, is not counted.
+
+The receipt's `ledger` summary lists them per operation as
+`inconclusive_presses` (`operation_id`, `line`, `counts`) and
+`press_outcome_unknown` (`operation_id`, `line`, `count`). Every attempt of one
+operation is summed, and login-replay steps stay apart from plan steps that
+share a line. A row without an operation id is its own entry, without
+`operation_id`. `report.md` and the published comment add a note beside the
+verdict on any verdict, without changing the verdict
+(` · N presses sent after an inconclusive live check`,
+` · outcome unknown for M press commands`), and the counts on each row line;
+`report.md` adds two Run details lines. A count is not a finding about which
+element was tapped. A run with neither has no new field, list or note.
+
+`logs/core.log` gets one `action-live-check={"reason":…,"reported":…}` line per
+such press, where `reported` is `word`, `none` (no word) or `unlisted`. Like
+other core log lines it is withheld when the run has strict inputs and
+input-redacted otherwise.
+
+In `ledger.json`, every row's `operationId` and `line` and its two evidence
+fields are exempt from input redaction, names and values, and so are the
+receipt's two lists and the `steps` and `ledger` names that lead to them. Token
+masking (`GH_TOKEN`, `GITHUB_TOKEN`) and the published comment's final privacy
+pass still apply:
+
+- An input equal to `operationId`, `line`, `inconclusivePresses`,
+  `pressOutcomeUnknown`, a reason word, or, in the receipt,
+  `inconclusive_presses`, `press_outcome_unknown` or a name inside those lists,
+  is kept: rows keep their ids, lines and evidence and operations are not
+  merged. An input equal to `steps` or `ledger` keeps that name only where it
+  leads to such evidence. An input inside a row's free text (`reason`, `text`)
+  is masked as before.
+- A token equal to a reason word masks it in every map that holds it; the CLI
+  then drops those maps and keeps the rest of each row. A token equal to
+  `operationId` masks that name, so every row reads back with id 0 and each
+  evidence row is its own summary entry. A token equal to `line` or `steps`
+  makes `ledger.json` unreadable and publication stops with its "is unreadable"
+  error; a token equal to `ledger` leaves a receipt without its summary when
+  read back. Masking matches inside longer words: a token equal to `line` also
+  changes `deadline`.
+- The check and the publication are separate processes with their own inputs:
+  a reason word that is an input of the publishing process is masked in the
+  comment and other counts stay; one that is an input of the checking process
+  only is shown.
+- An input equal to another member the ledger needs, such as a row's
+  `attempt`, still makes the ledger unreadable, as before.
+
+Limits: Android records nothing, so the note never appears there and its
+absence says nothing. A tap on a keyboard key returns before the live check.
+Native type focus and the strict path are unchanged. The trace and `qaren watch`
+events do not carry the word.
 
 The ledger's `speed` summary groups timed action/check rows by operation, keeping
 login-replay steps separate from plan steps that share a line and kind. Every retry,
