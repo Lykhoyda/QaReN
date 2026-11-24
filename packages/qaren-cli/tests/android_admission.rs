@@ -231,3 +231,112 @@ fn each_new_android_cause_states_what_was_read() {
         assert_eq!(serialized["cause"], cause_name);
     }
 }
+
+// One refusal after the restart decision: "liveness bundleRequest relaunches relaunchFailed relaunchBlocked", "-" for absent.
+fn restart_row(text: &str) -> AdmissionFacts {
+    let field: Vec<&str> = text.split(' ').collect();
+    let mut value = serde_json::json!({
+        "attempt": 4, "lastStarted": "attach", "lastCompleted": "relaunch",
+        "inner": "target_readiness_timeout", "liveness": field[0],
+        "relaunches": field[2].parse::<u64>().unwrap(), "relaunchFailed": field[3] == "true",
+        "elapsedMs": 181500, "remainingMs": 1018500, "budgetMs": 1200000
+    });
+    if field[1] != "-" {
+        value["bundleRequest"] = field[1].into();
+    }
+    if field[4] != "-" {
+        value["relaunchBlocked"] = field[4].into();
+    }
+    let facts: AdmissionFacts = serde_json::from_value(value).unwrap();
+    assert!(facts.valid());
+    facts
+}
+
+#[test]
+fn android_restart_outcomes_map_to_their_own_causes() {
+    use AdmissionCause as C;
+    for (text, cause, action) in [
+        (
+            "alive not_received 0 false driver_busy",
+            C::AppRestartBlockedByDriver,
+            "wait_for_other_driver",
+        ),
+        (
+            "dead - 0 false device_unreadable",
+            C::AppRestartBlockedUnreadable,
+            "check_device_connection",
+        ),
+        (
+            "probe_failed - 0 false device_unreadable",
+            C::AppRestartBlockedUnreadable,
+            "check_device_connection",
+        ),
+        (
+            "dead not_received 1 true -",
+            C::AppRestartFailed,
+            "check_device_connection",
+        ),
+        (
+            "not_probed not_received 1 true -",
+            C::AppRestartFailed,
+            "check_device_connection",
+        ),
+        (
+            "dead received 1 false -",
+            C::AppProcessDeadAfterRestart,
+            "inspect_app_crash",
+        ),
+        (
+            "alive not_received 1 false -",
+            C::BundleNotRequestedAfterRestart,
+            "check_metro_reachable",
+        ),
+        (
+            "dead not_received 0 false -",
+            C::AppProcessDead,
+            "inspect_app_crash",
+        ),
+        (
+            "alive not_received 0 false -",
+            C::BundleNotRequested,
+            "retry_launch_once",
+        ),
+    ] {
+        let facts = restart_row(text);
+        assert_eq!(
+            AdmissionCause::from_facts(&facts, true),
+            Some(cause),
+            "{text}"
+        );
+        assert_eq!(cause.action().1, action, "{text}");
+        assert_eq!(
+            AdmissionCause::from_facts(&facts, false),
+            None,
+            "iOS unchanged: {text}"
+        );
+        let recovery = qaren::failure::AdmissionRecovery::new(cause, Some(facts));
+        assert_eq!(recovery.ladder.len(), 5, "{text}");
+        assert_eq!(recovery.next_rung, Some(1), "{text}");
+        let json = serde_json::to_value(&recovery).unwrap();
+        assert_eq!(json["cause"], serde_json::to_value(cause).unwrap());
+    }
+    // non_dev_bundle still decides first.
+    let mut facts = restart_row("dead - 1 true driver_busy");
+    facts.inner = "non_dev_bundle".into();
+    facts.targets_total = Some(1);
+    facts.dev_false = Some(1);
+    facts.dev_true = Some(0);
+    facts.dev_undefined = Some(0);
+    facts.dev_unknown = Some(0);
+    assert_eq!(
+        AdmissionCause::from_facts(&facts, true),
+        Some(C::NonDevBundle)
+    );
+    // An unknown blocked word is not valid facts.
+    let bad: Result<AdmissionFacts, _> = serde_json::from_value(serde_json::json!({
+        "attempt": 1, "lastStarted": "attach", "lastCompleted": "none", "inner": "target_list_empty",
+        "relaunches": 0, "relaunchFailed": false, "relaunchBlocked": "busy", "liveness": "alive",
+        "elapsedMs": 1, "remainingMs": 1, "budgetMs": 2
+    }));
+    assert!(!bad.unwrap().valid());
+}

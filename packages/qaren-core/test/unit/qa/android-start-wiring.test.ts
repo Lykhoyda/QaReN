@@ -13,7 +13,7 @@ import { parsePlan, preparePlan } from '../../../dist/qa/plan.js';
 import type { WireRequest } from '../../../dist/qa/wire.js';
 
 const root = fileURLToPath(new URL('../../../../../', import.meta.url));
-type Kind = 'W2' | 'W1a' | 'W1b' | 'W1c' | 'W1d' | 'W1e' | 'W3' | 'W4' | 'T2';
+type Kind = 'W2' | 'W1a' | 'W1b' | 'W1c' | 'W1d' | 'W1e' | 'W3' | 'W4' | 'T2' | 'W5' | 'T3';
 // Each kind's walk budget and the watchdog that kills its child.
 const budgets: Record<Kind, { walkMs: number; killMs: number }> = {
   W1a: { walkMs: 8000, killMs: 16_000 },
@@ -25,6 +25,8 @@ const budgets: Record<Kind, { walkMs: number; killMs: number }> = {
   W3: { walkMs: 70_000, killMs: 80_000 },
   W4: { walkMs: 90_000, killMs: 100_000 },
   T2: { walkMs: 70_000, killMs: 80_000 },
+  W5: { walkMs: 260_000, killMs: 200_000 },
+  T3: { walkMs: 240_000, killMs: 80_000 },
 };
 async function run(t: TestContext, kind: Kind) {
   const scratch = await mkdtemp(join(tmpdir(), 'qaren-android-start-'));
@@ -87,12 +89,15 @@ async function run(t: TestContext, kind: Kind) {
   const address = server.address();
   assert.ok(address && typeof address === 'object');
   port = address.port;
-  const plan = kind === 'T2' ? '1. Fill "code" with input CODE' : '1. Tap "synthetic-button"';
-  const counted = kind === 'W3' || kind === 'W4' || kind === 'T2';
+  const plan =
+    kind === 'T2' || kind === 'T3' ? '1. Fill "code" with input CODE' : '1. Tap "synthetic-button"';
+  const restart = kind === 'W5' || kind === 'T3';
+  const counted = kind === 'W3' || kind === 'W4' || kind === 'T2' || restart;
   const requestsPath = join(scratch, 'metro.bundle-requests');
   const outcomesPath = join(scratch, 'metro.bundle-outcomes');
   if (counted) {
-    await writeFile(requestsPath, '3\n');
+    // W5: a request recorded before the restart, none after it.
+    await writeFile(requestsPath, kind === 'W5' ? '4\n' : '3\n');
     await writeFile(outcomesPath, '1 0\n');
   }
   const lease = 'synthetic-start:0123456789abcdef0123456789abcdef';
@@ -123,6 +128,11 @@ async function run(t: TestContext, kind: Kind) {
               completedAtLaunch: 1,
               failedAtLaunch: 0,
             },
+          }
+        : {}),
+      ...(restart
+        ? {
+            androidLaunchUrl: `exp+${kind === 'T3' ? 't3canary' : 'synthetic'}://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A${port}%2F%3FdisableOnboarding%3D1`,
           }
         : {}),
     },
@@ -163,7 +173,45 @@ async function run(t: TestContext, kind: Kind) {
     `,
     );
   }
-  if (counted) {
+  if (restart) {
+    const [dead, picker] = await Promise.all(
+      ['complete-after-kill', 'launcher'].map((name) =>
+        readFile(
+          new URL(`../../fixtures/android-first-views/${name}.txt`, import.meta.url),
+          'utf8',
+        ),
+      ),
+    );
+    await writeAdb(
+      `fs.appendFileSync(${JSON.stringify(join(scratch, 'adb-calls'))}, JSON.stringify(args) + '\\n');
+      const state = ${JSON.stringify(join(scratch, 'device-state'))};
+      const now = fs.existsSync(state) ? fs.readFileSync(state, 'utf8') : 'first';
+      const is = (expected) => JSON.stringify(args) === JSON.stringify(expected);
+      const shell = ['-s', 'synthetic-android', 'shell'];
+      // W5: no process until QaReN's start; T3: a picker until the force-stop, and a start that fails.
+      const running = ${JSON.stringify(kind)} === 'W5' ? now === 'started' : now === 'first';
+      if (is([...shell, 'dumpsys', 'activity', 'top'])) {
+        process.stdout.write(running ? ${JSON.stringify(picker)} : ${JSON.stringify(dead)});
+      } else if (is([...shell, 'pidof', 'com.example.synthetic'])) {
+        if (!running) process.exit(1);
+        process.stdout.write('1234\\n');
+      } else if (is([...shell, 'ps', '-A'])) {
+        process.stdout.write('USER PID PPID VSZ RSS WCHAN ADDR S NAME\\nroot 1 0 0 0 0 0 S init\\n');
+      } else if (is([...shell, 'am', 'force-stop', 'com.example.synthetic'])) {
+        fs.writeFileSync(state, 'stopped');
+      } else if (args[3] === 'am' && args[4] === 'start') {
+        if (${JSON.stringify(kind)} === 'T3') {
+          process.stderr.write('Error: Activity not started, unable to resolve Intent { dat=' + args.at(-2) + ' }\\n');
+          process.exit(1);
+        }
+        fs.writeFileSync(state, 'started');
+      } else {
+        process.stderr.write('fixture adb: refused command\\n');
+        process.exit(1);
+      }
+    `,
+    );
+  } else if (counted) {
     const top = await readFile(
       new URL(
         `../../fixtures/android-first-views/${kind === 'W4' ? 'complete-after-kill' : 'launcher'}.txt`,
@@ -252,7 +300,7 @@ async function run(t: TestContext, kind: Kind) {
           seq: 1,
           type: 'request',
           payload:
-            kind === 'T2'
+            kind === 'T2' || kind === 'T3'
               ? { ...request, inputProtocol: 1, inputs: { CODE: 'synthetic-private-value' } }
               : request,
         })}\n`
@@ -286,7 +334,7 @@ async function run(t: TestContext, kind: Kind) {
     .filter(Boolean)
     .map((line) => JSON.parse(line) as string[]);
   const refusedAt = Date.now();
-  return { started, refusedAt, lists, upgrades, reads, result, stderr, stdout, adbCalls };
+  return { started, refusedAt, lists, upgrades, reads, result, stderr, stdout, adbCalls, port };
 }
 function spaced(reads: { at: number }[]) {
   assert.ok(reads.length >= 2, 'at least two reads witness polling');
@@ -445,5 +493,63 @@ test(
     assert.equal(r.result.admission?.liveness, 'alive');
     assert.equal(r.result.admission?.bundleRequest, 'not_received');
     assert.doesNotMatch(r.stdout, /was running|at the count check/);
+  },
+);
+
+const named = (calls: string[][], word: string) => calls.filter((args) => args.includes(word));
+
+test(
+  'W5: the real entry restarts a dead start once and refuses it on the rebased count once its own budget has passed',
+  { timeout: 220_000 },
+  async (t) => {
+    const r = await run(t, 'W5');
+    assert.equal(r.result.code, 'CDP_NOT_CONNECTED');
+    const after = r.refusedAt - r.started;
+    assert.ok(after > 100_000 && after < 130_000, `refused after ${after} ms`);
+    assert.match(r.result.message, /app alive; bundle request not_received/);
+    assert.match(r.result.message, /; QaReN stopped the app and issued one recovery start command/);
+    assert.equal(r.result.admission?.relaunches, 1);
+    assert.equal(r.result.admission?.relaunchFailed, false);
+    assert.equal(named(r.adbCalls, 'ps').length, 1);
+    assert.equal(named(r.adbCalls, 'force-stop').length, 1);
+    const [start, ...more] = named(r.adbCalls, 'start');
+    assert.deepEqual(more, []);
+    assert.deepEqual(start, [
+      '-s',
+      'synthetic-android',
+      'shell',
+      'am',
+      'start',
+      '-a',
+      'android.intent.action.VIEW',
+      '--ez',
+      'EXDevMenuDisableAutoLaunch',
+      'true',
+      '-d',
+      `exp+synthetic://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A${r.port}%2F%3FdisableOnboarding%3D1`,
+      'com.example.synthetic',
+    ]);
+    assert.equal(named(r.adbCalls, 'pidof').length, 7);
+    const stopped = r.stderr.indexOf('android start: restart: the app was stopped at');
+    const sent = r.stderr.indexOf('android start: restart: start sent at');
+    assert.ok(stopped >= 0 && sent > stopped, r.stderr);
+    assert.doesNotMatch(r.stderr, /expo-development-client/);
+  },
+);
+test(
+  'T3: a strict input withholds a failed restart while the facts keep it',
+  { timeout: 90_000 },
+  async (t) => {
+    const r = await run(t, 'T3');
+    assert.equal(r.result.message, '[private output withheld]');
+    assert.equal(r.result.admission?.relaunches, 1);
+    assert.equal(r.result.admission?.relaunchFailed, true);
+    assert.equal(r.result.admission?.liveness, 'dead');
+    assert.equal(r.result.admission?.bundleRequest, 'not_received');
+    assert.equal(named(r.adbCalls, 'start').length, 1);
+    assert.ok(r.refusedAt - r.started < 45_000, `refused after ${r.refusedAt - r.started} ms`);
+    for (const text of [r.stdout, r.stderr]) {
+      assert.doesNotMatch(text, /t3canary|synthetic-private-value|unable to resolve Intent/);
+    }
   },
 );
