@@ -4328,7 +4328,10 @@ step and never replaces the first-target launch wait. Stored selectors,
 described targets, Tap, Wait, iOS, ambiguous targets and steps that already sent
 a scroll or Fill keep their behavior. A field that turns into a text field later
 than that one fresh capture still fails; wait for an element that renders
-together with the field before the Fill.
+together with the field before the Fill. On every platform, when a Fill's
+on-screen matches are neither all disabled nor all unhittable but none is a
+text field, the suggestion is to quote the text field's own testID or move this
+testID onto the field.
 
 If interruption recovery after a target-resolution failure throws
 `NATIVE_SNAPSHOT_INCOMPLETE`, that capture refusal remains the outcome and adds
