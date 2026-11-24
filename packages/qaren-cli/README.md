@@ -6498,8 +6498,12 @@ probes. A pending or refused turn also finishes its count read. Scheduling,
 probe execution and file I/O can delay the return beyond the window. The limit
 of this wait is not learned. When it ends by `no_progress` or `window` the
 failure stays `READY_DEADLINE_EXCEEDED` and carries the `limit` block with
-`phase` `expo_run_android` and the `build_time_limit` recovery. At a time cut
-QaReN sends no signal. Run this run's `qaren cleanup` and check its result.
+`phase` `expo_run_android` and the `build_time_limit` recovery; when the window
+was already 7200 s, its remedy says no higher `deadlines.build_seconds` extends
+the window and, after cleanup, to read the last lines of the build log (or run
+`pnpm exec expo run:android` yourself when the log is withheld) for the step it
+stood on, fix that and run again. At a time cut QaReN sends no signal. Run
+this run's `qaren cleanup` and check its result.
 Cleanup can report unresolved group ownership or retain the slot. A pass
 records `expo_run_android` in `timings_ms`, and a pass after the limit also the
 `build_limit` outcome.
