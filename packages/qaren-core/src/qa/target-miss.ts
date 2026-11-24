@@ -326,6 +326,21 @@ export function missSuggestion(
   }
 }
 
+const HIDDEN_ADVICE_OPENING = 'Android reports the target of line ';
+
+// The next step after a Wait's failure whose reported read (failure.screen's) shows the target hidden in place, in
+// fixed, value-free words: never the id, a label or a count.
+export function hiddenInPlaceSuggestion(kind: 'input' | 'other', line: number): string {
+  return kind === 'input'
+    ? `${HIDDEN_ADVICE_OPENING}${line} as an input that is not visible to the user (hidden in place); a Wait counts only what the user can see. Wait for the testID of a visible part of the field, such as its wrapper or a digit box. If the input needs focus before Fill and the app provides a control that focuses it, Tap that control first.`
+    : `${HIDDEN_ADVICE_OPENING}${line} as not visible to the user (hidden in place); a Wait counts only what the user can see. Wait for the testID of a visible control instead.`;
+}
+
+// Whether a failure's advice is that fixed hidden-in-place edit (carried through a nested login replay).
+export function isHiddenInPlaceSuggestion(suggestion: string | undefined): boolean {
+  return suggestion !== undefined && suggestion.startsWith(HIDDEN_ADVICE_OPENING);
+}
+
 // The first step after launch polled out its allowance; `quoted` is the plan's own literal, already redacted.
 export function launchMissSuggestion(quoted: string, line: number, waitLine?: number): string {
   const insert = `insert Wait for "${quoted}" before line ${line}`;
