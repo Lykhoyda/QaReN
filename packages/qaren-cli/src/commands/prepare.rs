@@ -74,6 +74,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) verb: &'static str,
     // Metro's drained bundle-request count and (completed, failed) outcomes when the CLI launched the app.
     pub(crate) bundle_requests_at_launch: Option<(u64, (u64, u64))>,
+    // The dev-client deep link of this run's own Android launch; the core's one restart sends it again.
+    pub(crate) android_launch_url: Option<String>,
     // The dev client manifest warm-up that cleared the launch.
     pub(crate) manifest_warm: Option<crate::core::ManifestWarm>,
     // The run owns this exact iOS simulator and pins its locale and keyboard before launch.
@@ -686,6 +688,7 @@ fn prepare_validated(
         notes: Vec::new(),
         verb: "prepare",
         bundle_requests_at_launch: None,
+        android_launch_url: None,
         manifest_warm: None,
         lane_owned: scenario.platform == Platform::Ios,
         build_deadline_ms: None,
@@ -3950,6 +3953,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 .as_deref()
                 .expect("reuse was decided with a scheme");
             let url = devclient::launch_url(scheme, metro_port);
+            ctx.android_launch_url = Some(url.clone());
             let (adb, serial, server_port) =
                 ctx.record.resources.adb_endpoint().expect("allocated");
             android::am_start_deeplink_spec(
@@ -5775,6 +5779,7 @@ fn with_build_window<T>(
         notes: std::mem::take(&mut ctx.notes),
         verb: ctx.verb,
         bundle_requests_at_launch: ctx.bundle_requests_at_launch,
+        android_launch_url: ctx.android_launch_url.take(),
         manifest_warm: ctx.manifest_warm.take(),
         lane_owned: ctx.lane_owned,
         build_deadline_ms: ctx.build_deadline_ms,
@@ -5791,6 +5796,7 @@ fn with_build_window<T>(
     ctx.timings = scoped.timings;
     ctx.notes = scoped.notes;
     ctx.bundle_requests_at_launch = scoped.bundle_requests_at_launch;
+    ctx.android_launch_url = scoped.android_launch_url;
     ctx.manifest_warm = scoped.manifest_warm;
     ctx.lane_owned = scoped.lane_owned;
     ctx.build_deadline_ms = scoped.build_deadline_ms;
@@ -7603,6 +7609,7 @@ mod launch_tests {
                 notes: Vec::new(),
                 verb: "prepare",
                 bundle_requests_at_launch: None,
+                android_launch_url: None,
                 manifest_warm: None,
                 lane_owned: false,
                 build_deadline_ms: None,

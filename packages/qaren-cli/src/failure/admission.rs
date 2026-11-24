@@ -33,6 +33,7 @@ pub(crate) const INNER: &[&str] = &[
     "none",
 ];
 pub(crate) const BUNDLE_BUILT: &[&str] = &["completed", "failed", "none", "unknown"];
+pub(crate) const RELAUNCH_BLOCKED: &[&str] = &["driver_busy", "device_unreadable"];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -43,6 +44,9 @@ pub struct AdmissionFacts {
     pub inner: String,
     pub relaunches: u64,
     pub relaunch_failed: bool,
+    // Android: why the one restart was not attempted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relaunch_blocked: Option<String>,
     pub liveness: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle_request: Option<String>,
@@ -85,6 +89,10 @@ impl AdmissionFacts {
             && (self.last_completed == "none" || BOUNDARIES.contains(&self.last_completed.as_str()))
             && INNER.contains(&self.inner.as_str())
             && ["not_probed", "alive", "dead", "probe_failed"].contains(&self.liveness.as_str())
+            && self
+                .relaunch_blocked
+                .as_ref()
+                .is_none_or(|value| RELAUNCH_BLOCKED.contains(&value.as_str()))
             && self.bundle_request.as_ref().is_none_or(|value| {
                 ["received", "not_received", "unknown", "probe_failed"].contains(&value.as_str())
             })
@@ -148,6 +156,11 @@ pub enum AdmissionCause {
     BundleNotBuilt,
     NoAttachableTarget,
     AttachUnexplained,
+    AppRestartBlockedByDriver,
+    AppRestartBlockedUnreadable,
+    AppRestartFailed,
+    AppProcessDeadAfterRestart,
+    BundleNotRequestedAfterRestart,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,6 +177,9 @@ pub enum AdmissionAction {
     InspectMetroBundle,
     InspectAppScreen,
     InspectAdmissionEvidence,
+    WaitForOtherDriver,
+    CheckDeviceConnection,
+    CheckMetroReachable,
 }
 
 impl AdmissionCause {
@@ -182,8 +198,21 @@ impl AdmissionCause {
         if !android || facts.inner == "non_dev_bundle" {
             return Self::from_inner(&facts.inner);
         }
+        match facts.relaunch_blocked.as_deref() {
+            Some("driver_busy") => return Some(Self::AppRestartBlockedByDriver),
+            Some(_) => return Some(Self::AppRestartBlockedUnreadable),
+            None => {}
+        }
+        if facts.relaunch_failed {
+            return Some(Self::AppRestartFailed);
+        }
+        let restarted = facts.relaunches > 0;
         if facts.liveness == "dead" {
-            return Some(Self::AppProcessDead);
+            return Some(if restarted {
+                Self::AppProcessDeadAfterRestart
+            } else {
+                Self::AppProcessDead
+            });
         }
         if let Some(cause) = Self::from_inner(&facts.inner) {
             return Some(cause);
@@ -205,6 +234,7 @@ impl AdmissionCause {
                 facts.bundle_request.as_deref(),
                 facts.bundle_built.as_deref(),
             ) {
+                (Some("not_received"), _) if restarted => Self::BundleNotRequestedAfterRestart,
                 (Some("not_received"), _) => Self::BundleNotRequested,
                 (Some("received"), Some("none" | "failed")) => Self::BundleNotBuilt,
                 _ => Self::NoAttachableTarget,
@@ -228,6 +258,11 @@ impl AdmissionCause {
             Self::BundleNotBuilt => (InspectMetroBundle, "inspect_metro_bundle", "A bundle request and no completed build had been recorded on this Metro port since the launch, and no wait had returned a debugger target. Read `logs/metro.log` in the run folder; fix a failed build, or re-run once."),
             Self::NoAttachableTarget => (InspectAppScreen, "inspect_app_screen", "The attach ended without a usable debugger connection to the app. Look at the device for an error screen or a system dialog, then re-run once."),
             Self::AttachUnexplained => (InspectAdmissionEvidence, "inspect_admission_evidence", "The attach was refused for the recorded class. Read the admission facts and `logs/core.log`, then re-run once."),
+            Self::AppRestartBlockedByDriver => (WaitForOtherDriver, "wait_for_other_driver", "QaReN did not restart the app: the device's process table matched another automation driver (UIAutomator, Maestro, agent-device or an instrumentation), and a force-stop could break its flow. Check whether an automation driver is active on the device; if so, re-run once it finishes. If none is active and the match persists, report it with the run ID."),
+            Self::AppRestartBlockedUnreadable => (CheckDeviceConnection, "check_device_connection", "QaReN did not restart the app: the device did not answer the reads QaReN needs before a force-stop (its process table, or the app's process). Check that the device is connected and answers adb, then re-run once."),
+            Self::AppRestartFailed => (CheckDeviceConnection, "check_device_connection", "QaReN's one restart of the app (a force-stop, then the same start command) did not complete, so the app may be stopped on the device. Check that the device is connected and answers adb, then re-run once."),
+            Self::AppProcessDeadAfterRestart => (InspectAppCrash, "inspect_app_crash", "QaReN stopped the app and issued one recovery start command; the app's process was not running when the attach was refused. Read the device's crash log for the app; if it shows no crash, check that the start opens the app on the device, then re-run once."),
+            Self::BundleNotRequestedAfterRestart => (CheckMetroReachable, "check_metro_reachable", "QaReN stopped the app and issued one recovery start command; at the count check after it, Metro had still recorded no bundle request on this port, and no wait had returned a debugger target. Check that the device reaches Metro on the run's port and that the dev client leaves its own launcher, then re-run once."),
         }
     }
 }

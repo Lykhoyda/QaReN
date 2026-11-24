@@ -124,6 +124,8 @@ export const ADMISSION_BUNDLE_REQUESTS = [
 ] as const;
 // Port-wide Metro bundle outcomes since the latest launch.
 export const ADMISSION_BUNDLE_BUILT = ['completed', 'failed', 'none', 'unknown'] as const;
+// Android: why the one restart was not attempted.
+export const ADMISSION_RELAUNCH_BLOCKED = ['driver_busy', 'device_unreadable'] as const;
 const ADMISSION_WORDS = {
   admission: ADMISSION_DECISIONS,
   lastStarted: ADMISSION_BOUNDARIES,
@@ -133,6 +135,7 @@ const ADMISSION_WORDS = {
   liveness: ADMISSION_LIVENESS,
   bundleRequest: ADMISSION_BUNDLE_REQUESTS,
   bundleBuilt: ADMISSION_BUNDLE_BUILT,
+  relaunchBlocked: ADMISSION_RELAUNCH_BLOCKED,
 } as const;
 const ADMISSION_NUMBERS = [
   'attempt',
@@ -258,6 +261,7 @@ export interface TimingEvent {
   inner?: (typeof ADMISSION_INNER_CLASSES)[number];
   relaunches?: number;
   relaunchFailed?: boolean;
+  relaunchBlocked?: (typeof ADMISSION_RELAUNCH_BLOCKED)[number];
   liveness?: (typeof ADMISSION_LIVENESS)[number];
   bundleRequest?: (typeof ADMISSION_BUNDLE_REQUESTS)[number];
   bundleBuilt?: (typeof ADMISSION_BUNDLE_BUILT)[number];

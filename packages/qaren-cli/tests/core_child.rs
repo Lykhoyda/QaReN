@@ -603,6 +603,7 @@ fn request() -> CoreRequest {
             metro_bundle_requests: None,
             manifest_warm: None,
             warm_lane: false,
+            android_launch_url: None,
         },
     }
 }

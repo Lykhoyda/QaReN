@@ -12,6 +12,13 @@ const BUILT: Partial<Record<BundleBuilt, string>> = {
   completed: 'a completed build',
 };
 
+const RESTART: Record<NonNullable<AdmissionRefusalFacts['relaunchBlocked']>, string> = {
+  driver_busy:
+    "; QaReN did not restart the app: the device's process table matched another automation driver",
+  device_unreadable:
+    '; QaReN did not restart the app: the device did not answer the reads needed before a force-stop',
+};
+
 const AFTER_CONNECT: readonly AdmissionRefusalFacts['lastStarted'][] = [
   'foreign_driver',
   'open',
@@ -22,7 +29,10 @@ function bundle(facts: AdmissionRefusalFacts): string {
   if (facts.bundleRequest === 'not_received')
     return '; at the count check Metro had recorded no bundle request on this port since the launch';
   if (facts.bundleRequest !== 'received') return '';
-  const built = facts.bundleBuilt === undefined ? undefined : BUILT[facts.bundleBuilt];
+  // A count-only read leaves the build outcome out: nothing was read, so nothing is claimed about it.
+  if (facts.bundleBuilt === undefined)
+    return '; a bundle request was recorded on this Metro port since the launch';
+  const built = BUILT[facts.bundleBuilt];
   return built === undefined
     ? '; a bundle request was recorded on this Metro port since the launch; build outcomes could not be read'
     : `; a bundle request and ${built} were recorded on this Metro port since the launch`;
@@ -37,5 +47,11 @@ export function androidStartNote(
   const stage = AFTER_CONNECT.includes(facts.lastStarted)
     ? `; the debugger was attached and React was ready; the deadline ended at step ${facts.lastStarted}`
     : '';
-  return (PROCESS[facts.liveness] ?? '') + bundle(facts) + stage + gateNote;
+  const restart =
+    facts.relaunchBlocked !== undefined
+      ? RESTART[facts.relaunchBlocked]
+      : facts.relaunches > 0 && !facts.relaunchFailed
+        ? '; QaReN stopped the app and issued one recovery start command'
+        : '';
+  return restart + (PROCESS[facts.liveness] ?? '') + bundle(facts) + stage + gateNote;
 }

@@ -13,6 +13,7 @@ import type { PreparedPlan } from './plan.js';
 import { type JevCall, isRecord } from './questions.js';
 import type { LoginMarker } from './recover.js';
 import { isValidActionId } from '../domain/path-safety.js';
+import { isAndroidDevClientLaunchUrl } from '../handlers/app-lifecycle.js';
 
 export const WIRE_VERSION = 1 as const;
 
@@ -53,6 +54,8 @@ export interface WireTarget {
   manifestWarm?: { ms: number; attempts: number };
   // The CLI pinned this lane; the first screen must be observed before row 1.
   warmLane?: true;
+  // Android: the CLI's dev-client deep link of this run's own launch, for the admission's one restart.
+  androidLaunchUrl?: string;
 }
 
 export interface WireRequest {
@@ -264,6 +267,9 @@ export function parsePublicRequest(line: string): WireRequest {
         !Number.isSafeInteger(target.manifestWarm.attempts) ||
         target.manifestWarm.attempts < 1)) ||
     (target.warmLane !== undefined && target.warmLane !== true) ||
+    (target.androidLaunchUrl !== undefined &&
+      (p.platform !== 'android' ||
+        !isAndroidDevClientLaunchUrl(target.androidLaunchUrl, target.metroPort as number))) ||
     (p.loginBlock !== undefined && (!isValidActionId(p.loginBlock) || !p.loginMarker)) ||
     (p.loginMarker !== undefined && !validMarker(p.loginMarker)) ||
     (p.videoPolicy !== undefined &&
