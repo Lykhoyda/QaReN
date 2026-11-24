@@ -51,7 +51,7 @@ export function cleanAdmissionFacts(value: unknown): AdmissionFacts | undefined 
         clean.devTrue! + clean.devFalse! + clean.devUndefined! + clean.devUnknown!)
   )
     return undefined;
-  const keys = [...REQUIRED, ...NUMBERS, 'bundleRequest', 'bundleBuilt'];
+  const keys = [...REQUIRED, ...NUMBERS, 'relaunchBlocked', 'bundleRequest', 'bundleBuilt'];
   return Object.fromEntries(
     keys
       .filter((key) => clean[key as keyof typeof clean] !== undefined)

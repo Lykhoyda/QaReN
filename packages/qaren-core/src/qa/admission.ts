@@ -41,6 +41,7 @@ import {
   ADMISSION_LIVENESS,
   ADMISSION_BUNDLE_REQUESTS,
   ADMISSION_BUNDLE_BUILT,
+  ADMISSION_RELAUNCH_BLOCKED,
   type TimingEvent,
   observeTiming,
 } from './timing.js';
@@ -76,8 +77,12 @@ export interface AdmissionSteps {
   // Android: Metro's request count against its launch value, read now from a local file, without waiting;
   // with `outcomes`, and a request recorded, also the build outcomes.
   startCounts?(outcomes: boolean): StartCounts;
-  // Android: the app's process, read now; awaited only while a refusal is built.
+  // Android: the app's process, read now.
   startProcess?(): Promise<boolean>;
+  // Android: the first-views gate's last decision was to hold this start.
+  startHeld?(): boolean;
+  // Android, only with the CLI's launch URL: one restart of a dead or silent start.
+  startRecovery?: AndroidStartRecovery;
   refusalNote?(facts?: AdmissionRefusalFacts): string;
   foreignDriver(): Promise<string | undefined>;
   open(): Promise<void>;
@@ -92,6 +97,14 @@ export interface AdmissionSteps {
 type Proven = Extract<ProveOutcome, { ok: true }>;
 
 export type ManifestWarm = { ms: number; attempts: number };
+export type AndroidStartRecovery = {
+  // The strict process-table check for destructive work; only `clear` permits the force-stop.
+  driver(): Promise<'clear' | 'busy' | 'unknown'>;
+  // Force-stop, prove the process gone, rebase the counts, send the same start once, hold again.
+  relaunch(): Promise<void>;
+};
+// A restart step failed; the message is fixed words, never command output.
+export class StartRelaunchError extends Error {}
 export type StartCounts = {
   bundleRequest: 'received' | 'not_received' | 'unknown';
   bundleBuilt?: BundleBuilt;
@@ -115,6 +128,7 @@ export type AdmissionRefusalFacts = {
   inner: AdmissionInnerClass;
   relaunches: number;
   relaunchFailed: boolean;
+  relaunchBlocked?: (typeof ADMISSION_RELAUNCH_BLOCKED)[number];
   liveness: AdmissionLiveness;
   bundleRequest?: (typeof ADMISSION_BUNDLE_REQUESTS)[number];
   bundleBuilt?: BundleBuilt;
@@ -209,6 +223,9 @@ export function formatAdmissionRefusal(
     inner: member(facts.inner, ADMISSION_INNER_CLASSES),
     relaunches: count(facts.relaunches),
     relaunchFailed: flag(facts.relaunchFailed),
+    ...(facts.relaunchBlocked === undefined
+      ? {}
+      : { relaunchBlocked: member(facts.relaunchBlocked, ADMISSION_RELAUNCH_BLOCKED) }),
     liveness: member(facts.liveness, ADMISSION_LIVENESS),
     ...(facts.bundleRequest === undefined
       ? {}
@@ -648,6 +665,15 @@ export const DEV_CLIENT_MANIFEST_MARGIN_MS = DEV_CLIENT_REQUEST_TIMEOUT_MS / 2;
 export const DEV_CLIENT_MANIFEST_ANSWERS = 2;
 const PATIENT_MANIFEST_MS = 90_000;
 const MAX_PATIENT_RELAUNCHES = 3;
+// Android's death read: androidAppProcess's two 5 s reads and its 1 s pause.
+const START_READ_MS = 11_000;
+// The restart from the force-stop until its start returns, as the sum of its command allowances: the force-stop 10 s, its proof 11 s and the start 60 s.
+const START_STOP_MS = 81_000;
+// The restart before its start returns (94 s): the process table 2 s, a confirming death read, then the stop and start.
+const START_RESTART_MS = 2_000 + START_READ_MS + START_STOP_MS;
+// The CLI's first-pid grace after its own am start (ANDROID_FIRST_PID_GRACE_MS in cli/commands/prepare.rs); a restarted
+// start gets its own attach budget, never less than this, before D-26's rules judge it.
+const START_FIRST_PID_MS = 60_000;
 // An advertised page that answers `__DEV__` undefined this long has not run its bundle.
 const IDLE_WINDOW_MIN_MS = 60_000;
 
@@ -723,8 +749,14 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
   let liveness: AdmissionLiveness = 'not_probed';
   let bundleRequest: BundleRequest = 'not_probed';
   let bundleBuilt: BundleBuilt | undefined;
-  // Android: the failed wait refused on Metro's count, and the count it was refused on.
-  let startDecided: { error: unknown; counts: StartCounts } | undefined;
+  // Android: the failed wait a start was refused on, and what was read for it.
+  let startDecided:
+    | { error: unknown; counts?: StartCounts; liveness?: AdmissionLiveness }
+    | undefined;
+  // Android: when D-26's two rules begin (the death read and the zero count); after a restart, the end of the restarted start's own budget.
+  let startJudgedAt = started;
+  const startReadTimeout = new Error('the app process read outlived its share');
+  let relaunchBlocked: AdmissionRefusalFacts['relaunchBlocked'];
   // A complete scan whose every page answered `__DEV__` undefined, held continuously since `since`.
   let idle: { since: number; candidates: string; requests: number | undefined } | undefined;
   let idleExtended = false;
@@ -758,6 +790,7 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
       inner,
       relaunches,
       relaunchFailed: relaunchFailure !== undefined,
+      ...(relaunchBlocked === undefined ? {} : { relaunchBlocked }),
       liveness,
       ...(bundleRequest === 'not_probed' ? {} : { bundleRequest }),
       ...(bundleBuilt === undefined ? {} : { bundleBuilt }),
@@ -1158,17 +1191,96 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               lastCompleted = completed;
             }
           }
-          if (
-            steps.startCounts &&
-            !registeredTargetSeen &&
-            stalledAttach &&
-            !(error instanceof TargetListAttemptTimeoutError) &&
-            performance.now() >= refuseStalledAt
-          ) {
-            const counts = peekCounts(steps, false);
-            if (counts?.bundleRequest === 'not_received') {
-              startDecided = { error, counts };
-              throw error;
+          if (steps.startCounts && !registeredTargetSeen && stalledAttach) {
+            const end = (): number => Math.min(deadline, performance.now() + steps.remainingMs());
+            // A death read, the retry pause and one full wait.
+            const reserve = START_READ_MS + REACT_READY_POLL_MS + steps.readinessMs;
+            const readStart = async (): Promise<AdmissionLiveness | undefined> => {
+              try {
+                return await withDeadline(performance.now() + START_READ_MS, startReadTimeout, () =>
+                  readProcess(steps),
+                );
+              } catch (readError) {
+                if (readError !== startReadTimeout) throw readError;
+                return undefined;
+              }
+            };
+            // Taken when the wait failed, before any read: a read cannot make the count due.
+            const turnAt = performance.now();
+            const due = turnAt >= startJudgedAt;
+            const counts =
+              due && !(error instanceof TargetListAttemptTimeoutError) && turnAt >= refuseStalledAt
+                ? peekCounts(steps, false)
+                : undefined;
+            const silent = counts?.bundleRequest === 'not_received';
+            const read =
+              due && !silent && steps.startHeld?.() !== true && end() - performance.now() >= reserve
+                ? await readStart()
+                : undefined;
+            const dead = read === 'dead';
+            if (dead || silent) {
+              const decided = { error, counts: silent ? counts : undefined, liveness: read };
+              const recovery = steps.startRecovery;
+              const restartedBudget = Math.max(steps.attachBudgetMs, START_FIRST_PID_MS);
+              // The restarted start must return by then to keep its own budget inside the walk.
+              const latestReturn = end() - restartedBudget;
+              // Restart only while the walk still holds the restarted start's own budget after its slowest start.
+              if (
+                !recovery ||
+                relaunches > 0 ||
+                performance.now() + START_RESTART_MS > latestReturn
+              ) {
+                startDecided = decided;
+                throw error;
+              }
+              lastStarted = 'relaunch';
+              const driver = await interruptible(recovery.driver);
+              // The start may have moved while the table was read: a reason must still hold before the stop.
+              let confirmed = read;
+              let still = false;
+              if (driver === 'clear') {
+                still = silent && peekCounts(steps, false)?.bundleRequest === 'not_received';
+                if (!still && dead) {
+                  confirmed = (await readStart()) ?? 'probe_failed';
+                  still = confirmed === 'dead';
+                }
+              }
+              if (driver !== 'clear' || (!still && dead && confirmed !== 'alive')) {
+                relaunchBlocked = driver === 'busy' ? 'driver_busy' : 'device_unreadable';
+                startDecided = { ...decided, liveness: confirmed };
+                throw error;
+              }
+              // The reads before the stop may have taken the restart's share: then no stop, refused as without a restart.
+              const late = still && performance.now() + START_STOP_MS > latestReturn;
+              if (!still || late) {
+                lastStarted = 'attach';
+                if (late) {
+                  startDecided = { ...decided, liveness: confirmed };
+                  throw error;
+                }
+              } else {
+                relaunches++;
+                try {
+                  await interruptible(recovery.relaunch);
+                } catch (relaunchError) {
+                  // The counts may already be rebased: keep what this launch showed, else claim nothing.
+                  const kept = counts ?? { bundleRequest: 'unknown' as const };
+                  if (relaunchError === attachTimeout) {
+                    relaunchFailure = 'the walk budget ended during the restart';
+                    // The builder receives attachTimeout itself and matches the decision by its error.
+                    startDecided = { error: attachTimeout, counts: kept };
+                  }
+                  if (isAbort(relaunchError)) throw relaunchError;
+                  relaunchFailure =
+                    relaunchError instanceof StartRelaunchError
+                      ? relaunchError.message
+                      : 'the restart did not complete';
+                  startDecided = { error, counts: kept };
+                  throw error;
+                }
+                lastCompleted = 'relaunch';
+                startJudgedAt = performance.now() + restartedBudget;
+              }
             }
           }
           if (stalledAttach && lastStarted !== 'relaunch' && performance.now() >= patientRefuseAt) {
@@ -1242,10 +1354,14 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
               : admissionInnerClass(cause);
     // A refusal says whether the app ran and asked Metro for its bundle, whatever stopped the attach.
     if (steps.startCounts) {
-      // Android: one process read inside the time left, then Metro's counts only while no wait has returned a target.
-      liveness = 'not_probed';
+      // Android: the decision's own reads, else one process read inside the time left; Metro's counts only while no wait has returned a target.
+      const decided =
+        !registeredTargetSeen && startDecided !== undefined && startDecided.error === error
+          ? startDecided
+          : undefined;
+      liveness = decided?.liveness ?? 'not_probed';
       const until = Math.min(deadline, performance.now() + steps.remainingMs());
-      if (until > performance.now()) {
+      if (decided?.liveness === undefined && until > performance.now()) {
         try {
           liveness = await withDeadline(until, attachTimeout, () => readProcess(steps));
         } catch (processError) {
@@ -1253,11 +1369,10 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
         }
       }
       const counts =
-        !registeredTargetSeen && startDecided !== undefined && startDecided.error === error
-          ? startDecided.counts
-          : !registeredTargetSeen || inner === 'dev_runtime_unproven'
-            ? peekCounts(steps, true)
-            : undefined;
+        decided?.counts ??
+        (!registeredTargetSeen || inner === 'dev_runtime_unproven'
+          ? peekCounts(steps, true)
+          : undefined);
       bundleRequest = counts?.bundleRequest ?? 'not_probed';
       bundleBuilt = counts?.bundleBuilt;
     } else {
@@ -1333,7 +1448,11 @@ async function attach(steps: AdmissionSteps, signal: AbortSignal): Promise<Prove
       // Diagnostics cannot change the refusal.
     }
     throw new HandlerError(
-      devMissing ? 'DEV_TARGET_MISSING' : 'CDP_NOT_CONNECTED',
+      relaunchBlocked === 'driver_busy'
+        ? 'BUSY_FOREIGN_FLOW'
+        : devMissing
+          ? 'DEV_TARGET_MISSING'
+          : 'CDP_NOT_CONNECTED',
       (typedMessage ??
         `cannot attach to the dev client through Metro ${steps.metroPort}: ${describeError(error).message} (observed ${refusal?.lastStarted ?? lastStarted}: ${inner}; app ${liveness}; bundle request ${bundleRequest}${warm ? `; last manifest warm-up ${warm.ms} ms after ${warm.attempts} attempts` : ''}${manifestCause}; host 1-minute load ${load.toFixed(1)}${relaunchFailure === undefined ? '' : `; relaunch failed: ${relaunchFailure}`})`) +
         foreignPagesNote(readPages(steps)) +

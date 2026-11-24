@@ -848,7 +848,16 @@ export async function openSession(
             },
             pages: () => pages,
             ...(platform === 'android'
-              ? androidStartSteps({ appId, serial: target.deviceId, bundleRequests, gate })
+              ? androidStartSteps({
+                  appId,
+                  serial: target.deviceId,
+                  metroPort: target.metroPort,
+                  launchUrl: target.androidLaunchUrl,
+                  bundleRequests,
+                  gate,
+                  log,
+                  at: now,
+                })
               : {}),
             attach: async (deadline) => {
               attachStage = 'connect_exact';

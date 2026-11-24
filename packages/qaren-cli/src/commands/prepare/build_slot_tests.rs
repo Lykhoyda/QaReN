@@ -648,6 +648,7 @@ impl Fixture {
             notes: Vec::new(),
             verb: "prepare",
             bundle_requests_at_launch: None,
+            android_launch_url: None,
             manifest_warm: None,
             lane_owned: false,
             build_deadline_ms: None,
@@ -1342,6 +1343,7 @@ fn review_s2_core_wait_releases_a_late_gradle_completion_before_teardown() {
             metro_bundle_requests: None,
             manifest_warm: None,
             warm_lane: false,
+            android_launch_url: None,
         },
     };
     let record = ctx.record.clone();

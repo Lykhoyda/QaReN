@@ -866,6 +866,7 @@ fn run_inner(
         .collect(),
         verb: verb(req),
         bundle_requests_at_launch: None,
+        android_launch_url: None,
         manifest_warm: None,
         lane_owned: req.platform == Platform::Ios
             && (req.boot_device || req.restart_device || req.fresh_install),
@@ -1314,6 +1315,7 @@ fn run_inner(
                     ),
                 manifest_warm: ctx.manifest_warm.clone(),
                 warm_lane: ctx.record.resources.lane.is_some(),
+                android_launch_url: ctx.android_launch_url.clone(),
             },
         };
         let spec = core::spawn_spec(

@@ -60,6 +60,9 @@ pub struct CoreTarget {
     // The CLI pinned this lane; the core must observe the app's first screen before row 1.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub warm_lane: bool,
+    // Android: the dev-client deep link of this run's own launch, for the core's one restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub android_launch_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
