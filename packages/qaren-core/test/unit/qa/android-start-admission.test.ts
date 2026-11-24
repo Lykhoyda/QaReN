@@ -175,14 +175,14 @@ test('E1: a start with no bundle request is refused at the first eligible failed
   });
   const result = c.watch(admit(r.steps, c.stop));
   await c.until(result, 1_300_000);
-  assert.equal(c.now(), 137_500);
+  assert.equal(c.now(), 46_000);
   const error = refusal(result);
   assert.equal(error.meta.inner, 'target_list_empty');
   assert.equal(error.meta.liveness, 'dead');
   assert.equal(error.meta.bundleRequest, 'not_received');
   assert.equal(error.meta.bundleBuilt, undefined);
-  assert.deepEqual(r.calls.process, [137_500]);
-  assert.deepEqual(r.calls.requested, [137_500]);
+  assert.deepEqual(r.calls.process, [46_000]);
+  assert.deepEqual(r.calls.requested, [46_000]);
   assert.deepEqual(r.calls.built, []);
 });
 
@@ -242,7 +242,7 @@ test('E3: a recorded request or no counts at all never refuses early', async (t)
   }
 });
 
-test('E4: a dead start with a request recorded is not refused early', async (t) => {
+test('E4: a dead start with a request recorded and no launch URL is refused early as dead', async (t) => {
   const c = clock(t);
   const r = rig(c, {
     reader: () => 'unknown',
@@ -254,22 +254,27 @@ test('E4: a dead start with a request recorded is not refused early', async (t) 
   });
   const result = c.watch(admit(r.steps, c.stop));
   await c.until(result, 400_000);
-  assert.equal(c.now(), 300_000);
+  assert.equal(c.now(), 46_000);
   const error = refusal(result);
-  assert.deepEqual(r.calls.process, []);
-  assert.equal(error.meta.liveness, 'not_probed');
+  assert.deepEqual(r.calls.process, [46_000]);
+  assert.equal(error.meta.liveness, 'dead');
   assert.equal(error.meta.bundleRequest, 'received');
   assert.equal(error.meta.bundleBuilt, 'none');
 });
 
-test('E5: the factory gives Android exactly its three steps and reads what Metro recorded', async () => {
+test('E5: the factory gives Android its four ordinary steps and reads what Metro recorded', async () => {
   const base = { appId: APP, serial: SERIAL, gate: { note: () => '' }, process: async () => true };
   const noCounts = androidStartSteps(base);
   for (const steps of [
     noCounts,
     androidStartSteps({ ...base, bundleRequests: { requested: () => true, built: () => 'none' } }),
   ])
-    assert.deepEqual(Object.keys(steps).sort(), ['refusalNote', 'startCounts', 'startProcess']);
+    assert.deepEqual(Object.keys(steps).sort(), [
+      'refusalNote',
+      'startCounts',
+      'startHeld',
+      'startProcess',
+    ]);
   assert.deepEqual(noCounts.startCounts(true), { bundleRequest: 'unknown' });
   for (const requested of [undefined, false, true]) {
     for (const built of ['completed', 'failed', 'none', 'unknown'] as const) {
@@ -353,13 +358,14 @@ test('E9: a wait the loop does not retry is not decided, and its counts follow t
   });
   const result = c.watch(admit(r.steps, c.stop));
   await c.until(result, 1_300_000);
-  assert.equal(c.now(), 139_500);
+  assert.equal(c.now(), 145_500);
   const error = refusal(result);
   assert.equal(error.meta.inner, 'bundle_readiness_timeout');
   assert.equal(error.meta.liveness, 'alive');
   assert.equal(error.meta.bundleRequest, 'received');
   assert.equal(error.meta.bundleBuilt, 'none');
-  assert.deepEqual(r.calls.requested, [139_500]);
+  assert.deepEqual(r.calls.requested, [145_500]);
+  assert.deepEqual(r.calls.process, [46_000, 78_500, 111_000, 143_500]);
 });
 
 test('F1: a deadline after the attach reads the process and names the step', async (t) => {
@@ -590,7 +596,6 @@ test('T1: the note names the process, the counts and the stage before the gate n
     ['none', 'no completed build'],
     ['completed', 'a completed build'],
     ['unknown', undefined],
-    [undefined, undefined],
   ] as const)
     assert.equal(
       note({ bundleRequest: 'received', ...(built ? { bundleBuilt: built } : {}) }),
@@ -598,6 +603,11 @@ test('T1: the note names the process, the counts and the stage before the gate n
         ? `; a bundle request and ${text} were recorded on this Metro port since the launch`
         : unread) + gate,
     );
+  // A count-only read (the decision's) names the request and claims nothing about the build.
+  assert.equal(
+    note({ bundleRequest: 'received' }),
+    '; a bundle request was recorded on this Metro port since the launch' + gate,
+  );
   for (const step of ['foreign_driver', 'open', 'prove'] as const)
     assert.equal(
       note({ lastStarted: step }),

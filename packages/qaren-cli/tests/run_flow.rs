@@ -3024,6 +3024,9 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         request_line["payload"]["target"]["deviceName"],
         "qa-company-app"
     );
+    assert!(request_line["payload"]["target"]
+        .get("androidLaunchUrl")
+        .is_none());
     let bundle_requests = &request_line["payload"]["target"]["metroBundleRequests"];
     assert_eq!(bundle_requests["atLaunch"], 0, "{bundle_requests}");
     assert!(bundle_requests["path"]
@@ -15408,6 +15411,22 @@ fn android_check_passes_the_bundle_counts_read_before_the_launch() {
 }
 
 #[test]
+fn android_check_passes_its_own_launch_url_to_the_core() {
+    let (req, mut mock, _repo) = android_reuse_check();
+    seed_android_counts(&mut mock, &req.runs_root);
+    script_android_launch_walk_teardown(&mut mock);
+
+    let (receipt, _) = run_with_events(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    let request: serde_json::Value = serde_json::from_str(mock.piped_stdin_text(0).trim()).unwrap();
+    assert_eq!(
+        request["payload"]["target"]["androidLaunchUrl"],
+        "rndatest://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8791%2F%3FdisableOnboarding%3D1"
+    );
+}
+
+#[test]
 fn android_request_probe_runs_only_with_fifteen_seconds_of_warm_up_left() {
     for advance in [15_000, 16_000] {
         let (req, mut mock, _repo) = android_reuse_check();
@@ -15485,9 +15504,18 @@ fn android_refusal_run(
     facts: &serde_json::Value,
     private: Option<&str>,
 ) -> (qaren::receipt::Receipt, String) {
+    android_refusal_run_as("CDP_NOT_CONNECTED", "admission refused", facts, private)
+}
+
+fn android_refusal_run_as(
+    code: &str,
+    message: &str,
+    facts: &serde_json::Value,
+    private: Option<&str>,
+) -> (qaren::receipt::Receipt, String) {
     let (req, mut mock, _repo) = android_reuse_check();
     let refusal = serde_json::json!({
-        "verdict": "REFUSED", "code": "CDP_NOT_CONNECTED", "message": "admission refused",
+        "verdict": "REFUSED", "code": code, "message": message,
         "admission": facts
     });
     script_android_launch_refused(&mut mock, &refusal);
@@ -15855,4 +15883,118 @@ mod uncertain_ladder {
         assert_recovery(&receipt, &recovery(Some(&run_id())));
         assert_record_untouched(&repo, DISPATCH, GENERIC);
     }
+}
+
+#[test]
+fn android_restart_refusals_get_their_own_receipts() {
+    for (code, started, relaunches, failed, blocked, liveness, request, cause, action) in [
+        (
+            "CDP_NOT_CONNECTED",
+            "attach",
+            1,
+            false,
+            None,
+            "dead",
+            None,
+            "app_process_dead_after_restart",
+            "inspect_app_crash",
+        ),
+        (
+            "CDP_NOT_CONNECTED",
+            "relaunch",
+            1,
+            true,
+            None,
+            "dead",
+            Some("not_received"),
+            "app_restart_failed",
+            "check_device_connection",
+        ),
+        (
+            "BUSY_FOREIGN_FLOW",
+            "relaunch",
+            0,
+            false,
+            Some("driver_busy"),
+            "alive",
+            Some("not_received"),
+            "app_restart_blocked_by_driver",
+            "wait_for_other_driver",
+        ),
+        (
+            "CDP_NOT_CONNECTED",
+            "relaunch",
+            0,
+            false,
+            Some("device_unreadable"),
+            "probe_failed",
+            None,
+            "app_restart_blocked_unreadable",
+            "check_device_connection",
+        ),
+    ] {
+        let mut facts = serde_json::json!({
+            "attempt": 6, "lastStarted": started, "lastCompleted": "retry_wait",
+            "inner": "target_readiness_timeout", "relaunches": relaunches, "relaunchFailed": failed,
+            "liveness": liveness, "elapsedMs": 120000, "remainingMs": 1079000, "budgetMs": 1199000
+        });
+        if let Some(word) = blocked {
+            facts["relaunchBlocked"] = word.into();
+        }
+        if let Some(word) = request {
+            facts["bundleRequest"] = word.into();
+        }
+        let (receipt, _) = android_refusal_run_as(code, "admission refused", &facts, None);
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        let serialized = serde_json::to_value(&receipt).unwrap();
+        let recovery = &serialized["failure"]["recovery"];
+        let expected = qaren::failure::AdmissionCause::from_facts(
+            &serde_json::from_value(facts.clone()).unwrap(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(recovery["cause"], cause, "{facts}");
+        assert_eq!(recovery["action"], action, "{facts}");
+        assert_eq!(recovery["instruction"], expected.action().2, "{facts}");
+        assert_eq!(recovery["admission"], facts);
+        let rungs: Vec<u64> = recovery["ladder"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|rung| rung["rung"].as_u64().unwrap())
+            .collect();
+        assert_eq!(rungs, [1, 2, 3, 4, 5], "{recovery}");
+        assert_eq!(serialized["failure"]["phase"], "attach");
+        assert_eq!(serialized["next_action"], action);
+    }
+    // A strict input: the core withholds its text; the receipt keeps the restart's cause and no input value.
+    let facts = serde_json::json!({
+        "attempt": 6, "lastStarted": "relaunch", "lastCompleted": "retry_wait",
+        "inner": "target_readiness_timeout", "relaunches": 1, "relaunchFailed": true,
+        "liveness": "dead", "bundleRequest": "not_received",
+        "elapsedMs": 32000, "remainingMs": 207000, "budgetMs": 239000
+    });
+    let (receipt, json) = android_refusal_run_as(
+        "CDP_NOT_CONNECTED",
+        "[private output withheld]",
+        &facts,
+        Some("t3canary"),
+    );
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert!(!json.contains("t3canary"), "{json}");
+    assert!(json.contains("app_restart_failed"), "{json}");
+    let facts = serde_json::json!({
+        "attempt": 6, "lastStarted": "attach", "lastCompleted": "retry_wait",
+        "inner": "target_readiness_timeout", "relaunches": 1, "relaunchFailed": false,
+        "liveness": "alive", "bundleRequest": "not_received",
+        "elapsedMs": 181500, "remainingMs": 1017500, "budgetMs": 1199000
+    });
+    let (receipt, json) = android_refusal_run(&facts, Some("alive"));
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert!(!json.contains("alive"), "{json}");
+    assert!(
+        json.contains("bundle_not_requested_after_restart"),
+        "{json}"
+    );
+    assert!(json.contains("check_metro_reachable"), "{json}");
 }
