@@ -575,15 +575,18 @@ fn opt_in_note(summary: &LedgerSummary) -> String {
     )
 }
 
-fn video_policy_text(ledger: &Ledger) -> String {
-    let source = ledger
-        .video_policy_source
-        .as_deref()
-        .unwrap_or("an unrecorded config path");
+// Public bodies name no config path; the local report keeps the redacted path.
+pub const PUBLIC_CONFIG: &str = "the selected app config";
+
+fn video_policy_text(ledger: &Ledger, source: Option<&str>) -> String {
+    let source = source.unwrap_or("an unrecorded config path");
     match ledger.video_policy {
         crate::record::VideoPolicy::Undeclared => {
             format!("Video policy: not declared in {source}, so strict rules apply.")
         }
+        crate::record::VideoPolicy::DefaultNonStrict => format!(
+            "Video policy: not declared in {source}, so dev-mode (non-strict) rules apply."
+        ),
         policy => format!("Video policy: {} (declared in {source}).", policy.as_str()),
     }
 }
@@ -600,7 +603,7 @@ fn video_withholding(ledger: &Ledger, strict: &VideoPublication) -> Option<Strin
     let code = cause
         .map(|entry| format!(" ({})", entry.reason.as_str()))
         .unwrap_or_default();
-    if ledger.video_policy == crate::record::VideoPolicy::NonStrict
+    if ledger.video_policy.rules() == crate::record::VideoPolicy::NonStrict
         && publication == VideoPublication::WithheldPrivacy
     {
         let escape = if cause.is_some_and(|cause| {
@@ -725,7 +728,10 @@ pub fn render(input: &ReportInput<'_>) -> String {
         }
     }
     out.push_str("\n## Run details\n\n");
-    out.push_str(&format!("- {}\n", prose(&video_policy_text(input.ledger))));
+    out.push_str(&format!(
+        "- {}\n",
+        prose(&video_policy_text(input.ledger, input.ledger.video_policy_source.as_deref()))
+    ));
     if let Some(line) = video_outcome_line(
         input.ledger,
         &input.ledger.video_publication.clone().unwrap_or_default(),
@@ -745,6 +751,9 @@ pub fn render(input: &ReportInput<'_>) -> String {
             entry.reason.sentence(),
             entry.reason.as_str()
         ));
+    }
+    if let Some(next) = generic_value_next_step(input.ledger, input.installed_app.is_some()) {
+        out.push_str(&format!("- Next step: {}\n", prose(&next)));
     }
     let totals = inconclusive_totals(&summary);
     let sent: u64 = totals.values().sum();
@@ -930,6 +939,18 @@ fn verdict_label(ledger: &Ledger, refusal: Option<&Failure>) -> String {
     out
 }
 
+// The public form: the closed reason's fixed text replaces free-form recorder detail; continuity events stay structured.
+fn public_video_unavailable_line(video: &VideoStatus, ledger: &Ledger) -> Option<String> {
+    let fixed = match video {
+        VideoStatus::Unavailable { code, .. } => VideoStatus::Unavailable {
+            code: *code,
+            detail: code.public_detail().to_string(),
+        },
+        other => other.clone(),
+    };
+    video_unavailable_line(&fixed, Some(ledger))
+}
+
 // Shared across the local report, run receipt, and publication surfaces.
 pub fn video_unavailable_line(video: &VideoStatus, ledger: Option<&Ledger>) -> Option<String> {
     if video.reason() == Some(VideoReason::Interrupted) {
@@ -1016,6 +1037,46 @@ pub fn video_unavailable_line(video: &VideoStatus, ledger: Option<&Ledger>) -> O
     )))
 }
 
+// The first recorded screenshot cause, or the video cause when no screenshot cause was recorded, is generic-value, and the recorded non-strict verdict is eligible.
+pub fn generic_value_next_step(ledger: &Ledger, installed_app: bool) -> Option<String> {
+    let media = ledger.media_withheld.as_ref()?;
+    let entry = media.screenshots.as_ref().or(media.video.as_ref())?;
+    let eligible = ledger.non_strict_publication == Some(crate::record::NonStrictPublication::Eligible);
+    if ledger.video_policy != crate::record::VideoPolicy::Strict
+        || installed_app
+        || entry.reason != crate::core::WithholdCause::GenericValue
+        || !eligible
+    {
+        return None;
+    }
+    // Fixed text and the line number only: hint text is printed to stderr as it is (main.rs), so no config-derived string.
+    Some(format!(
+        "Strict media rules first withheld capture at line {} because an element exposed an accessibility value (generic-value), such as a progress percentage. This run's non-strict video privacy verdict was eligible. If the app shows only test data, remove video: strict from the selected app config or set video: non-strict. Keep video: strict if the app can show real private data.",
+        entry.line
+    ))
+}
+
+pub fn generic_value_hint(ledger: &Ledger, installed_app: bool) -> Option<crate::receipt::Hint> {
+    let next = generic_value_next_step(ledger, installed_app)?;
+    Some(crate::receipt::Hint {
+        code: "MEDIA_WITHHELD_GENERIC_VALUE".into(),
+        text: format!("▸ media: {next}"),
+    })
+}
+
+// What a later publish reports about the published comment: the same public form the comment uses.
+pub fn public_video_outcome_line(
+    ledger: &Ledger,
+    strict: &VideoPublication,
+    video: &VideoStatus,
+) -> Option<String> {
+    video_withholding(ledger, strict)
+        .map(|reason| format!("Video withheld: {reason}"))
+        .or_else(|| {
+            public_video_unavailable_line(video, ledger).or_else(|| runner_recovery_line(ledger))
+        })
+}
+
 pub fn video_outcome_line(
     ledger: &Ledger,
     strict: &VideoPublication,
@@ -1055,14 +1116,8 @@ fn video_lines(input: &ReportInput<'_>, pr: &PrRun<'_>, clean: &dyn Fn(&str) -> 
     if let Some(reason) = video_withholding(input.ledger, pr.video_publication) {
         out.push_str(&format!("Video withheld: {}\n\n", clean(&reason)));
         if input.ledger.video_policy == crate::record::VideoPolicy::Undeclared {
-            let source = input
-                .ledger
-                .video_policy_source
-                .as_deref()
-                .unwrap_or("the app config");
             out.push_str(&format!(
-                "If this app shows test data only, declare video: non-strict in {}.\n\n",
-                clean(source)
+                "If this app shows test data only, declare video: non-strict in {PUBLIC_CONFIG}.\n\n"
             ));
         }
     } else {
@@ -1075,7 +1130,7 @@ fn video_lines(input: &ReportInput<'_>, pr: &PrRun<'_>, clean: &dyn Fn(&str) -> 
                 out.push_str(&continuity_lines(pr));
             }
             VideoStatus::TooLarge | VideoStatus::Unavailable { .. } => {
-                if let Some(line) = video_unavailable_line(pr.video, Some(input.ledger)) {
+                if let Some(line) = public_video_unavailable_line(pr.video, input.ledger) {
                     out.push_str(&format!("{}\n\n", clean(&line)));
                 }
             }
@@ -1186,7 +1241,7 @@ pub fn render_pr_comment(
         );
     }
     out.push_str("\n\n");
-    out.push_str(&format!("{}\n\n", clean(&video_policy_text(input.ledger))));
+    out.push_str(&format!("{}\n\n", clean(&video_policy_text(input.ledger, Some(PUBLIC_CONFIG)))));
     out.push_str(&video_lines(input, pr, &clean));
     out.push_str("**Plan**\n\n");
     for row in walked(input) {
@@ -1233,6 +1288,42 @@ pub fn render_pr_comment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // AI-725: a declared strict run outside installed-app mode. The first recorded screenshot cause, or the video cause when no screenshot cause was recorded, is generic-value, and the recorded non-strict verdict is eligible.
+    #[test]
+    fn the_generic_value_next_step_needs_declared_strict_rules_and_an_eligible_non_strict_verdict() {
+        let ledger = |policy: &str, media: serde_json::Value, non_strict: &str| -> Ledger {
+            serde_json::from_value(serde_json::json!({
+                "verdict": "PASS", "path": "walk", "blocks": [], "steps": [],
+                "jev": { "calls": 0, "medianMs": 0 },
+                "llmTurns": 0, "escapes": 0, "recoveries": 0,
+                "videoPublication": "withheld-privacy", "videoPolicy": policy,
+                "videoPolicySource": ".qaren/config.yaml",
+                "nonStrictPublication": non_strict, "mediaWithheld": media,
+            }))
+            .unwrap()
+        };
+        let both = serde_json::json!({"screenshots": {"reason": "generic-value", "kind": "other", "line": 6, "count": 2},
+                                      "video": {"reason": "generic-value", "kind": "other", "line": 6}});
+        let video_only = serde_json::json!({"video": {"reason": "generic-value", "kind": "other", "line": 4}});
+        let secure_first = serde_json::json!({"screenshots": {"reason": "secure-field", "line": 3, "count": 1},
+                                              "video": {"reason": "generic-value", "kind": "other", "line": 6}});
+        let given = |policy, media: &serde_json::Value, non_strict, installed| {
+            generic_value_next_step(&ledger(policy, media.clone(), non_strict), installed)
+        };
+        assert!(given("strict", &both, "eligible", false).unwrap().contains("at line 6 because"));
+        assert!(given("strict", &video_only, "eligible", false).unwrap().contains("at line 4 because"));
+        for (policy, media, non_strict, installed) in [
+            ("strict", &both, "eligible", true),
+            ("strict", &both, "withheld-secret", false),
+            ("strict", &secure_first, "eligible", false),
+            ("undeclared", &both, "eligible", false),
+            ("default-non-strict", &both, "eligible", false),
+            ("non-strict", &both, "eligible", false),
+        ] {
+            assert_eq!(given(policy, media, non_strict, installed), None, "{policy} {media} {non_strict} {installed}");
+        }
+    }
 
     fn block_ledger(sources: &[&str]) -> Ledger {
         serde_json::from_value(serde_json::json!({

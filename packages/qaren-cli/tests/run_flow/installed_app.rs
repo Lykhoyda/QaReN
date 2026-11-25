@@ -312,32 +312,122 @@ fn installed_app_refuses_a_missing_or_development_app_before_any_launch() {
     }
 }
 
-#[test]
-fn installed_app_forces_strict_media_rules_and_names_the_mode_to_the_core() {
+// The installed-app walk of H12 and of the notice child: `declared` adds `video: non-strict`; the core result
+// carries a first generic-value cause and an eligible non-strict verdict, so a miswired hint would show.
+fn installed_generic_value_run(declared: bool) -> (qaren::receipt::Receipt, MockRunner, common::TempRepo) {
     let (repo, app) = app_repo();
     let config = app.join(".qaren/config.yaml");
     let mut yaml = std::fs::read_to_string(&config).unwrap();
-    yaml.push_str("video: non-strict\n");
+    if declared {
+        yaml.push_str("video: non-strict\n");
+    }
     std::fs::write(&config, yaml).unwrap();
     let bundle = installed_bundle(&repo, Some("release javascript"));
     let mut mock = MockRunner::new();
     script_installed_preflight(&mut mock, &repo);
     script_installed_launch(&mut mock, &bundle);
-    script_installed_walk(&mut mock, &pass_stdout(), 0, container(&bundle));
-
+    let media = r#"{"screenshots":{"reason":"generic-value","kind":"other","line":2,"count":1},"video":{"reason":"generic-value","kind":"other","line":2}}"#;
+    script_installed_walk(&mut mock, &generic_value_stdout(media, Some("eligible")), 0, container(&bundle));
     let receipt = run(&mut mock, &installed_request(&repo, &app));
+    (receipt, mock, repo)
+}
 
-    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
-    let payload = core_request_payload(&mock);
-    assert_eq!(payload["videoPolicy"], "strict");
-    assert_eq!(payload["appSource"], "installed");
-    assert_eq!(receipt.outcomes["video_policy"], "strict");
-    assert_eq!(receipt.outcomes["video_policy_source"], "installed-app mode");
-    assert!(
-        !receipt.outcomes["video"].contains("--record"),
-        "{}",
-        receipt.outcomes["video"]
-    );
+#[test]
+fn installed_app_forces_strict_media_rules_and_names_the_mode_to_the_core() {
+    // With the key absent (dev mode) as well as declared non-strict.
+    for declared in [true, false] {
+        let (receipt, mock, _repo) = installed_generic_value_run(declared);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        let payload = core_request_payload(&mock);
+        assert_eq!(payload["videoPolicy"], "strict");
+        assert_eq!(payload["appSource"], "installed");
+        assert_eq!(receipt.outcomes["video_policy"], "strict");
+        assert_eq!(receipt.outcomes["video_policy_source"], "installed-app mode");
+        assert!(
+            !receipt.outcomes["video"].contains("--record"),
+            "{}",
+            receipt.outcomes["video"]
+        );
+        assert_eq!(receipt.outcomes["media_withheld"], "generic-value/other@line 2");
+        assert!(!receipt.hints.iter().any(|hint| hint.code == "MEDIA_WITHHELD_GENERIC_VALUE"));
+        let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+        assert!(!report.contains("- Next step:"), "{report}");
+    }
+}
+
+const NOTICE_CHILD: &str = "QAREN_TEST_POLICY_NOTICE_CASE";
+const NOTICE: &str = "▸ video policy not declared in ";
+const OVERRIDE: &str = "▸ installed-app mode: strict video rules apply; `video: non-strict` in the config is not used";
+
+// AI-725: run() prints the dev-mode notice with eprintln!, so each case runs in a child test process whose
+// stdout and stderr are read separately; the child prints the selected config path on stdout for the check.
+#[test]
+fn the_dev_mode_notice_reaches_stderr_once_and_only_for_an_absent_key() {
+    if let Ok(case) = std::env::var(NOTICE_CHILD) {
+        let receipt = match case.as_str() {
+            "installed" => installed_generic_value_run(true).0,
+            "installed-absent" => installed_generic_value_run(false).0,
+            _ => {
+                let (repo, app) = app_repo();
+                let req = request(&repo, &app, 30);
+                if case != "absent" {
+                    let yaml = std::fs::read_to_string(&req.config_path).unwrap();
+                    std::fs::write(&req.config_path, format!("{yaml}video: {case}\n")).unwrap();
+                }
+                println!("QAREN_TEST_CONFIG_PATH={}", req.config_path.display());
+                let mut mock = MockRunner::new();
+                script_preflight(&mut mock, &repo);
+                script_provision(&mut mock);
+                script_drift_status(&mut mock);
+                script_host_probe(&mut mock, UDID, hosts_absent());
+                mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+                script_core_identity(&mut mock);
+                script_teardown(&mut mock);
+                run(&mut mock, &req)
+            }
+        };
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{case} {:?}", receipt.failure);
+        return;
+    }
+    // (case, dev-mode notice lines on stderr, installed-app override line on stderr)
+    for (case, notices, overridden) in [
+        ("absent", 1, false),
+        ("strict", 0, false),
+        ("non-strict", 0, false),
+        ("installed-absent", 0, false),
+        ("installed", 0, true),
+    ] {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "installed_app::the_dev_mode_notice_reaches_stderr_once_and_only_for_an_absent_key",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(NOTICE_CHILD, case)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("test result: ok. 1 passed"),
+            "{case}: {stdout}{stderr}"
+        );
+        assert!(!stdout.contains(NOTICE) && !stdout.contains(OVERRIDE), "{case}: {stdout}");
+        let lines: Vec<&str> = stderr.lines().filter(|line| line.starts_with(NOTICE)).collect();
+        assert_eq!(lines.len(), notices, "{case}: {stderr}");
+        if notices == 1 {
+            let path = stdout
+                .lines()
+                .find_map(|line| line.split_once("QAREN_TEST_CONFIG_PATH=").map(|(_, path)| path))
+                .unwrap();
+            assert_eq!(
+                lines[0],
+                format!("{NOTICE}{path}: dev-mode (non-strict) rules apply; declare video: strict for privacy mode")
+            );
+        }
+        assert_eq!(stderr.lines().filter(|line| *line == OVERRIDE).count(), usize::from(overridden), "{case}: {stderr}");
+    }
 }
 
 #[test]

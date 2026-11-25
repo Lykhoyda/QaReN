@@ -9797,6 +9797,7 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
     for (policy, non_secret, unused) in [
         (None, false, false),
         (None, true, false),
+        (None, true, true),
         (Some("strict"), false, false),
         (Some("strict"), true, false),
         (Some("non-strict"), false, false),
@@ -9804,7 +9805,8 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
         (Some("non-strict"), false, true),
         (Some("non-strict"), true, true),
     ] {
-        let records = policy == Some("non-strict") && non_secret && !unused;
+        // No video key is dev mode, which records like a declared non-strict run.
+        let records = policy != Some("strict") && non_secret && !unused;
         let secret = "synthetic\"canarymaterial\\value";
         let (repo, app) = app_repo();
         let annotation = if non_secret { " (test-pii)" } else { "" };
@@ -9844,7 +9846,14 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
             mock.expect_spawn_failure("recordVideo", "recorder spawn failure");
         }
         script_host_probe(mock, UDID, hosts_absent());
-        mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
+        // What the core writes for a runtime-input fill on a screen with no protected observation:
+        // strict withheld-fill; non-strict eligible for a TEST-PII input, withheld-secret for a SECRET one.
+        let non_strict = if non_secret { "eligible" } else { "withheld-secret" };
+        let stdout = pr_pass_stdout().replace(
+            r#""recoveries":0,"#,
+            &format!(r#""recoveries":0,"videoPublication":"withheld-fill","nonStrictPublication":"{non_strict}","#),
+        );
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
         script_core_identity(mock);
         script_drift_status(mock);
         mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n")));
@@ -9865,6 +9874,25 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
             qaren::redact::with_input_scope(inputs, || run_with_events(&mut runner, &req));
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         assert_eq!(runner.inner.remaining(), 0);
+        // The PR record keeps the recorded word, not the rules, so a later publish sees the declaration.
+        let pr: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(req.runs_root.join(run_id()).join("pr.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(pr["videoPolicy"], policy.unwrap_or("default-non-strict"));
+        // AI-725: public records name no config path.
+        assert!(pr.get("videoPolicySource").is_none(), "{pr}");
+        assert_eq!(pr["videoPublication"], "withheld-fill");
+        assert_eq!(pr["nonStrictPublication"], non_strict);
+        let reason = pr.get("videoWithholdingReason").and_then(|r| r.as_str());
+        let expected = if policy == Some("strict") {
+            Some("the plan has a fill or type step, or a login replay typed into a field")
+        } else if non_secret {
+            None
+        } else {
+            Some("screenshot privacy disallowed capture during the walk")
+        };
+        assert_eq!(reason, expected, "{policy:?} {non_secret} {pr}");
         assert_eq!(
             labels(&runner.inner).iter().any(|l| l.contains("record")),
             records
@@ -9927,6 +9955,71 @@ fn walk_files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     files
 }
 
+
+// AI-725: a no-input PR run on an ordinary accessibility value; the core writes strict withheld-privacy
+// and non-strict eligible. The PR record keeps both and a withholding reason only under strict rules.
+// The selected config's basename carries a token-shaped canary; the record names no config path.
+#[test]
+fn a_pr_record_keeps_divergent_ordinary_value_verdicts_and_no_config_path() {
+    let canary = "ghp_syntheticCanary0000000000000000000000";
+    for policy in [None, Some("strict"), Some("non-strict")] {
+        let (repo, app) = app_repo();
+        let mut req = pr_request(&repo, &app);
+        let external = repo.join(format!("selected-{canary}.yaml"));
+        std::fs::copy(&req.config_path, &external).unwrap();
+        req.config_path = external;
+        if let Some(policy) = policy {
+            let yaml = std::fs::read_to_string(&req.config_path).unwrap();
+            std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+        }
+        req.runs_root = repo.join(".qaren/runs");
+        let wt = req.runs_root.join(run_id()).join("wt");
+        let mut runner = PrRunner {
+            inner: MockRunner::new(),
+            app: app.clone(),
+            recorder_persisted_before_spawn: None,
+            fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
+            fail_host_checkpoint: false,
+        };
+        let mock = &mut runner.inner;
+        script_pr_preflight(mock, &repo, &wt);
+        script_pr_provision(mock);
+        script_pr_provenance_recheck(mock);
+        script_drift_status(mock);
+        mock.expect_spawn_failure("recordVideo", "recorder spawn failure");
+        script_host_probe(mock, UDID, hosts_absent());
+        let stdout = pr_pass_stdout().replace(
+            r#""recoveries":0,"#,
+            r#""recoveries":0,"videoPublication":"withheld-privacy","nonStrictPublication":"eligible","#,
+        );
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        script_core_identity(mock);
+        script_drift_status(mock);
+        mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n")));
+        mock.expect_run("git", CmdOutput::success(""));
+        script_pr_teardown_after_drift(mock);
+        mock.expect_run("du -sk", CmdOutput::success("4\n"));
+        mock.expect_run("worktree remove --force", CmdOutput::success(""));
+        mock.expect_run("gh pr view https://github.com/o/r/pull/12", pr_view_json(PR_HEAD));
+        let receipt = run(&mut runner, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{policy:?} {:?}", receipt.failure);
+        let raw = std::fs::read_to_string(req.runs_root.join(run_id()).join("pr.json")).unwrap();
+        assert!(!raw.contains(canary) && !raw.contains("selected-"), "{policy:?} {raw}");
+        let pr: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert!(pr.get("videoPolicySource").is_none(), "{pr}");
+        assert_eq!(pr["videoPolicy"], policy.unwrap_or("default-non-strict"));
+        assert_eq!(pr["videoPublication"], "withheld-privacy");
+        assert_eq!(pr["nonStrictPublication"], "eligible");
+        assert_eq!(
+            pr.get("videoWithholdingReason").and_then(|r| r.as_str()),
+            (policy == Some("strict")).then_some("screenshot privacy disallowed capture during the walk"),
+            "{policy:?} {pr}"
+        );
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+}
 #[test]
 fn recording_start_failures_remain_failed_through_cleanup_and_the_viewer() {
     for retained in [false, true] {
@@ -11057,11 +11150,11 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
         let stall = !matches!(diagnostic, "off" | "trim-failed");
 
         let (repo, app) = app_repo();
-        if stall && diagnostic != "withheld" {
-            let config = app.join(".qaren/config.yaml");
-            let contents = std::fs::read_to_string(&config).unwrap();
-            std::fs::write(config, format!("{contents}video: non-strict\n")).unwrap();
-        }
+        // The cases without a stall pinned strict rules through the absent key, which is now dev mode.
+        let policy = if stall && diagnostic != "withheld" { "non-strict" } else { "strict" };
+        let config = app.join(".qaren/config.yaml");
+        let contents = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(config, format!("{contents}video: {policy}\n")).unwrap();
         let wt = repo.join("runs").join(run_id()).join("wt");
         let mut runner = Encoding(
             PrRunner {
@@ -13816,12 +13909,13 @@ fn video_declaration_reaches_the_child_and_durable_run_outputs() {
             script_teardown(&mut mock);
             let receipt = run(&mut mock, &req);
             assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
-            let expected = policy.unwrap_or("undeclared");
+            let expected = policy.unwrap_or("default-non-strict");
             assert_eq!(receipt.outcomes["video_policy"], expected);
             assert_eq!(receipt.outcomes["video_policy_source"], source);
             let request: serde_json::Value =
                 serde_json::from_str(mock.piped_stdin_text(1).trim()).unwrap();
-            assert_eq!(request["payload"]["videoPolicy"], expected);
+            // The core follows the rules: no video key means dev mode, sent as non-strict.
+            assert_eq!(request["payload"]["videoPolicy"], policy.unwrap_or("non-strict"));
             let ledger: serde_json::Value = serde_json::from_slice(
                 &std::fs::read(repo.join("runs").join(run_id()).join("ledger.json")).unwrap(),
             )
@@ -13831,6 +13925,13 @@ fn video_declaration_reaches_the_child_and_durable_run_outputs() {
             let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
             assert!(report.contains("Video policy:"));
             assert!(report.contains(source));
+            assert_eq!(
+                report.contains(&format!(
+                    "Video policy: not declared in {source}, so dev-mode (non-strict) rules apply."
+                )),
+                policy.is_none(),
+                "{report}"
+            );
             let ledger: qaren::core::Ledger = serde_json::from_value(ledger).unwrap();
             let body = qaren::report::render_pr_comment(
                 &qaren::report::ReportInput {
@@ -13854,14 +13955,12 @@ fn video_declaration_reaches_the_child_and_durable_run_outputs() {
                 },
                 &qaren::redact::MachineIdentity::default(),
             );
-            assert!(body.contains(source), "{body}");
+            // AI-725: the PR comment names no config path; the local report does.
+            assert!(body.contains("(declared in the selected app config).") || body.contains("not declared in the selected app config"), "{body}");
+            assert!(!body.contains(source), "{body}");
             assert!(!body.contains(&repo.display().to_string()), "{body}");
-            if policy.is_none() {
-                assert!(
-                    body.contains(&format!("declare video: non-strict in {source}.")),
-                    "{body}"
-                );
-            }
+            // Dev mode is already non-strict, so the comment never asks to declare it.
+            assert!(!body.contains("declare video: non-strict"), "{body}");
             assert_eq!(mock.remaining(), 0);
         }
     }
@@ -14510,7 +14609,9 @@ fn recorded_check_stdout(admitted: u64) -> String {
     pass_stdout()
         .replace(
             r#""recoveries":0}"#,
-            &format!(r#""recoveries":0,"admittedAtMs":{admitted},"videoPublication":"eligible"}}"#),
+            // The core writes both verdicts for this ordinary completed walk; they differ here, so the receipt's
+            // verdict shows that a run without a video key (dev mode) selects the non-strict one.
+            &format!(r#""recoveries":0,"admittedAtMs":{admitted},"videoPublication":"withheld-privacy","nonStrictPublication":"eligible"}}"#),
         )
         .replace("\"t\":200", "\"t\":33526")
 }
@@ -14853,11 +14954,94 @@ fn script_preflight_requiring(
     mock.expect_run("lsof", free_port());
 }
 
+// AI-725: a declared strict run. The first recorded screenshot cause, or the video cause when no screenshot cause was recorded, is generic-value, and the recorded non-strict verdict is eligible. The receipt and report name the next step.
+// `media` is the core result's mediaWithheld object; `non_strict` is its nonStrictPublication, omitted when None.
+fn generic_value_stdout(media: &str, non_strict: Option<&str>) -> String {
+    let non_strict = non_strict
+        .map(|verdict| format!(r#","nonStrictPublication":"{verdict}""#))
+        .unwrap_or_default();
+    pass_stdout().replacen(
+        r#""recoveries":0}"#,
+        &format!(r#""recoveries":0,"videoPublication":"withheld-privacy"{non_strict},"mediaWithheld":{media}}}"#),
+        1,
+    )
+}
+
+#[test]
+fn a_strict_generic_value_withholding_names_its_cause_and_the_next_step() {
+    let next = "Strict media rules first withheld capture at line 2 because an element exposed an accessibility value (generic-value), such as a progress percentage. This run's non-strict video privacy verdict was eligible. If the app shows only test data, remove video: strict from the selected app config or set video: non-strict. Keep video: strict if the app can show real private data.";
+    let canary = "synthetic-canary-7731";
+    let both = r#"{"screenshots":{"reason":"generic-value","kind":"other","line":2,"count":1},"video":{"reason":"generic-value","kind":"other","line":2}}"#;
+    let shots_only = r#"{"screenshots":{"reason":"generic-value","kind":"other","line":2,"count":1}}"#;
+    let secure_first = r#"{"screenshots":{"reason":"secure-field","line":2,"count":1},"video":{"reason":"secure-field","line":2}}"#;
+    // What a non-strict walk can write: a runtime-input screenshot cause at line 0, then a protected video cause.
+    let input_then_secure = r#"{"screenshots":{"reason":"runtime-input","line":0,"count":1},"video":{"reason":"secure-field","line":2}}"#;
+    // (declared policy, mediaWithheld, non-strict verdict, external config named with the canary, hint expected, receipt note)
+    for (policy, media, non_strict, external, hinted, note) in [
+        (Some("strict"), both, Some("eligible"), true, true, "generic-value/other@line 2"),
+        (Some("strict"), shots_only, Some("eligible"), false, true, "generic-value/other@line 2"),
+        (Some("strict"), both, Some("withheld-secret"), false, false, "generic-value/other@line 2"),
+        (Some("strict"), both, None, false, false, "generic-value/other@line 2"),
+        (Some("strict"), secure_first, Some("eligible"), false, false, "secure-field@line 2"),
+        // Dev mode, like non-strict, names the video's protected cause first.
+        (None, input_then_secure, Some("withheld-secret"), false, false, "secure-field@line 2"),
+        // Defensive: a non-strict walk does not write a generic screenshot cause; no hint either way.
+        (None, both, Some("eligible"), false, false, "generic-value/other@line 2"),
+        (Some("non-strict"), both, Some("eligible"), false, false, "generic-value/other@line 2"),
+    ] {
+        let (repo, app) = app_repo();
+        let mut req = request(&repo, &app, 30);
+        if external {
+            let path = repo.join(format!("selected-{canary}.yaml"));
+            std::fs::copy(&req.config_path, &path).unwrap();
+            req.config_path = path;
+        }
+        if let Some(policy) = policy {
+            let yaml = std::fs::read_to_string(&req.config_path).unwrap();
+            std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+        }
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        script_provision(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        mock.expect_spawn_piped("walk.js", 9000, &generic_value_stdout(media, non_strict), Some(0));
+        script_core_identity(&mut mock);
+        script_teardown(&mut mock);
+        let receipt = run(&mut mock, &req);
+        let case = format!("{policy:?} {media} {non_strict:?}");
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{case} {:?}", receipt.failure);
+        let hints: Vec<_> = receipt
+            .hints
+            .iter()
+            .filter(|hint| hint.code == "MEDIA_WITHHELD_GENERIC_VALUE")
+            .collect();
+        assert_eq!(hints.len(), usize::from(hinted), "{case}");
+        assert_eq!(receipt.outcomes["media_withheld"], note, "{case}");
+        let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+        let next_lines: Vec<_> = report.lines().filter(|l| l.starts_with("- Next step:")).collect();
+        if hinted {
+            // main.rs prints hint.text to stderr as it is, so the in-memory text is the stderr line.
+            assert_eq!(hints[0].text, format!("▸ media: {next}"));
+            let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+            assert_eq!(json["hints"][0]["text"], format!("▸ media: {next}"));
+            assert_eq!(next_lines, [format!("- Next step: {next}")], "{case} {report}");
+            for text in [hints[0].text.as_str(), json["hints"].to_string().as_str(), next_lines[0]] {
+                assert!(!text.contains(canary) && !text.contains("selected-"), "{case} {text}");
+            }
+        } else {
+            assert!(next_lines.is_empty(), "{case} {report}");
+        }
+        assert_eq!(mock.remaining(), 0, "{case}");
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+}
+
 // R4
 #[test]
 fn a_recorded_check_with_a_test_pii_input_follows_the_declared_video_policy() {
-    for policy in ["strict", "non-strict"] {
-        let records = policy == "non-strict";
+    for policy in ["strict", "non-strict", "absent"] {
+        let records = policy != "strict";
         let (repo, app) = app_repo();
         std::fs::write(
             app.join("plan.md"),
@@ -14865,8 +15049,10 @@ fn a_recorded_check_with_a_test_pii_input_follows_the_declared_video_policy() {
         )
         .unwrap();
         let req = record_request(&repo, &app);
-        let yaml = std::fs::read_to_string(&req.config_path).unwrap();
-        std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+        if policy != "absent" {
+            let yaml = std::fs::read_to_string(&req.config_path).unwrap();
+            std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+        }
         let mut mock = MockRunner::new();
         script_preflight_requiring(&mut mock, &repo, &["NAME"], &["NAME"]);
         script_provision(&mut mock);
@@ -14903,7 +15089,7 @@ fn a_recorded_check_with_a_test_pii_input_follows_the_declared_video_policy() {
             );
             assert_eq!(
                 receipt.outcomes["video_next_step"],
-                "runs with runtime inputs are recorded only when the app config declares video: non-strict and private output mode is off"
+                "Recording a run with runtime inputs requires non-strict rules, a TEST-PII-only inventory, and private output mode off. A standard run uses non-strict rules with no video key or with video: non-strict. Keep real secrets classified as SECRET."
             );
         }
     }

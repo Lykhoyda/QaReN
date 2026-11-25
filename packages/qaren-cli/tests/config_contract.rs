@@ -376,7 +376,7 @@ fn video_policy_is_explicit_and_invalid_values_refuse_without_echoing_them() {
     let repo = common::temp_repo();
     let path = repo.join("config.yaml");
     for (suffix, expected) in [
-        ("", VideoPolicy::Undeclared),
+        ("", VideoPolicy::DefaultNonStrict),
         ("video: strict\n", VideoPolicy::Strict),
         ("video: non-strict\n", VideoPolicy::NonStrict),
     ] {
@@ -385,6 +385,7 @@ fn video_policy_is_explicit_and_invalid_values_refuse_without_echoing_them() {
     }
     for value in [
         "undeclared",
+        "default-non-strict",
         "unknown",
         "private-canary",
         "null",

@@ -1369,6 +1369,8 @@ fn video_policy_check(policy: crate::record::VideoPolicy, file: &Path) -> Check 
         VideoPolicy::Unknown => Check::fail("video", "unknown video policy", "video must be strict or non-strict"),
         VideoPolicy::Undeclared => Check::warn("video", format!("not declared in {source} (strict rules apply)"),
             "add video: non-strict when this app shows test data only, or video: strict"),
+        VideoPolicy::DefaultNonStrict => Check::warn("video", format!("not declared in {source} (dev mode: non-strict rules apply)"),
+            "add video: strict when this app can show real private data, or video: non-strict to keep dev mode"),
         VideoPolicy::Strict => Check::pass("video", format!("strict declared in {source} (today's privacy checks apply)")),
         VideoPolicy::NonStrict => Check::pass("video", format!("non-strict declared in {source} (videos may be published; secret inputs stay withheld)")),
     }
@@ -4351,6 +4353,20 @@ mod tests {
         let login = row(&report, "login");
         assert_eq!(login.status, Status::Warn, "{login:?}");
         assert!(login.fix.as_ref().unwrap().contains("id: \"login-email\""));
+        // AI-725: this config has no video key; the real doctor call site reports dev mode.
+        let video = row(&report, "video");
+        assert_eq!(video.status, Status::Warn, "{video:?}");
+        assert_eq!(
+            video.detail,
+            format!(
+                "not declared in {} (dev mode: non-strict rules apply)",
+                s.0.join("apps/mobile/.qaren/config.yaml").display()
+            )
+        );
+        assert_eq!(
+            video.fix.as_deref(),
+            Some("add video: strict when this app can show real private data, or video: non-strict to keep dev mode")
+        );
         let git = runner
             .calls
             .iter()
@@ -4749,6 +4765,7 @@ mod video_tests {
         let path = Path::new(".qaren/target.yaml");
         for (policy, status) in [
             (VideoPolicy::Undeclared, Status::Warn),
+            (VideoPolicy::DefaultNonStrict, Status::Warn),
             (VideoPolicy::Strict, Status::Pass),
             (VideoPolicy::NonStrict, Status::Pass),
         ] {
@@ -4758,5 +4775,14 @@ mod video_tests {
             assert!(row.detail.contains(".qaren/target.yaml"));
             assert!(!row.detail.contains("screenshots"));
         }
+        let row = video_policy_check(VideoPolicy::DefaultNonStrict, path);
+        assert_eq!(
+            row.detail,
+            "not declared in .qaren/target.yaml (dev mode: non-strict rules apply)"
+        );
+        assert_eq!(
+            row.fix.as_deref(),
+            Some("add video: strict when this app can show real private data, or video: non-strict to keep dev mode")
+        );
     }
 }

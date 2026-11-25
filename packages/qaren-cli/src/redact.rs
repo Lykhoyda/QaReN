@@ -131,7 +131,7 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
         .pointer("/outcomes/video_policy")
         .and_then(serde_json::Value::as_str)
     {
-        if ["strict", "non-strict", "undeclared"].contains(&note) {
+        if ["strict", "non-strict", "default-non-strict", "undeclared"].contains(&note) {
             media.push(("/outcomes/video_policy".into(), note.into()));
         }
     }
