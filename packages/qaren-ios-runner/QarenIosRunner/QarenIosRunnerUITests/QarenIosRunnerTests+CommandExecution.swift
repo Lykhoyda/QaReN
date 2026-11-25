@@ -276,7 +276,9 @@ extension QarenIosRunnerTests {
       return qaReadOnlyRefusal()
     }
     var payload = DataPayload(snapshotGeneration: currentSnapshotGeneration)
-    payload.hitProbe = readHitProbe(app: target, command: command)
+    let read = readHitProbeWithReason(app: target, command: command)
+    payload.hitProbe = read.result
+    payload.liveCheckReason = read.reason
     return Response(ok: true, data: payload)
   }
 

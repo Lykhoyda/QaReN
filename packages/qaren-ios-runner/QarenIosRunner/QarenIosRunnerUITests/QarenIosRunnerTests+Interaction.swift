@@ -770,6 +770,11 @@ extension QarenIosRunnerTests {
   }
 
   func readHitProbe(app: XCUIApplication, command: Command) -> String {
+    readHitProbeWithReason(app: app, command: command).result
+  }
+
+  // The same read, with the word that says why an unavailable read gave no answer.
+  func readHitProbeWithReason(app: XCUIApplication, command: Command) -> (result: String, reason: String?) {
     let savedTarget = lastLiveTarget
     let savedFrames = lastMovedFrames
     let savedUnavailable = lastLiveCheckUnavailable
@@ -780,10 +785,11 @@ extension QarenIosRunnerTests {
     }
     let check = liveTargetCheck(app: app, command: command, deadline: ProcessInfo.processInfo.systemUptime + 0.3)
     switch check {
-    case .hittable(true): return "hittable"
-    case .hittable(false): return "not-hittable"
-    case .moved: return "moved"
-    case .unavailable: return "unavailable"
+    case .hittable(true): return ("hittable", nil)
+    case .hittable(false): return ("not-hittable", nil)
+    case .moved: return ("moved", nil)
+    // Read before the deferred restore: expired, no-identity, absent, ambiguous, exception, deadline or read-failed.
+    case .unavailable: return ("unavailable", lastLiveCheckUnavailable)
     }
   }
 
