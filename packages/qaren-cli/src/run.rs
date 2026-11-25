@@ -5077,11 +5077,10 @@ mod uncertain_reason_tests {
                 assert!(failure.recovery.is_none());
                 assert_eq!(failure.next_action.as_str(), format!("{words}; {GENERIC}"));
             }
-            // --installed-app keeps its existing rule: the usual next action, then its fixed sentence, also as the suggestion.
+            // --installed-app adds no sentence to an uncertain step: its target advice ends in a re-run.
             let installed = walk(&seen(word), none, &record("check-1", "ios"), true);
-            let expected = format!("{words}; {GENERIC}. {INSTALLED_APP_STEP}");
-            assert_eq!(installed.next_action.as_str(), expected);
-            assert_eq!(installed.suggestion.as_deref(), Some(expected.as_str()));
+            assert_eq!(installed.next_action.as_str(), format!("{words}; {GENERIC}"));
+            assert!(installed.suggestion.is_none());
             assert!(installed.recovery.is_none() && installed.repeat.is_none());
         }
         for word in ["absent", "gremlins"] {

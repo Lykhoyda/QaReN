@@ -910,3 +910,43 @@ mod log_pointer_tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+// AI-703: a runner recovery's selected rung carries the selected action, instruction and flags (red on the base for StorageFailed).
+#[cfg(test)]
+mod runner_rung_tests {
+    use super::*;
+
+    #[test]
+    fn the_selected_runner_rung_matches_the_selected_action_and_instruction() {
+        use RecoveryReason::*;
+        let every = [
+            BudgetExhausted, BuildBudgetExhausted, BuildProcessFailed, BuildTimeLimit, OwnershipUnresolved,
+            PersistenceFailed, IdentityUnavailable, ForeignAdmissionUnresolved, CandidateDrifted, RunCancelled,
+            GracefulPending, IdentityMismatch, IdentityUnknown, CommandIneligible, LeaseUnproven, OwnerUnproven,
+            CoreUnproven, InventoryUnknown, DriverSurvived, GroupRemaining, HostRemaining, HostCleanupFailed,
+            DriverExited, StorageFailed, PreviousPlanPress,
+        ];
+        // The 25 reasons at the pin (the build adds ActionOutcomeUncertain, which never reaches ios_runner).
+        for reason in every {
+            // The arguments the runner projection passes: needs_user_ok is always false there (cleanup.rs project_runner_recovery).
+            for (destroys, borrowed) in [(false, false), (true, false), (false, true), (true, true)] {
+                let recovery = Recovery::ios_runner(reason, "check-1", destroys, false, borrowed);
+                match recovery.next_rung {
+                    Some(rung) => {
+                        let step = recovery.ladder.iter().find(|s| s.rung == rung).unwrap();
+                        assert!(step.applicable, "{reason:?}");
+                        assert_eq!(step.action, Some(recovery.action), "{reason:?}");
+                        assert_eq!(step.instruction, recovery.runner_next_action("check-1"), "{reason:?}");
+                        assert_eq!(step.destroys_state, recovery.destroys_state, "{reason:?}");
+                        assert_eq!(step.requires_user_ok, recovery.requires_user_ok, "{reason:?}");
+                    }
+                    None => assert!(recovery.ladder.iter().all(|s| !s.applicable), "{reason:?}"),
+                }
+                // Rung 4 no longer points the reader to the final recovery rung.
+                for step in &recovery.ladder {
+                    assert!(!step.instruction.contains("continue to the final recovery rung"), "{reason:?}");
+                }
+            }
+        }
+    }
+}
