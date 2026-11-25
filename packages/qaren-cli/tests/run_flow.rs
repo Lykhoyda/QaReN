@@ -4106,7 +4106,8 @@ fn an_uncertain_step_failure_from_the_core_puts_its_explanation_in_front_of_the_
         let failure = receipt.failure.as_ref().unwrap();
         assert_eq!(failure.code, FailureCode::PlanStepFailed);
         assert_eq!(failure.subreason.as_deref(), Some(word));
-        assert!(failure.repeat.is_none() && failure.recovery.is_none());
+        assert!(failure.repeat.is_none());
+        assert_eq!(failure.recovery.is_some(), !words.is_empty());
         let next = failure.next_action.as_str();
         assert!(!next.contains("PRIVATE-label"), "{next}");
         if words.is_empty() {
@@ -4117,7 +4118,7 @@ fn an_uncertain_step_failure_from_the_core_puts_its_explanation_in_front_of_the_
         } else {
             assert!(
                 next.starts_with(&format!(
-                    "{words}; read the report, fix the app or the plan, then re-run"
+                    "{words}; review any available evidence without repeating the action"
                 )),
                 "{next}"
             );
@@ -4125,7 +4126,14 @@ fn an_uncertain_step_failure_from_the_core_puts_its_explanation_in_front_of_the_
         let stored = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
         let kept = stored.failure.unwrap();
         assert_eq!(kept.subreason.as_deref(), Some(word));
-        assert!(next.starts_with(kept.next_action.as_str()), "{next}");
+        // The record keeps the walk failure; only the receipt carries the final guidance.
+        let walk = if words.is_empty() {
+            "read the report, fix the app or the plan, then re-run".to_string()
+        } else {
+            format!("{words}; read the report, fix the app or the plan, then re-run")
+        };
+        assert_eq!(kept.next_action.as_str(), walk);
+        assert!(kept.recovery.is_none());
         assert!(!kept.next_action.as_str().contains("PRIVATE-label"));
     }
 }
@@ -15390,4 +15398,275 @@ fn android_admission_recovery_stays_private_inside_an_input_scope() {
     assert!(!json.contains("alive"), "{json}");
     assert!(json.contains("bundle_not_requested"), "{json}");
     assert!(json.contains("retry_launch_once"), "{json}");
+}
+
+// AI-703: an uncertain step's final next action and recovery, end to end through `run`, per final state.
+mod uncertain_ladder {
+    use super::*;
+
+    const KEYBOARD: &str = "The device runner refused the tap because of the on-screen keyboard";
+    const DISPATCH: &str = "QaReN could not confirm the outcome of the action";
+    const STOP: &str = " If you cannot establish whether the action took effect, leave the outcome unresolved and stop.";
+    const REVIEW: &str = "review any available evidence without repeating the action, starting with this run's report.";
+    const GENERIC: &str = "read the report, fix the app or the plan, then re-run";
+    // Any text the core may put in the suggestion field; the owner never copies it.
+    const LABEL: &str = "tap PRIVATE-label again";
+
+    fn result(word: &str, suggestion: Option<&str>) -> String {
+        let extra = suggestion
+            .map(|s| format!(r#","suggestion":"{s}""#))
+            .unwrap_or_default();
+        HELD_FAIL.replace(
+            r#""seen":"no Tasks","kind":"step"}"#,
+            &format!(
+                r#""seen":"ACTION_OUTCOME_UNCERTAIN; last observed on screen: PRIVATE-label","kind":"step","subreason":"{word}"{extra}}}"#
+            ),
+        )
+    }
+
+    fn held_review() -> String {
+        format!(" This run recorded metro, simulator, device_lease for inspection; check qaren status {} for their current status.", run_id())
+    }
+
+    // The owed cleanup after the review; `held` adds the user's OK, `effects` the sentences for what this run recorded.
+    fn cleanup(held: bool, effects: &str) -> String {
+        let ok = if held { ", and only with the user's OK to end the hold and the inspection it keeps open" } else { "" };
+        format!(" After reviewing the evidence{ok}, run qaren cleanup {} --json. It attempts to release this run's recorded resources.{effects} Check the cleanup receipt for the result.", run_id())
+    }
+
+    // The literal recovery: `owed` names the run when it still owes its own cleanup.
+    fn recovery(owed: Option<&str>) -> serde_json::Value {
+        let last = if owed.is_some() {
+            "this failure reason alone does not select cleanup and a fresh qaren prepare; the cleanup this run owes is a separate obligation, named in next_action"
+        } else {
+            "this failure reason alone does not select cleanup and a fresh qaren prepare; this run's teardown was clean"
+        };
+        let rungs = [
+            "a retry is not selected: a new qaren check or qaren pr starts the plan from its first step and can repeat an action that already took effect",
+            "this failure reason alone does not select a restart of the app, Metro or the runner",
+            "this failure reason alone does not select a device restart",
+            "this failure reason alone does not select a native rebuild",
+            last,
+        ];
+        let ladder: Vec<serde_json::Value> = rungs
+            .iter()
+            .enumerate()
+            .map(|(i, text)| {
+                serde_json::json!({"rung": i + 1, "applicable": false, "destroys_state": false,
+                    "requires_user_ok": false, "instruction": text})
+            })
+            .collect();
+        let mut value = serde_json::json!({
+            "reason": "action_outcome_uncertain",
+            "next_rung": null,
+            "action": "check_action_effect",
+            "automatic": false,
+            "destroys_state": false,
+            "requires_user_ok": false,
+            "own_cleanup_required": owed.is_some(),
+            "ladder": ladder,
+        });
+        if let Some(id) = owed {
+            value["own_run_id"] = id.into();
+        }
+        value
+    }
+
+    fn assert_recovery(receipt: &qaren::receipt::Receipt, expected: &serde_json::Value) {
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(&serde_json::to_value(&receipt.recovery).unwrap(), expected);
+        assert_eq!(&serde_json::to_value(&failure.recovery).unwrap(), expected);
+        assert_eq!(receipt.next_action, failure.next_action.as_str());
+        // What stdout prints: the serialized receipt carries the same values.
+        let printed: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+        assert_eq!(&printed["recovery"], expected);
+        assert_eq!(&printed["failure"]["recovery"], expected);
+        assert_eq!(printed["next_action"], receipt.next_action.as_str());
+        assert_eq!(printed["failure"]["next_action"], receipt.next_action.as_str());
+    }
+
+    // The run record keeps the walk failure: no new recovery value is stored, so older CLIs read it.
+    fn assert_record_untouched(repo: &Path, words: &str, tail: &str) {
+        let kept = RunRecord::load(&repo.join("runs"), &run_id())
+            .unwrap()
+            .failure
+            .unwrap();
+        assert_eq!(kept.next_action.as_str(), format!("{words}; {tail}"));
+        assert!(kept.recovery.is_none());
+    }
+
+    #[test]
+    fn c_a_clean_teardown_reviews_and_owes_nothing() {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_admitted_result(&mut mock, &repo, &result("dispatch-unconfirmed", None), 1);
+        script_teardown(&mut mock);
+        let mut req = request(&repo, &app, 30);
+        req.hold = Some(false);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+        assert!(receipt.held.is_none());
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.subreason.as_deref(), Some("dispatch-unconfirmed"));
+        assert_eq!(failure.next_action.as_str(), format!("{DISPATCH}; {REVIEW}{STOP}"));
+        assert_recovery(&receipt, &recovery(None));
+        assert_record_untouched(&repo, DISPATCH, GENERIC);
+    }
+
+    #[test]
+    fn c_a_ledger_suggestion_stays_evidence_and_is_not_copied() {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_admitted_result(
+            &mut mock,
+            &repo,
+            &result("dispatch-unconfirmed", Some(LABEL)),
+            1,
+        );
+        script_teardown(&mut mock);
+        let mut req = request(&repo, &app, 30);
+        req.hold = Some(false);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.suggestion.as_deref(), Some(LABEL));
+        assert_eq!(failure.next_action.as_str(), format!("{DISPATCH}; {REVIEW}{STOP}"));
+        assert_recovery(&receipt, &recovery(None));
+    }
+
+    #[test]
+    fn h_a_held_run_reviews_then_owes_its_cleanup() {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_held_result(&mut mock, &repo, &result("keyboard-visible", None), 1);
+
+        let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+        assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+        assert!(receipt.held.is_some());
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(
+            failure.next_action.as_str(),
+            format!("{KEYBOARD}; {REVIEW}{}{}{STOP}", held_review(), cleanup(true, " It may end the hold."))
+        );
+        assert_recovery(&receipt, &recovery(Some(&run_id())));
+        assert_record_untouched(&repo, KEYBOARD, GENERIC);
+    }
+
+    #[test]
+    fn h_a_held_run_with_a_pending_exit_stop_reviews_then_owes_its_cleanup() {
+        let (repo, app) = app_repo();
+        let _data = sim_log_store_fixture(&repo);
+        let mut mock = MockRunner::new();
+        script_preflight_inventory(
+            &mut mock,
+            &repo,
+            "simctl list devices -j",
+            &available_inventory("Booted"),
+        );
+        script_admission(&mut mock);
+        common::script_ios_deps(&mut mock);
+        script_admission(&mut mock);
+        script_provision_after_deps(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let stdout = format!(
+            "{}\n{}\n",
+            envelope(2, "admitted", "{}"),
+            envelope(3, "result", &result("dispatch-unconfirmed", None))
+        );
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(1));
+        script_core_identity(&mut mock);
+        script_drift_status(&mut mock);
+        mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+        mock.expect_run("git", CmdOutput::success(UNTRACKED_PLAN));
+        mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let mut req = request(&repo, &app, 30);
+        req.device = Some(UDID.into());
+        req.shutdown_device_on_exit = true;
+        req.hold = Some(true);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+        assert!(receipt.cleanup["simulator"].starts_with("held:"));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(
+            failure.next_action.as_str(),
+            format!(
+                "{DISPATCH}; {REVIEW}{}{}{STOP}",
+                held_review(),
+                cleanup(true, " It may end the hold. It may shut the simulator down and remove its log store, as --shutdown-device-on-exit asked.")
+            )
+        );
+        assert_recovery(&receipt, &recovery(Some(&run_id())));
+    }
+
+    #[test]
+    fn u_an_unclean_unheld_run_reviews_then_owes_its_cleanup() {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        script_admission(&mut mock);
+        common::script_ios_deps(&mut mock);
+        script_admission(&mut mock);
+        script_non_dev_probe(&mut mock);
+        script_app_presence(&mut mock, false);
+        script_provision_after_probe(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let stdout = format!(
+            "{}\n{}\n",
+            envelope(2, "admitted", "{}"),
+            envelope(3, "result", &result("dispatch-unconfirmed", None))
+        );
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(1));
+        script_core_identity(&mut mock);
+        script_drift_status(&mut mock);
+        mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+        mock.expect_run(
+            "git",
+            CmdOutput::success("?? test-app/.qaren/config.yaml\0?? test-app/plan.md\0"),
+        );
+        // The Metro group survives TERM and KILL, so the lease stays with the run.
+        mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
+        mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+        mock.expect_run("ps", CmdOutput::success("S\n"));
+        mock.expect_run("lsof", CmdOutput::success("6001\n"));
+        mock.expect_run("ps", CmdOutput::success("6000\n"));
+        mock.expect_run("lstart=", CmdOutput::success(LSTART));
+        mock.expect_run("stat=", CmdOutput::success("S"));
+        mock.expect_run("/bin/kill", CmdOutput::success(""));
+        mock.expect_run("lstart=", CmdOutput::success(LSTART));
+        mock.expect_run("stat=", CmdOutput::success("S"));
+        mock.expect_run("/bin/kill", CmdOutput::success(""));
+        mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+        mock.expect_run("ps", CmdOutput::success("S\n"));
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let mut req = request(&repo, &app, 30);
+        req.fresh_install = true;
+        req.hold = Some(false);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+        assert!(receipt.held.is_none());
+        assert!(receipt.cleanup["metro"].starts_with("unresolved"));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(
+            failure.next_action.as_str(),
+            format!("{DISPATCH}; {REVIEW}{}{STOP}", cleanup(false, ""))
+        );
+        assert_recovery(&receipt, &recovery(Some(&run_id())));
+        assert_record_untouched(&repo, DISPATCH, GENERIC);
+    }
 }
