@@ -1940,8 +1940,10 @@ rechecks the input's class, frame, app package, enabled/editable state and focus
 It replaces text with `ACTION_SET_TEXT`; rejection refuses without a keyevent
 fallback. The ordinary read-back verification rules above still apply. This
 requires runner capability `FOCUSED_HIDDEN_INPUT_V1`; an older runner is stale.
-The exception does not make the input visible evidence for Tap, Wait or checks,
-and does not apply to phrase Fill targets or genuinely off-screen inputs.
+The exception does not make the input visible evidence for Tap or checks, and
+does not apply to phrase Fill targets or genuinely off-screen inputs; an
+explicit Wait can count such an input present, as
+[screen evidence](#plan-checks-and-screen-evidence) describes.
 
 For quoted strict fills, React-only identity merging and duplicate counting follow
 the [targeting rules](#check-a-plan). A strict fill never acts on a React-only
@@ -2433,16 +2435,42 @@ element carrying that testID does not break its uniqueness.
 On Android, an element can be on screen but hidden in place: Android reports it
 as not visible to the user although its frame overlaps the visible area with its
 centre inside, such as a code field's transparent input behind its digit boxes.
-A Wait never counts such an element present. When a Wait on its testID ends in a
-definite stable absence, the failure's last observed screen shows that element
-hidden in place, and that screen's own diagnosis is that the target is absent,
-the failure says so. For a native input, the suggestion gives examples of
-visible testIDs to wait for and suggests a Tap if the app provides a control
-that focuses the input; for another element, it suggests waiting for a visible
-control. When a saved login block replayed by [recovery](#step-recovery) fails
+A Wait written `Wait for "<testID>"`, `Wait for "<testID>" to appear` or
+`Wait until "<testID>" appears` counts such an element present when the testID
+and literal-text evidence above do not pass, before the check for a testID
+inside a longer container label. On one capture, it must be the only element
+carrying that testID, as for a visible testID. Its frame must have a positive
+size, meet the same visibility rules for windows, scroll containers and
+ancestors outside the screen, and be clear of the keyboard. It must be an
+enabled native text input, and native coverage must be complete with the app
+in front. Its centre must pass the keyboard and overlay clearance check for a
+visible testID, which also places the centre inside its known viewport. As for a visible testID, the
+element is the one Android reports with that testID (the part of its resource
+name after `:id/` and after its last `/`, or its content description when it has
+no resource name, with surrounding spaces trimmed as QaReN reads every
+identifier); QaReN does not check which React input it belongs to. The ledger
+row's reason, before privacy masking, reads
+`present: Android reports a native text input carrying this id, not visible to the user (hidden in place)`,
+and its stored selector is the testID, so a saved block replays under the same
+rule; when privacy treats the testID as a protected value, the selector is
+withheld and the block cannot be saved, as for any row. `is visible`,
+`shows up`, a qualifier before the quote, `starts on:` and scroll-until keep
+visible evidence, and Fill keeps the
+[hidden-input Fill rule](#fill-verification-and-keyboard-fallback). When a Wait
+on such a testID ends in a definite stable absence, the failure's last observed
+screen shows that element hidden in place, and that screen's own diagnosis is
+that the target is absent, the failure says so and the suggestion names what
+that screen lacks, with a next step; when that screen shows no condition the
+suggestion can name, it says only that the Wait did not establish the input's
+presence and points to a visible part of the field. A saved block whose Wait
+line quotes a label while its stored selector is the testID is told to quote the
+testID in that line and re-record the block; in a saved login block replay, a
+`starts on:` line on such an element is told to use a visible control of that
+screen. When recovery has a plan edit for an interruption, the failure keeps
+that edit. When a saved login block replayed by [recovery](#step-recovery) fails
 that way, the failure of the step it interrupted carries the same suggestion,
 prefixed `in the saved login block:`. iOS reports no visible-to-user fact, so
-this does not apply there.
+none of this applies there.
 
 When a literal check fails and a node's label contains the plan's literal, the
 failure can explain why that node did not count: `not-visible` means it was
