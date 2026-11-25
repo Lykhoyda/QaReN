@@ -184,9 +184,13 @@ export function serializeBlock(
       if (!selector)
         return {
           unsavable:
-            item.kind === 'wait' || item.kind === 'scroll'
-              ? `line ${item.line}: the visible target has no testID or label to store`
-              : `line ${item.line}: element has no testID or label`,
+            // A quoted Wait: true for a visible and a hidden-in-place pass alike, and value-free (it decides on no
+            // row text). A phrase Wait keeps today's text: its visible target has no testID or label.
+            item.kind === 'wait' && item.target.quoted !== undefined
+              ? `line ${item.line}: this Wait stored no selector: its target has no testID or label, or privacy withholds it as a protected value`
+              : item.kind === 'wait' || item.kind === 'scroll'
+                ? `line ${item.line}: the visible target has no testID or label to store`
+                : `line ${item.line}: element has no testID or label`,
         };
     }
     if (persistedItemHit(item, selector, privateSet)) return withheld;

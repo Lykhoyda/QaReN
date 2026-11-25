@@ -97,6 +97,8 @@ import {
   targetNeedsPresence,
   presenceMiss,
   hiddenInPlaceElement,
+  hiddenInputGap,
+  hiddenInputPresence,
   reactOnlyMiss,
   reactOnlyTarget,
   reactOnlyTimeout,
@@ -177,6 +179,7 @@ import {
   launchMissSuggestion,
   missSuggestion,
   hiddenInPlaceSuggestion,
+  type HiddenInPlaceNeed,
   isHiddenInPlaceSuggestion,
   screenNow,
   targetMissDiagnostic,
@@ -202,6 +205,7 @@ import {
   MASK,
   ObservedPrivacy,
   matchPrivate,
+  planLineBody,
   projectPlanLine,
 } from './privacy.js';
 import { renderReason, segments, type Reason } from './untrusted.js';
@@ -2238,10 +2242,7 @@ async function walkBlockScoped(
             suggestion:
               // The hidden-in-place advice describes the same read as failure.screen.
               hiddenInPlace
-                ? hiddenInPlaceSuggestion(
-                    hiddenInPlace.nativeKind === 'input' ? 'input' : 'other',
-                    item.line,
-                  )
+                ? hiddenInPlaceSuggestion(hiddenInPlaceNeed(item, hiddenInPlace, last), item.line)
                 : // A more specific diagnosis, such as a placeholder coverage gap, keeps its own advice.
                   targetCode === LAUNCH_MISS &&
                     subreason === 'absent' &&
@@ -2543,7 +2544,7 @@ async function walkBlockScoped(
     return async (
       observation: Observation,
       initial?: ScreenDecision,
-    ): Promise<{ observation: Observation; found: boolean; unsure?: boolean }> => {
+    ): Promise<{ observation: Observation; found: boolean; unsure?: boolean; hidden?: true }> => {
       let decision = initial;
       while (deps.now() < deadline) {
         checkObservation?.(observation.screen);
@@ -2588,6 +2589,15 @@ async function walkBlockScoped(
         const target = item.kind === 'wait' ? item.target : item.until!;
         if (target.quoted !== undefined) {
           const evidence = targetEvidence(target, observation.screen, observation.overlayHits);
+          // A presence Wait counts a native text input hidden in place present on a visible id's terms
+          // (Android: only its reads report hiddenInView). Asked right after targetEvidence, where a visible
+          // id has already passed, so no later check can refuse what a visible id would not reach.
+          if (
+            evidence !== 'pass' &&
+            presenceWait(item) &&
+            hiddenInputPresence(target, observation.screen, observation.overlayHits)
+          )
+            return { observation, found: true, hidden: true };
           if (
             evidence !== 'pass' &&
             aggregateTargetVisible(target, observation.screen, observation.overlayHits)
@@ -4207,6 +4217,8 @@ async function walkBlockScoped(
           const probe = visibilityProbe(item, deadline);
           let replayMiss: ResolutionError | undefined;
           let unsure = false;
+          // The observation that passed counted a text input hidden in place (hiddenInputPresence).
+          let hiddenPresent = false;
           let absent = 0;
           let observations = 0;
           let reactOnlyObservations = 0;
@@ -4229,6 +4241,7 @@ async function walkBlockScoped(
             }
             observation = observed.observation;
             unsure = observed.unsure === true;
+            hiddenPresent = observed.hidden === true;
             targetPending = !observed.found && item.target.quoted !== undefined;
             observations += 1;
             if (!observed.found && reactOnlyTarget(item.target, observation.screen))
@@ -4510,7 +4523,10 @@ async function walkBlockScoped(
           emit({
             ...base(item, 1),
             ...(shot ? { screenshot: shot } : {}),
-            ...targetSelector(item.target, observation),
+            // A hidden pass stores the testID it counted, so a saved block replays under the same rule.
+            ...(hiddenPresent
+              ? { ...stored({ id: item.target.quoted! }), reason: redact(HIDDEN_PRESENT_REASON) }
+              : targetSelector(item.target, observation)),
             outcome: 'pass',
           });
           continue items;
@@ -6913,6 +6929,53 @@ export function replayBlock(block: Block, stored: StoredBlock): Block {
       return item;
     }),
   };
+}
+
+// Wait forms that ask only for presence: Wait for "<id>", Wait for "<id>" to appear, Wait until "<id>" appears.
+// Every other form (is visible, shows up, a qualifier before the quote), a block start and Scroll-until keep
+// today's evidence.
+const PRESENCE_WAIT =
+  /^wait\s+(?:for\s+(?:"([^"]+)"|“([^”]+)”)(?:\s+to\s+appear)?|until\s+(?:"([^"]+)"|“([^”]+)”)\s+appears)$/i;
+
+// A block's starts on: line, as the parser reads it (plan.ts STARTS_ON). A saved login block rebuilds it as a plain
+// Wait with this raw line and no precondition flag (loginBlock), so the line itself is what marks it there.
+const BLOCK_START = /^starts?\s+on:/i;
+
+// The fixed, value-free words of a Wait row that passed on a text input hidden in place: presence of a native
+// input carrying the id, never which React input it is.
+export const HIDDEN_PRESENT_REASON =
+  'present: Android reports a native text input carrying this id, not visible to the user (hidden in place)';
+
+// The quote of a plan line written in a presence form, or undefined for every other form.
+function presenceQuote(raw: string): string | undefined {
+  const match = PRESENCE_WAIT.exec(planLineBody(raw).trim());
+  return match ? (match[1] ?? match[2] ?? match[3] ?? match[4]) : undefined;
+}
+
+// Read from the authored line, so a stored id replays under the same words as the walk that saved it: the
+// line must quote the target itself (a label Wait saved with an id selector does not).
+export function presenceWait(item: Item): boolean {
+  if (item.kind !== 'wait' || item.precondition || item.target.exact === 'text') return false;
+  const quote = presenceQuote(item.raw);
+  return quote !== undefined && quote === item.target.quoted;
+}
+
+// What a Wait's hidden-in-place advice names, from the read failure.screen shows: a saved login block's starts on:
+// first (it counts only visible evidence, whatever the element; an authored block start keeps its precondition and
+// fails before this advice), then a non-input (no Wait form counts it), then a presence-form
+// line that quotes something other than its stored target (a label Wait replayed with the id it saved), then a
+// Wait not in a presence form, then the first condition that read lacks.
+function hiddenInPlaceNeed(item: Item, element: Element, screen: Screen): HiddenInPlaceNeed {
+  if (BLOCK_START.test(planLineBody(item.raw).trim())) return 'block-start';
+  const gap = hiddenInputGap(element, screen);
+  if (gap === 'not-input') return gap;
+  if (!presenceWait(item)) {
+    const quote = presenceQuote(item.raw);
+    return item.kind === 'wait' && quote !== undefined && quote !== item.target.quoted
+      ? 'stored-label'
+      : 'form';
+  }
+  return gap ?? 'unmet';
 }
 
 // A saved block replayed on its own, as the login recovery does: every target is its stored identity.
