@@ -2405,7 +2405,10 @@ hidden in place, and that screen's own diagnosis is that the target is absent,
 the failure says so. For a native input, the suggestion gives examples of
 visible testIDs to wait for and suggests a Tap if the app provides a control
 that focuses the input; for another element, it suggests waiting for a visible
-control. iOS reports no visible-to-user fact, so this does not apply there.
+control. When a saved login block replayed by [recovery](#step-recovery) fails
+that way, the failure of the step it interrupted carries the same suggestion,
+prefixed `in the saved login block:`. iOS reports no visible-to-user fact, so
+this does not apply there.
 
 When a literal check fails and a node's label contains the plan's literal, the
 failure can explain why that node did not count: `not-visible` means it was
