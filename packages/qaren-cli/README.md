@@ -1606,14 +1606,15 @@ in complete sentences. Nothing in them comes from the app or the plan: a ledger
 | Final state | After the explanation | `recovery` |
 | --- | --- | --- |
 | Runner recovery that selects no rung (retain and report) | leave the process, device and lease untouched, and report the recorded runner cleanup reason to the run or device owner | `ios_runner_cleanup` with its reason, no rung selected, nothing destroyed, no OK needed |
-| Runner recovery that selects a rung | review any available evidence without repeating the action, starting with this run's report; for a held run, the resources it recorded for inspection and `qaren status <run-id>`; then the selected step, which is the cleanup sentence (for a storage failure it first checks that the run's record storage is writable and runs the cleanup once), and the stop sentence | `ios_runner_cleanup` with its reason, rung and action; that rung's instruction is the selected step itself, and its flags count ending the hold (destroys state, needs the user's OK) and removing the PR worktree or a pending simulator stop (destroys state) |
+| Runner recovery that selects a rung | review any available evidence without repeating the action, starting with this run's report; for a held run, the resources it recorded for inspection and `qaren status <run-id>`; then the selected step, which is the cleanup sentence with the rung's own precondition (a storage failure first checks that the run's record storage is writable and runs the cleanup once; a cleanup retry first waits until the recorded driver exits and runs it once; a simulator shutdown first requests shutdown of only this run's simulator, with the user's OK), and the stop sentence | `ios_runner_cleanup` with its reason, rung and action; that rung's instruction is the selected step itself, and its flags count ending the hold or a simulator shutdown (destroys state, needs the user's OK) and removing the PR worktree or a pending simulator stop (destroys state) |
 | Held | the review; the resources this run recorded for inspection and `qaren status <run-id>` for their current status; the cleanup sentence, which asks for the user's OK to end the hold; the stop sentence | uncertain, cleanup owed |
 | Not held, cleanup owed (an unclean leg, or a build lock whose release failed) | the review, the cleanup sentence, the stop sentence | uncertain, cleanup owed |
 | Not held, teardown clean, no cleanup owed | the review and the stop sentence | uncertain, nothing owed |
 
 The cleanup sentence runs `qaren cleanup <run-id> --json` after the review
 (for a held run, only with the user's OK to end the hold and the inspection it
-keeps open), says that it attempts to release this run's recorded resources,
+keeps open; for a runner simulator shutdown, only with the user's OK to shut
+down the lent simulator), says that it attempts to release this run's recorded resources,
 names only the consequential effects this run recorded (ending the hold,
 releasing a build lock teardown did not release, removing the run's PR worktree
 with any files in it, shutting the simulator down and removing its log store as
