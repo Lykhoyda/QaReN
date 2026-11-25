@@ -146,6 +146,15 @@ export function reactEntryHostsOf(
   return reactEntryHosts.get(element);
 }
 
+// Android: elements whose native node this read reported with visibleToUser false, on an ordinary or a presence
+// read alike (a presence read leaves hiddenInView unset for a node the runner calls clipped). Read only by the
+// hidden-in-place diagnosis of a Wait's failure.
+const reportedNotVisible = new WeakSet<Element>();
+
+export function reportedNotVisibleToUser(element: Element): boolean {
+  return reportedNotVisible.has(element);
+}
+
 // Value-free React facts for an element absent from the native capture; a missing field was not measured.
 export interface ReactOnlyFacts {
   host?: number;
@@ -1133,6 +1142,7 @@ export function join(
     };
     if (label) element.label = label;
     if (testID) element.testID = testID;
+    if (n.visibleToUser === false) reportedNotVisible.add(element);
     if (uniqueMatch && match?.hostIndex !== undefined && match.inputHostIndices)
       reactEntryHosts.set(element, { host: match.hostIndex, inputs: match.inputHostIndices });
     if (host && testID !== undefined && host.testID === testID) {

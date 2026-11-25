@@ -96,6 +96,7 @@ import {
   aggregateTargetVisible,
   targetNeedsPresence,
   presenceMiss,
+  hiddenInPlaceElement,
   reactOnlyMiss,
   reactOnlyTarget,
   reactOnlyTimeout,
@@ -175,6 +176,8 @@ import type {
 import {
   launchMissSuggestion,
   missSuggestion,
+  hiddenInPlaceSuggestion,
+  isHiddenInPlaceSuggestion,
   screenNow,
   targetMissDiagnostic,
   placeholderPairingGap,
@@ -2134,6 +2137,8 @@ async function walkBlockScoped(
     // The refusal code when a step failed on its target; false when the walk ended for another cause.
     targetCode?: string | false,
     devError?: LedgerRow['devError'],
+    // A Wait's definite stable absence: only then is the reported read checked for an element hidden in place.
+    stableWaitMiss = false,
   ): WalkOutcome => {
     const notes = [
       ...new Set(
@@ -2217,28 +2222,47 @@ async function walkBlockScoped(
               ({ element }) => !element.offscreen && !element.ref.startsWith('react:'),
             ).length > 1;
           const subreason = ambiguous ? 'ambiguous' : lastReason;
+          // Android: the read failure.screen shows (last), with its own 'absent' diagnosis, carries the
+          // hidden-in-place words and advice; they never describe another read.
+          const hiddenInPlace =
+            stableWaitMiss && subreason === 'absent'
+              ? hiddenInPlaceElement(target, last)
+              : undefined;
+          if (hiddenInPlace) {
+            const detail =
+              '; on the read failure.screen shows, Android reports that element as not visible to the user, its frame overlapping the visible area with its centre inside it (hidden in place)';
+            reason = typeof reason === 'string' ? reason + detail : [...segments(reason), detail];
+          }
           lastScreen = {
             screen: now,
             suggestion:
-              // A more specific diagnosis, such as a placeholder coverage gap, keeps its own advice.
-              targetCode === LAUNCH_MISS && subreason === 'absent' && target.quoted !== undefined
-                ? launchMissSuggestion(
-                    privacy.redact(target.quoted),
+              // The hidden-in-place advice describes the same read as failure.screen.
+              hiddenInPlace
+                ? hiddenInPlaceSuggestion(
+                    hiddenInPlace.nativeKind === 'input' ? 'input' : 'other',
                     item.line,
-                    block.items
-                      .slice(0, block.items.indexOf(item))
-                      .reverse()
-                      .find((earlier) => earlier.kind === 'wait')?.line,
                   )
-                : missSuggestion(
-                    subreason,
-                    target,
-                    last,
-                    now,
-                    item.line,
-                    item.kind,
-                    deps.platform === 'ios',
-                  ),
+                : // A more specific diagnosis, such as a placeholder coverage gap, keeps its own advice.
+                  targetCode === LAUNCH_MISS &&
+                    subreason === 'absent' &&
+                    target.quoted !== undefined
+                  ? launchMissSuggestion(
+                      privacy.redact(target.quoted),
+                      item.line,
+                      block.items
+                        .slice(0, block.items.indexOf(item))
+                        .reverse()
+                        .find((earlier) => earlier.kind === 'wait')?.line,
+                    )
+                  : missSuggestion(
+                      subreason,
+                      target,
+                      last,
+                      now,
+                      item.line,
+                      item.kind,
+                      deps.platform === 'ios',
+                    ),
             subreason,
           };
         }
@@ -2360,6 +2384,11 @@ async function walkBlockScoped(
   const withSubreason = (outcome: WalkOutcome, subreason?: UncertainReason): WalkOutcome =>
     outcome.failure && subreason
       ? { ...outcome, failure: { ...outcome.failure, subreason } }
+      : outcome;
+  // A nested failure's fixed advice the outer failure carries when it has none of its own.
+  const withSuggestion = (outcome: WalkOutcome, suggestion?: string): WalkOutcome =>
+    outcome.failure && suggestion && !outcome.failure.suggestion
+      ? { ...outcome, failure: { ...outcome.failure, suggestion } }
       : outcome;
   const nestedSubreason = (nested: WalkOutcome): { subreason?: UncertainReason } => {
     const subreason = asUncertainReason(nested.failure?.subreason);
@@ -3218,6 +3247,10 @@ async function walkBlockScoped(
       return {
         fail: ['the login block did not pass: ', ...segments(nested.failure.seen)],
         ...nestedSubreason(nested),
+        // The saved login block's own fixed edit for a hidden-in-place miss names that block's line.
+        ...(isHiddenInPlaceSuggestion(nested.failure.suggestion)
+          ? { suggestion: `in the saved login block: ${nested.failure.suggestion}` }
+          : {}),
       };
     if (!sequence.planPassed) {
       privacy.startWindow();
@@ -3719,9 +3752,9 @@ async function walkBlockScoped(
     const shown = loginReplayed ? (await capture()).screen : (afterDecline ?? fresh.screen);
     const shot = await shoot(item);
     if ('fail' in result) {
-      const outcome = withSubreason(
-        failed(item, attempt, result.fail, shown, shot),
-        result.subreason,
+      const outcome = withSuggestion(
+        withSubreason(failed(item, attempt, result.fail, shown, shot), result.subreason),
+        result.suggestion,
       );
       return result.repeatedOptIn ? askedAgain(outcome, result.repeatedOptIn) : outcome;
     }
@@ -4464,6 +4497,8 @@ async function walkBlockScoped(
                   undefined,
                   false,
                   'TARGET_NOT_FOUND',
+                  undefined,
+                  !reactOnly,
                 ),
                 observation.screen,
               );

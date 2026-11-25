@@ -59,7 +59,8 @@ export interface OptInDecision {
 export type LoginReplay =
   | 'pass'
   | 'fail'
-  | { fail: Reason; subreason?: UncertainReason }
+  // suggestion: the nested login failure's own fixed plan edit, when it has one the outer failure can carry.
+  | { fail: Reason; subreason?: UncertainReason; suggestion?: string }
   | { refuse: { code: string; message: string } };
 
 export interface RecoverDeps {
@@ -77,7 +78,7 @@ export type Recovery =
       screenClass?: InterruptionScreenClass;
     }
   // repeatedOptIn: the decline label of an opt-in that returned after recovery declined it.
-  | { fail: Reason; repeatedOptIn?: string; subreason?: UncertainReason }
+  | { fail: Reason; repeatedOptIn?: string; subreason?: UncertainReason; suggestion?: string }
   | { refuse: { code: string; message: string } };
 
 // Deterministic, in this order; undefined means nothing applies and the original failure stands.
