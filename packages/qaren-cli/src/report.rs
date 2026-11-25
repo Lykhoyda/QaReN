@@ -2315,6 +2315,45 @@ mod tests {
     }
 
     #[test]
+    fn overlay_receipts_keep_a_listed_unavailable_word_and_drop_any_other() {
+        let check = |live_hit: &str, reason: serde_json::Value| {
+            serde_json::json!({
+                "observation": 7, "liveHit": live_hit, "liveCheckReason": reason, "predicate": {
+                    "framePresent": true, "viewportPresent": true, "viewportOutside": false,
+                    "keyboardVisible": false, "keyboardFramePresent": null, "keyboardCoverage": null,
+                    "centreInsideKeyboard": null, "branch": "overlay", "cutter": null
+                }
+            })
+        };
+        let row = |checks: Vec<serde_json::Value>| {
+            serde_json::json!({
+                "block": "b", "line": 1, "attempt": 1, "kind": "step", "resolvedBy": "exact", "t": 0,
+                "outcome": "fail", "overlayChecks": checks
+            })
+        };
+        let saved = |value: serde_json::Value| {
+            let parsed: crate::core::Row = serde_json::from_value(value).unwrap();
+            serde_json::to_value(parsed).unwrap()
+        };
+        // A listed word on an unavailable read round-trips.
+        let kept = row(vec![check("unavailable", "deadline".into())]);
+        assert_eq!(saved(kept.clone())["overlayChecks"], kept["overlayChecks"]);
+        // An unlisted word, a non-string and a word on an answered read drop only that field, in one vector.
+        let mut checks = vec![
+            check("unavailable", "private-text".into()),
+            check("unavailable", serde_json::json!(42)),
+            check("hittable", "deadline".into()),
+            check("unavailable", "runner-refused".into()),
+        ];
+        let mixed = saved(row(checks.clone()));
+        for check in &mut checks[..3] {
+            check.as_object_mut().unwrap().remove("liveCheckReason");
+        }
+        assert_eq!(mixed["overlayChecks"], serde_json::Value::Array(checks));
+        assert!(!mixed.to_string().contains("private-text"));
+    }
+
+    #[test]
     fn ground_proofs_survive_the_ledger_and_drop_untyped_data() {
         let frame = serde_json::json!({ "x": 0.0, "y": 116.0, "width": 402.0, "height": 758.0 });
         let mut row = serde_json::json!({
