@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import type { NativePresence } from '../../../dist/qa/native-presence.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
+import * as resolve from '../../../dist/qa/resolve.js';
 import { centreCovered, prepareTarget, targetEvidence } from '../../../dist/qa/resolve.js';
 import { join, type NativeNode, type Screen } from '../../../dist/qa/screen.js';
 import { runPlan } from '../../../dist/qa/walker.js';
@@ -239,4 +240,20 @@ test('T8/T9: the walker fills the focused input without a swipe and refuses the 
       }
     }
   }
+});
+
+test('T10: a presence Wait counts the captured transparent input present, unfocused and focused', () => {
+  const target = { phrase: HIDDEN, quoted: HIDDEN };
+  for (const variant of VARIANTS)
+    for (const focused of [false, true]) {
+      const screen = screenOf(variant, { focused });
+      assert.equal(resolve.hiddenInputPresence(target, screen), true, `${variant} ${focused}`);
+      assert.equal(
+        resolve.hiddenInputPresence({ ...target, exact: 'id' }, screen),
+        true,
+        `${variant} ${focused}`,
+      );
+      // The visibility evidence itself is unchanged (T6): only a presence Wait asks the rule.
+      assert.equal(targetEvidence({ ...target, exact: 'id' }, screen), 'fail');
+    }
 });
