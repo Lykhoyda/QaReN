@@ -293,12 +293,16 @@ export function missSuggestion(
           ? 'disabled'
           : matches.every((e) => !e.hittable)
             ? 'not hittable'
-            : undefined;
+            : kind === 'fill' && matches.every((e) => e.kind !== 'input')
+              ? 'not a text field'
+              : undefined;
       return state === 'disabled'
         ? `on the last observation the target of ${step} was on screen and disabled; consider adding, before ${step}, the step that enables it`
         : state === 'not hittable'
           ? `on the last observation the target of ${step} was on screen and not hittable; consider adding, before ${step}, the step that uncovers it, or check the screen's orientation and frame if it is a rotated modal`
-          : `on the last observation the target of ${step} was on screen but could not take this step; compare its role and state in failure.screen with the step`;
+          : state === 'not a text field'
+            ? `on the last observation the target of ${step} was on screen but was not a text field; quote the testID of the text field itself, or move this testID onto the field in the app`
+            : `on the last observation the target of ${step} was on screen but could not take this step; compare its role and state in failure.screen with the step`;
     }
     case 'absent': {
       // A text hidden on a screen behind this one names no button; the plain advice fits it better.

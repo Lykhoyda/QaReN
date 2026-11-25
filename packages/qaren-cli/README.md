@@ -4355,6 +4355,27 @@ read when it saw any, and a suggestion to insert a `Wait for` the target before
 that line, or move an earlier wait to an element that renders with it. See
 [row timing](#row-timing) for the measured wait duration.
 
+On Android, an authored Fill with a quoted target that is refused
+`TARGET_NOT_FOUND` on a read with the app in front, before the step has sent any
+action of its own, gets one more attempt: after recovery, QaReN waits 500 ms and
+runs the step again. Its next target decision is taken only on a capture with
+the app in front; on any other surface the step goes back to recovery with its
+first refusal. The ledger records one `retry` row ending "deciding again on a
+fresh read". If the field is then an eligible text field the Fill proceeds. If
+that decision refuses, its refusal carries "; decided again on a fresh read"
+(other clauses may follow it); ordinary recovery can still handle an
+interruption after it and let the step pass, and when the step ends on that
+refusal the receipt keeps the clause. A capture refusal, a later attempt's
+refusal or a cancellation keeps its own receipt. This happens at most once per
+step and never replaces the first-target launch wait. Stored selectors,
+described targets, Tap, Wait, iOS, ambiguous targets and steps that already sent
+a scroll or Fill keep their behavior. A field that turns into a text field later
+than that one fresh capture still fails; wait for an element that renders
+together with the field before the Fill. On every platform, when a Fill's
+on-screen matches are neither all disabled nor all unhittable but none is a
+text field, the suggestion is to quote the text field's own testID or move this
+testID onto the field.
+
 If interruption recovery after a target-resolution failure throws
 `NATIVE_SNAPSHOT_INCOMPLETE`, that capture refusal remains the outcome and adds
 `step-reason=<word>` for the step's first reason: `target-not-found`,

@@ -889,6 +889,8 @@ async function walkBlockScoped(
   let itemStartedAt = 0;
   let itemDeadline: number | undefined;
   let stepDispatched = false;
+  // Whether the current item ever authorized an action of its own; unlike stepDispatched, a login replay keeps it.
+  let itemDispatched = false;
   // The current item's launch allowance, from when it was spent; its measured poll; preparation resets its captures saw.
   let launchWait: { startedAt: number } | undefined;
   let implicitWaitMs: number | undefined;
@@ -1574,7 +1576,7 @@ async function walkBlockScoped(
       override authorize(): void {
         super.authorize();
         mutationStarted = true;
-        if (owner === 'step') stepDispatched = true;
+        if (owner === 'step') stepDispatched = itemDispatched = true;
         diagnostic(
           item,
           observation,
@@ -3995,6 +3997,7 @@ async function walkBlockScoped(
     pressDispatch = undefined;
     mutationStarted = false;
     stepDispatched = false;
+    itemDispatched = false;
     fillMethod = undefined;
     fillMismatch = undefined;
     keyboardCleared = undefined;
@@ -4027,6 +4030,9 @@ async function walkBlockScoped(
     let pixelBaselineTaken = false;
     // This allowance survives recovery retries of the item.
     let itemKeyboardAttempted = false;
+    // An Android quoted Fill's one fresh decision after its target was refused: unused, pending (holding the
+    // refusal it answers) until the walker next decides the target, then spent.
+    let redecide: 'unused' | ResolutionError | 'spent' = 'unused';
     // Set by either keyboard clearance of a covered press; no scroll may follow it on this step.
     let keyboardClearedOnStep = false;
     lineRead = undefined;
@@ -4844,6 +4850,13 @@ async function walkBlockScoped(
                   deps.note?.(
                     `located-clearance ${JSON.stringify({ line: item.line, located: false })}`,
                   );
+                // The pending fresh decision is taken on this observation, and only with the app in front;
+                // recovery answers any other surface, as on a first refusal.
+                const fresh = redecide instanceof ResolutionError ? redecide : undefined;
+                if (fresh && before.screen.front !== 'app') {
+                  redecide = 'spent';
+                  throw fresh;
+                }
                 const decision = unnamedArmed()
                   ? {
                       resolvedBy,
@@ -4865,6 +4878,7 @@ async function walkBlockScoped(
                         ),
                       }
                     : await decide(before, undefined, item, Infinity, initial);
+                if (fresh) redecide = 'spent';
                 // Only the quote branch can successfully bind an identity without a testID.
                 boundByQuote =
                   refusedIdentity !== undefined &&
@@ -5024,15 +5038,22 @@ async function walkBlockScoped(
                           `${stayedCovered(item.target.phrase, withheldDrag)}${await coverText(item)}`,
                         )
                       : decided.reason;
+                    const refusal = keyboardBound
+                      ? { ...decided, reason: `${reason}${KEYBOARD_DISMISSED}` }
+                      : itemKeyboardAttempted
+                        ? {
+                            ...decided,
+                            reason: `${reason}; ${before.screen.keyboardVisible === false ? 'the keyboard was hidden and the target is still not found' : 'the keyboard could not be hidden'}`,
+                          }
+                        : { ...decided, reason };
+                    // The one fresh decision says so in its refusal, wherever that refusal is reported.
                     throw new ResolutionError(
-                      keyboardBound
-                        ? { ...decided, reason: `${reason}${KEYBOARD_DISMISSED}` }
-                        : itemKeyboardAttempted
-                          ? {
-                              ...decided,
-                              reason: `${reason}; ${before.screen.keyboardVisible === false ? 'the keyboard was hidden and the target is still not found' : 'the keyboard could not be hidden'}`,
-                            }
-                          : { ...decided, reason },
+                      fresh
+                        ? {
+                            ...refusal,
+                            reason: `${refusal.reason.replace(/\.$/, '')}; decided again on a fresh read`,
+                          }
+                        : refusal,
                     );
                   }
                   fellBack = true;
@@ -6466,6 +6487,8 @@ async function walkBlockScoped(
       } catch (caught) {
         if (isAbort(caught)) throw caught;
         let error = caught instanceof CaptureDeadline ? new EvidenceExpired(true) : caught;
+        // Read before recovery captures again: the front this refusal was decided on.
+        const refusedOnApp = latest.front === 'app';
         // A recovery probe that acts on nothing must not cost a polled step its retry budget.
         const priorRecovery = recovered.has(item) ? { state: recovered.get(item)! } : undefined;
         let recoveryIdle = false;
@@ -6562,6 +6585,49 @@ async function walkBlockScoped(
           } catch (pollError) {
             if (isAbort(pollError)) throw pollError;
             error = pollError;
+          }
+        }
+        // An authored quoted Android Fill whose target was refused on the app before the item sent any
+        // action of its own decides once more, on a fresh ordinary read after the launch poll's cadence.
+        if (
+          redecide === 'unused' &&
+          item.kind === 'fill' &&
+          deps.platform === 'android' &&
+          item.target.quoted !== undefined &&
+          item.target.exact === undefined &&
+          error instanceof ResolutionError &&
+          error.code === 'TARGET_NOT_FOUND' &&
+          refusedOnApp &&
+          !itemDispatched &&
+          !deps.cancelled?.()
+        ) {
+          redecide = error;
+          emit({
+            ...base(item, currentAttempt),
+            outcome: 'retry',
+            reason: redact(`${error.message.replace(/\.$/, '')}; deciding again on a fresh read`),
+          });
+          // The fresh pass is judged on its own: no launch poll after it, no veto or undismissed
+          // interruption record carried from this one (the retry row above keeps it).
+          launchWait = undefined;
+          pressVetoed = undefined;
+          if (interruptions.get(item.line)?.outcome !== 'dismissed')
+            interruptions.delete(item.line);
+          // This pass's diagnostics now belong to the retry row; a cancelled pause must not carry them on.
+          interruptionWithheld = undefined;
+          overlayRows.delete(item.line);
+          scrollBands.delete(item.line);
+          groundProofs.delete(item.line);
+          targetRows.delete(item.line);
+          try {
+            await pause(WAIT_POLL_MS);
+            // Recovery returned without acting, so restore its state from before the probe.
+            if (priorRecovery) recovered.set(item, priorRecovery.state);
+            else recovered.delete(item);
+            continue attempts;
+          } catch (pauseError) {
+            if (isAbort(pauseError)) throw pauseError;
+            error = pauseError;
           }
         }
         if (error instanceof RenderError)
