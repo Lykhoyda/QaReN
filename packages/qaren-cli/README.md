@@ -1593,23 +1593,55 @@ The first refusal of an action decides the reason; a cancellation keeps
 `RUN_CANCELLED`. On Android, `keyboard-visible` and `alert-blocked` do not
 occur. No input value, screen label or app text reaches the word, its
 explanation or a diagnostic that carries the reason; existing fields such as
-`failure.screen` keep their own masking rules. When the CLI's walk failure is
-this `PLAN_STEP_FAILED`, it keeps that `subreason` and its `next_action` is the
-explanation, `; `, and the next action the failure has without it: the usual re-run advice, or the ledger's
-`suggestion` when there is one (`suggestion` itself is unchanged, except as
-in `check --installed-app`, where both `suggestion` and `next_action` are the
-explanation, `; `, the usual next action and the mode's fixed sentence; see
-[plan checks](#plan-checks-and-screen-evidence)). Such a failure is not matched
-as a repeat. `ledger.json` carries the word when the CLI persists the core's
-step-failure ledger.
+`failure.screen` keep their own masking rules. When the final receipt's failure is this `PLAN_STEP_FAILED`, it keeps that
+`subreason`, and its two next-action values (`failure.next_action` and the
+top-level `next_action`, always equal) and its `recovery` (`failure.recovery`
+and the top-level `recovery`, always equal) are written last, from the run's
+final state. Both next actions start with the explanation and `; ` (subject to
+[input value masking](#input-value-masking), like any receipt text) and go on
+in complete sentences. Nothing in them comes from the app or the plan: a ledger
+`suggestion` stays in `failure.suggestion` and is not repeated in them
+(`report.md` still shows it as a suggested plan edit).
+
+| Final state | After the explanation | `recovery` |
+| --- | --- | --- |
+| Runner recovery that selects no rung (retain and report) | leave the process, device and lease untouched, and report the recorded runner cleanup reason to the run or device owner | `ios_runner_cleanup` with its reason, no rung selected, nothing destroyed, no OK needed |
+| Runner recovery that selects a rung | review any available evidence without repeating the action, starting with this run's report; for a held run, the resources it recorded for inspection and `qaren status <run-id>`; then the selected step, which is the cleanup sentence (for a storage failure it first checks that the run's record storage is writable and runs the cleanup once), and the stop sentence | `ios_runner_cleanup` with its reason, rung and action; that rung's instruction is the selected step itself, and its flags count ending the hold (destroys state, needs the user's OK) and removing the PR worktree or a pending simulator stop (destroys state) |
+| Held | the review; the resources this run recorded for inspection and `qaren status <run-id>` for their current status; the cleanup sentence, which asks for the user's OK to end the hold; the stop sentence | uncertain, cleanup owed |
+| Not held, cleanup owed (an unclean leg, or a build lock whose release failed) | the review, the cleanup sentence, the stop sentence | uncertain, cleanup owed |
+| Not held, teardown clean, no cleanup owed | the review and the stop sentence | uncertain, nothing owed |
+
+The cleanup sentence runs `qaren cleanup <run-id> --json` after the review
+(for a held run, only with the user's OK to end the hold and the inspection it
+keeps open), says that it attempts to release this run's recorded resources,
+names only the consequential effects this run recorded (ending the hold,
+releasing a build lock teardown did not release, removing the run's PR worktree
+with any files in it, shutting the simulator down and removing its log store as
+`--shutdown-device-on-exit` asked) and points to the cleanup receipt for the
+result. The stop sentence says: if you cannot establish whether the action took
+effect, leave the outcome unresolved and stop. A runner recovery's rungs other
+than the selected one say only that they are not selected. An uncertain
+`recovery` has `reason: action_outcome_uncertain`, `action: check_action_effect`
+(the review), `next_rung: null`, `automatic`, `destroys_state` and
+`requires_user_ok` false, and five rungs that are not applicable: rung 1 says a
+new `qaren check` or `qaren pr` starts the plan from its first step and can
+repeat an action that already took effect. When cleanup is owed,
+`own_cleanup_required` is true and `own_run_id` names the run; that obligation
+is separate from the ladder's cleanup-and-fresh-prepare rung. A runner recovery
+always has `own_cleanup_required` true; `own_run_id` names the run when a rung
+is selected, and is absent under retain and report, where the run's resources
+wait for their owner. `check --installed-app` adds no sentence to these
+failures. Such a failure is not matched as a repeat. `run.json` keeps the
+walk's failure as recorded before these final rules: the explanation followed
+by the usual re-run advice, or by the ledger suggestion when there is one; no
+recovery; and (since this change) no `--installed-app` sentence. `ledger.json`
+carries the word when the CLI persists the core's step-failure ledger.
 
 Limits: a CLI-owned failure that supersedes the walk failure, a cancellation
 that arrives late, and a ledger the CLI writes itself (as for a cancellation
 while it waits for the core to exit) carry neither the word nor the
-explanation. The [cleanup precedence](#ios-admission-and-cleanup) and the held-run
-wording can replace or wrap the next action, and the console line prints the
-final next action, so the explanation may not reach the final receipt or the
-console. Stored words follow [input value masking](#input-value-masking) like
+explanation. The console line prints `failure: <detail> — next: <next action>`, so the
+explanation follows `— next:` there. Stored words follow [input value masking](#input-value-masking) like
 any other receipt text. The guarantee covers what QaReN's own core writes.
 An unchanged screen and a covered target keep their own failures and get none
 of these reasons. Retries, captures, `failure.seen`, the trace and `report.md`
@@ -2119,9 +2151,9 @@ only `subreason`, one of the seven [uncertain-outcome reasons](#uncertain-outcom
 its `screen` and `suggestion` keep their existing sources (a rejected check's screen
 and the interruption-ownership suggestion). The exception is
 `check --installed-app`: there every `PLAN_STEP_FAILED` other than a
-previous-planned-press veto sets `suggestion` and `next_action` to its usual next
+previous-planned-press veto or an [uncertain outcome](#uncertain-outcome-reasons)
+sets `suggestion` and `next_action` to its usual next
 action followed by a fixed sentence naming the mode's native-screen-only limits;
-an [uncertain outcome](#uncertain-outcome-reasons) puts its explanation first;
 a repeat notice below wraps that `next_action` rather than replacing it. Labels follow the
 [input value masking contract](#input-value-masking), including its fixed-control-word
 exception when screen text is withheld; testIDs remain unless they hold a
@@ -3882,13 +3914,16 @@ ladder. Follow that advice: explicit owned-runner cleanup is the supported recov
 rebuilding cannot clear a surviving driver. If explicit host recovery fails, request
 shutdown of only that simulator, obtain approval first if it is lent, then retry cleanup;
 QaReN has no standalone shutdown command. Missing driver proof means retain and report;
-storage failures require restoring
-write access before one cleanup retry. Fresh preparation follows proven absence.
+storage failures require checking that the run's record storage is writable,
+restoring it if needed, before one cleanup retry. Fresh preparation follows proven absence.
 An unclean check keeps its original failure code. For a non-held run, its
 `next_action` follows runner recovery advice when present; otherwise it points
 to this run's cleanup. Any existing
 target suggestion or repeat guidance follows those cleanup instructions in both
-`failure.next_action` and top-level `next_action`. Lost lease
+`failure.next_action` and top-level `next_action`. An
+[uncertain outcome](#uncertain-outcome-reasons) is the exception: its two
+next actions and its recovery, including a runner recovery's ladder, are
+written last and repeat no suggestion. Lost lease
 or owner proof selects retain-and-report advice, never simulator shutdown.
 
 When the leased simulator had no runner host as the
@@ -3986,6 +4021,11 @@ device, which reclaims the dead holder through the same cleanup. Holds do not ex
 The receipt's top-level `next_action` is `qaren cleanup <run-id> --json`.
 Its `failure.next_action` keeps the plan edit or repeat guidance first, followed by
 the retained resources, `qaren status <run-id>` and `qaren cleanup <run-id> --json`.
+For an [uncertain outcome](#uncertain-outcome-reasons) without runner recovery,
+both next actions are that failure's review guidance, which names the resources
+the run recorded for inspection, `qaren status <run-id>` for their current
+status and, after the review and only with the user's OK to end the hold,
+`qaren cleanup <run-id> --json`.
 If runner recovery is required, the recovery instructions take precedence as
 described above.
 
