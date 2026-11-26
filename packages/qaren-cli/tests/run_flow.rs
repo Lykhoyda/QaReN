@@ -4053,6 +4053,46 @@ fn a_held_run_with_shutdown_on_exit_reports_its_owed_log_store_as_retained() {
 }
 
 #[test]
+fn a_duplicate_id_wait_failure_from_the_core_reaches_the_receipt_with_its_inspect_recovery() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    let suggestion = "Multiple captured elements carry the quoted testID (other at 0,0,402,874; other at 0,116,402,758). Give the intended view a unique testID and quote it in the Wait, or quote exact visible text that identifies it on this screen.";
+    let result = HELD_FAIL.replace(
+        r#""seen":"no Tasks","kind":"step"}"#,
+        &format!(
+            r#""seen":"target did not appear; 2 elements carry the identifier \"twin-screen\"","kind":"step","subreason":"duplicate-id","suggestion":"{suggestion}"}}"#
+        ),
+    );
+    script_held_result(&mut mock, &repo, &result, 1);
+
+    let (receipt, events) = run_with_events(&mut mock, &request(&repo, &app, 30));
+
+    assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::PlanStepFailed);
+    assert_eq!(failure.step, Some(2));
+    assert_eq!(failure.subreason.as_deref(), Some("duplicate-id"));
+    assert_eq!(failure.suggestion.as_ref().unwrap().as_str(), suggestion);
+    assert!(
+        failure.next_action.starts_with(suggestion),
+        "{}",
+        failure.next_action
+    );
+    let wire = serde_json::to_value(&receipt).unwrap();
+    let recovery = &wire["failure"]["recovery"];
+    assert_eq!(recovery["reason"], "duplicate_wait_target");
+    assert_eq!(recovery["action"], "inspect_last_observed_screen");
+    assert_eq!(recovery["automatic"], false);
+    assert_eq!(recovery["destroys_state"], false);
+    let rungs = recovery["ladder"].as_array().unwrap();
+    assert_eq!(rungs.len(), 5);
+    assert!(rungs.iter().all(|rung| rung["applicable"] == false));
+    let end = events.iter().find(|e| e["event"] == "end").unwrap();
+    assert_eq!(end["payload"]["result"], "fail");
+}
+
+#[test]
 fn a_held_target_failure_keeps_its_plan_edit_ahead_of_the_inspection_steps() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
