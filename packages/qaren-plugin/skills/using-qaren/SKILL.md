@@ -10,8 +10,8 @@ QaReN walks a Markdown QA plan on the iOS simulator, or with `--platform android
 | The user wants to | Do |
 |---|---|
 | use QaReN for the first time, or `qaren` is not found, or `.qaren/config.yaml` is missing | run the `setup` skill (`/qaren:setup`) |
-| test a feature in the working tree | select a saved plan (`qaren plans`) or draft one (below), then `qaren check --plan-file <plan-path> --json` |
-| QA a pull request | select a saved plan (`qaren plans`) or draft one (below), then `qaren pr <number> --plan-file <plan-path> --json`; `qaren publish <run-id>` only when the user asks, after they confirm the plan and recording may be posted to that pull request |
+| test a feature or change in the working tree | choose scope and coverage under **Saved plans** below, then `qaren check --plan-file <plan-path> --json` |
+| QA a pull request | choose scope and coverage under **Saved plans** below, then `qaren pr <number> --plan-file <plan-path> --json`; `qaren publish <run-id>` only when the user asks, after they confirm the plan and recording may be posted to that pull request |
 | follow a run | `qaren watch --latest` |
 | see saved blocks | `qaren actions list` |
 
@@ -53,32 +53,69 @@ When a receipt has `held`, the failed iOS walk kept the simulator and the device
 
 ## Saved plans
 
-QaReN keeps passing plans in `.qaren/plans/`. Before writing a plan, run `qaren plans --json` and, if a row matches the requested journey, run it with `--plan-file <its file>`; prefer rows not broken for the platform. Otherwise write the plan to a temporary file outside `.qaren/plans/` and run that. QaReN saves a fully passing plan itself and flags or clears recipes; report the receipt's `recipe` outcome and do not write or mark files in `.qaren/plans/` yourself.
+For an explicitly selected plan, a smoke-only request or an exact rerun, keep the requested scope. For general feature or change QA, run `qaren plans --json`, read the matching recipe and compare its actual steps with the applicable coverage under **Write a plan**. Prefer recipes that work on the selected platform. Run a recipe as written when it covers the request.
+
+Draft missing journeys in a temporary plan outside `.qaren/plans/`, reusing the source and applicable steps from the recipe. Join blocks only when the previous block's actual end screen satisfies the next block's start condition. Otherwise run the journey separately with its normal user setup. If no recipe matches, draft all applicable journeys. After the write check below, run the temporary plan and any selected recipe journeys it does not repeat. QaReN saves fully passing plans and maintains recipe status. Report the receipt's `recipe` outcome. Do not write, edit or mark files in `.qaren/plans/` yourself.
+
+**Before running any plan**, including an exact or saved-plan rerun, check which writes are authorized and whether the execution path can repeat them. The ordinary walker can dispatch a press twice after inconclusive readback. If only one deliberate mutation is authorized, exclude the Save press from automation before starting. Use one witnessed manual tap with authorized capture already active if counting. If that path is unavailable, leave the write unexecuted. Inspect the independent attempt witness before any recovery. Never make real production writes, repeat a mutation speculatively or clear data to retry.
 
 ## Write a plan
 
 1. Read the feature's screens in source for `testID`s and visible labels.
 2. Write one `###` block per user journey under `## QA`: numbered user actions such as `Tap "…"`, `Fill "…" with "…"` (or `Fill "…" with input PASSWORD` for a credential the user sets as `QAREN_INPUT_PASSWORD`; never put a real credential in a plan), `Wait for "…" to appear`, scroll and back, with `✓ "…"` checks of what the user should then see; open a block that continues a journey with `starts on: <testID or text>`.
    For input echoes and optional `Expect input NAME on screen` declarations, follow the [runtime-input hash protections](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs).
-   For TEST-PII opt-in, secure-field promotion, readback, log redaction, media withholding and the limits on undeclared on-screen data, follow the [runtime-input tier contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs) before annotating a Fill.
+   In dev default and `video: strict`, runtime inputs default to SECRET. Explicit `(test-pii)` opts in to TEST-PII; `(non-secret)` is the older spelling of `(test-pii)` and also means TEST-PII. For secure-field promotion, readback, log redaction, media withholding and the limits on undeclared on-screen data, follow the [runtime-input tier contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#runtime-inputs) before annotating a Fill. Apply the [media policy](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#video-publication) in both modes.
 3. Quote every action target, preferring `testID`s over labels. For `✓` checks, choose visible text according to [Plan checks and screen evidence](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#plan-checks-and-screen-evidence).
 4. Read in source every conditional screen the flow can insert on the path, such as form validators, required fields, profile-completion and verification screens, and plan a step for each one.
-5. Take every `Fill` value as a literal from the user or the project's documented test-data source. If one is missing, ask the user before running; never invent or guess a value.
+5. Use literal fills only for public values supplied by the user or documented as test data. Use named runtime inputs for private values. Ask for missing test data before running. Never invent or guess a value.
 6. Use unquoted phrase steps only when `TYPESAFE_API_KEY` is set; without it they refuse.
-7. Follow the user's path only: no deep links or navigation shortcuts.
+7. Reach the midway state through ordinary taps, typing, scrolling and Back. Never shortcut setup with a link, direct navigation, app-state reset or injected command. Use an in-app link control when that link is the exit under test. An externally launched link is a separate manual exit.
+
+Determine whether a flow saves by reading its handler and observable result. Look for a created or updated record, persisted state or a write submitted to a service. A button label or HTTP method alone cannot establish this.
+
+1. **Leave and reopen**. For every flow that can be left partway, including a read-only flow, draft a separate journey for Back, each applicable alternate exit (such as a tab or Retry's Home link), and background or process exit where relevant. Record the actual departure, arrival and re-entry control or OS return. Check the specified fresh or resumed state. On an attended test device with no automated walk running, witness an external link tap at its origin, an OS background and return, or termination and a new process launch. A later heading alone proves only the screen.
+
+   Establish a baseline before exit and check an independent attempt witness across exit, re-entry and the defined follow-through before another deliberate tap. Use a persistent counter that advances on *every* relevant dispatch, including failed or idempotent attempts, or a complete authorized count of those starts. For Retry, first observe the intentional submit finish and account for its attempts. A persistent screen witness can cover attempts during startup before network capture attaches. Report that network interval as unobserved. A later log cannot fill the gap. Without an attempt witness, report the side effect as unobserved. When only the record stayed the same, report “record unchanged; submit attempt unobserved.”
+
+   Give Back, the in-app Retry link and the externally launched link their own verdicts, even for the same URL. A button that demonstrably fails to leave is a failed route. Mark an untested or unevidenced route “not covered” with the reason, and explain inapplicable routes.
+2. **Spelling variants**. When a save compares a field with a known value, start each journey from the same initial record. Test the original, a case change, an inner-spacing change and a documented abbreviation where applicable, one change per journey. For each, check exact entry and the specified match, rejection or save using fixed outcome labels.
+
+   For private comparisons use a separately supplied, named runtime input for each journey, for example `Fill "qa-save-street" with input CMP_CASE`. The owner sets each matching `QAREN_INPUT_<NAME>` before the run. Ask for missing inputs. Never derive variants from a seed, stored value or screen text, or copy values into plans, checks, notes or evidence. Use value-free exact-entry facts or a public category that independently identifies the exact entry.
+
+   Grade the comparer and the keyboard mechanism separately. An exact verified Fill can cover comparison. A case-normalized or unverified Fill earns no variant credit without an independent exact-entry witness. A `keyboard` or `clear-type` rung alone cannot prove key events. Android can report `keyboard` for accessibility `ACTION_SET_TEXT`. Handler-set and already-set values alone provide no keyboard proof either. If typing behavior matters and the mechanism is unproven, witness actual manual keyboard entry.
+3. **Request count**. Add a separate *manual request count* for each applicable method and endpoint alias only with an authorized, local metadata-only source. Define the expected number of request starts, the action window and its follow-through in advance. Use one observation across endpoints where possible. For a single authorized write, apply the pre-run gate above.
+
+   In dev default and `video: strict`, decline a source **before opening it** if using it could expose private URLs, headers, credentials, values or bodies. Prefer approved public selectors or local endpoint aliases. Never forward raw URLs, request IDs, headers, payloads, body panels, exports or unclassified identifiers. Strict media handling cannot control an external debugger's body cache. If no safe source exists, record “request count unverified” with a value-free reason and continue screen QA.
+
+   Verify the app/runtime, the source's start-event semantics and a known positive control on that source for each endpoint, including for an expected zero. Start capture before the deliberate tap or exit. Keep it continuous through completion and the defined follow-through, then close before another action. For failed Save followed by reopen, keep one capture across both intervals. Account for the intentional starts before exit and assign starts to each side only with attributable evidence. Host receipt time alone cannot assign a late start.
+
+   Record actual taps, observation scope, method and alias, expected and observed integer counts, and the run or local observation ID. A proven two starts for one expected start after one witnessed dispatch is a manual finding. With two dispatches or an uncertain retry, retain a proven window total and mark single-tap attribution unverified. Likewise retain only the proven total if the split is uncertain. A gap, reconnect, target change or missing start coverage leaves the affected counts unverified. A screen pass, server receipt, setup announcement or empty buffer cannot establish a start count. Report the ordinary QaReN result independently.
+
+For example, this screen-only journey starts at Home with a clean synthetic record, fail-first off and repeatable test writes authorized. The Retry link is the exit under test. Closed counter labels distinguish `[1]` from `[10]` in a quoted substring check.
 
 ```markdown
 ## QA
 
-### Add a task
+### Leave Retry through its Home link and reopen the form
 
-1. Tap "tab-tasks"
-2. Tap "add-task"
-3. Fill "task-title" with "Buy milk"
-4. Tap "save-task"
-5. Wait for "Buy milk" to appear
-✓ "Buy milk"
+1. Scroll down until "home-save-lab-qa-btn"
+2. Tap "home-save-lab-qa-btn"
+3. Tap "qa-save-fail-first"
+4. Fill "qa-save-street" with "Main Street 6"
+5. Tap "qa-save-submit"
+✓ "Save failed"
+✓ "Save attempts: [1]"
+✓ "Local result: [unchanged]"
+6. Tap "qa-save-home-link"
+✓ "Welcome"
+7. Scroll down until "home-save-lab-qa-btn"
+8. Tap "home-save-lab-qa-btn"
+✓ "Save attempts: [1]"
+✓ "Form state: [blank]"
+✓ "Local result: [unchanged]"
 ```
+
+Keep manual OS steps and request notes outside executable Markdown. Report the receipt's result and run ID. For each manual item give the step, expected and observed facts, and run ID if available.
 
 ## Optional interruptions
 
