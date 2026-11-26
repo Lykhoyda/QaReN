@@ -1,5 +1,0 @@
----
-"qaren": minor
----
-
-An Android `qaren check` or `qaren pr` run whose start cannot be attached now says why. When QaReN launches the app itself, it arms Metro's bundle request count before the launch and passes the counts at launch to the core. A start that has asked Metro for no bundle by the attach budget, while no wait has returned a debugger target, is refused at that point as `bundle_not_requested` (`retry_launch_once`) instead of at the end of the walk budget. Every attach refusal the admission builds reads the app's process once with `adb shell pidof` when time is left and names it: a process that is not running is `app_process_dead` (`inspect_app_crash`). A deadline after the debugger attached is `attach_budget_after_connect` (`retry_attach_once`), and a start that ends the walk budget with no target is `bundle_not_built` (`inspect_metro_bundle`) or `no_attachable_target` (`inspect_app_screen`) from Metro's counts. Each of these receipts carries the recovery ladder. iOS is unchanged.
