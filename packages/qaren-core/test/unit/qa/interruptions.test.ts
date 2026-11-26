@@ -1198,19 +1198,8 @@ test('a step recovers at most two different pop-ups', async () => {
 
 test('a system prompt the app asks again after recovery declined it is left to the plan author', async () => {
   const f = app(alert());
-  // This scenario tests a prompt at the next item, after an ordinary successful press.
-  const capture = f.deps.captureScreen;
-  let afterSettings = false;
-  f.deps.captureScreen = (options) => {
-    if (afterSettings) {
-      afterSettings = false;
-      return Promise.resolve(screen([element('@opening', 'Opening settings')]));
-    }
-    return capture(options);
-  };
   f.deps.press = async (ref) => {
     f.actions.push(`press ${ref}`);
-    afterSettings = ref === '@settings';
     f.show(alert());
     return { ok: true, proven: false, executed: true };
   };
@@ -1229,6 +1218,38 @@ test('a system prompt the app asks again after recovery declined it is left to t
   );
 });
 
+test('a proven Tap that opens a system prompt passes and the next Wait declines it', async () => {
+  const f = app(home());
+  f.deps.platform = 'ios';
+  f.deps.press = async (ref, context) => {
+    context.authorize();
+    f.actions.push(`press ${ref}`);
+    f.show(titled('Notifications'));
+    return { ok: true, proven: true, executed: true };
+  };
+  f.deps.dialog = async (action, context) => {
+    context.authorize();
+    f.actions.push(`dialog ${action}`);
+    f.show(screen([element('@done', 'Done')]));
+    return { ok: true, proven: true, executed: true };
+  };
+  const events: unknown[] = [];
+  f.deps.pressRetry = (event) => events.push(event);
+  ticking(f);
+  const result = await runPlan(
+    parsePlan('1. Tap "Settings"\n2. Wait for "Done" to appear').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @settings', 'dialog dismiss']);
+  assert.equal(result.recoveries, 1);
+  assert.deepEqual(events, []);
+  assert.deepEqual(
+    result.steps.filter((row) => row.line === 1).map((row) => row.outcome),
+    ['pass'],
+  );
+});
+
 test('a different system prompt after a declined one is declined once too', async () => {
   const f = app(titled('Notifications'));
   f.deps.dialog = async (action) => {
@@ -1236,19 +1257,8 @@ test('a different system prompt after a declined one is declined once too', asyn
     f.show(f.actions.length === 1 ? home() : screen([element('@done', 'Done')]));
     return { ok: true, proven: true, executed: true };
   };
-  // This scenario tests a prompt at the next item, after an ordinary successful press.
-  const capture = f.deps.captureScreen;
-  let afterSettings = false;
-  f.deps.captureScreen = (options) => {
-    if (afterSettings) {
-      afterSettings = false;
-      return Promise.resolve(screen([element('@opening', 'Opening settings')]));
-    }
-    return capture(options);
-  };
   f.deps.press = async (ref) => {
     f.actions.push(`press ${ref}`);
-    afterSettings = ref === '@settings';
     f.show(ref === '@settings' ? titled('Location') : home());
     return { ok: true, proven: false, executed: true };
   };
@@ -1322,19 +1332,8 @@ test('a repeated prompt with the same title and buttons stays declined when its 
     visibleText: ['Notifications', message, "Don't Allow", 'Allow'],
   });
   const f = app(prompt('Receive updates'));
-  // This scenario tests a prompt at the next item, after an ordinary successful press.
-  const capture = f.deps.captureScreen;
-  let afterSettings = false;
-  f.deps.captureScreen = (options) => {
-    if (afterSettings) {
-      afterSettings = false;
-      return Promise.resolve(screen([element('@opening', 'Opening settings')]));
-    }
-    return capture(options);
-  };
   f.deps.press = async (ref) => {
     f.actions.push(`press ${ref}`);
-    afterSettings = ref === '@settings';
     f.show(prompt('Receive reminders'));
     return { ok: true, proven: false, executed: true };
   };

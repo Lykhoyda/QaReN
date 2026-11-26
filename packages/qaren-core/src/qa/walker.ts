@@ -895,6 +895,7 @@ async function walkBlockScoped(
   let pressAct: ActResult | undefined;
   let pressMayHaveActed = false;
   let pressReadbackStarted = false;
+  let pressOutcomeRead = false;
   let pressSelector: Selector | undefined;
   let pressNeedsReadback = false;
   let activeItem: Item | undefined;
@@ -1129,7 +1130,7 @@ async function walkBlockScoped(
           refuse: 'SCREEN_EVIDENCE_INCOMPLETE',
           reason: 'NATIVE_ACQUISITION_UNUSABLE',
         });
-      if (requirePresence && latest.front === 'dialog' && !recovery)
+      if (requirePresence && latest.front === 'dialog' && !recovery && !pressOutcomeRead)
         throw new ResolutionError({
           refuse: 'SYSTEM_DIALOG_INTERRUPTED',
           reason: 'a system dialog is in front of the step target',
@@ -4088,7 +4089,6 @@ async function walkBlockScoped(
     original: Element | undefined,
     maxAttempts: number,
     first?: Observation,
-    initialDialog = false,
   ): Promise<'pass' | WalkOutcome> => {
     const until = Math.min(
       deps.now() + PRESS_RETRY_WINDOW_MS,
@@ -4100,7 +4100,6 @@ async function walkBlockScoped(
     const evidence = new PressRetryEvidence(
       before.screen,
       first?.screen,
-      initialDialog,
       next,
       original,
       disposition,
@@ -6451,36 +6450,20 @@ async function walkBlockScoped(
             after = observed;
             selectionProven = current?.selected === true;
           } else {
+            pressOutcomeRead = item.kind === 'press' && !selectionTarget && pressMayHaveActed;
             try {
               after = await readback();
-              usable(after, item);
-            } catch (error) {
-              if (
-                item.kind === 'press' &&
-                !selectionTarget &&
-                pressMayHaveActed &&
-                error instanceof ResolutionError &&
-                error.code === 'SYSTEM_DIALOG_INTERRUPTED'
-              ) {
-                const result = await observeLatePress(
-                  item,
-                  attempt,
-                  before,
-                  element,
-                  maxAttempts,
-                  undefined,
-                  true,
-                );
-                if (result === 'pass') continue items;
-                return result;
-              }
-              throw error;
+            } finally {
+              pressOutcomeRead = false;
             }
+            usable(after, item);
             if (
               item.kind === 'press' &&
               !selectionTarget &&
               pressMayHaveActed &&
-              after.screen.front === 'dialog'
+              !act!.proven &&
+              after.screen.front === 'dialog' &&
+              screenSignature(after.screen) === screenSignature(before.screen)
             ) {
               metric('readback', after);
               const result = await observeLatePress(

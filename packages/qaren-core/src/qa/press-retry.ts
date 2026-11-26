@@ -180,7 +180,6 @@ export class PressRetryEvidence {
   constructor(
     private readonly before: Screen,
     private readonly first: Screen | undefined,
-    initialDialog: boolean,
     private readonly next: Item | undefined,
     private readonly original: Element | undefined,
     disposition: PressDisposition,
@@ -189,7 +188,7 @@ export class PressRetryEvidence {
     const firstApp = first !== undefined && appFront(first);
     this.signature = beforeApp ? screenSignature(before) : undefined;
     this.initialUnchanged = firstApp && this.signature === screenSignature(first);
-    this.initialDialog = initialDialog || first?.front === 'dialog';
+    this.initialDialog = first?.front === 'dialog';
     this.proofEligible = beforeApp && (disposition === 'possible' || disposition === 'observed');
     this.expectedDialog = this.initialDialog && next?.kind === 'dialog';
     this.unexpectedFront =

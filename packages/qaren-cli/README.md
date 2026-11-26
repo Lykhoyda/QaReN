@@ -1329,7 +1329,9 @@ item's marker can pass the original Tap with “The planned transition appeared
 after the first readback.” The marker can be a newly visible literal Check or
 quoted Wait, an eligible exact native testID for a quoted Tap or Fill, or a
 stable planned system dialog with positive app-process continuity. The next
-item takes its own observation and runs independently.
+item takes its own observation and runs independently. A proven Tap, or one
+whose first readback already shows a new system dialog, does not enter this
+window; that dialog reaches the next item's interruption handling.
 
 If the window ends without that proof, the failure stays on the original Tap
 line with one of the four `press-retry-*` reasons below. The receipt records

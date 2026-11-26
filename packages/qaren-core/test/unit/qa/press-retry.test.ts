@@ -299,7 +299,7 @@ for (const [name, disposition] of [
 }
 
 for (const quoted of [true, false]) {
-  test(`H5 initial ${quoted ? 'quoted' : 'phrase'} Press dialog gets no recovery action`, async () => {
+  test(`H5 a ${quoted ? 'quoted' : 'phrase'} Press whose readback opens a system dialog leaves it to the next item`, async () => {
     const phraseDraft = () => {
       const screen = draft();
       return {
@@ -308,9 +308,13 @@ for (const quoted of [true, false]) {
       };
     };
     let dismissed = false;
-    const f = rig((_index, _time, sent) =>
-      sent === 0 || dismissed ? phraseDraft() : prompt('Allow access'),
-    );
+    const f = rig((_index, _time, sent) => {
+      if (sent === 0) return quoted ? draft() : phraseDraft();
+      return dismissed ? draft() : prompt('Allow access');
+    });
+    f.deps.hideDevMenu = async () => {
+      throw new Error('unexpected dev menu');
+    };
     const dialog = f.deps.dialog;
     f.deps.dialog = async (...args) => {
       dismissed = true;
@@ -324,11 +328,18 @@ for (const quoted of [true, false]) {
         ]),
       ),
     );
-    const ledger = await runPlan(plan(quoted ? save : '1. Tap the Save button'), f.deps);
-    assert.deepEqual(f.sends, ['@old'], JSON.stringify(ledger.failure));
-    assert.deepEqual(f.actions, []);
-    assert.equal(ledger.failure?.subreason, 'press-retry-screen-changed');
-    assert.equal(f.events[0].initialDialog, true);
+    const ledger = await runPlan(
+      plan(`${quoted ? save : '1. Tap the Save button'}\n✓ "Draft"`),
+      f.deps,
+    );
+    assert.equal(ledger.verdict, 'PASS', JSON.stringify(ledger.failure));
+    assert.deepEqual(f.sends, ['@old']);
+    assert.deepEqual(
+      f.actions.filter((action) => action !== 'shot'),
+      ['dialog dismiss'],
+    );
+    assert.equal(ledger.recoveries, 1);
+    assert.deepEqual(f.events, []);
   });
 }
 
@@ -338,6 +349,7 @@ for (const [name, pid, expected] of [
 ] as const) {
   test(`H5 a late ${name} Dialog requires positive process continuity and its own dispatch`, async () => {
     const f = queued([
+      () => ({ ...draft(), appProcessIdentifier: pid }),
       () => ({ ...draft(), appProcessIdentifier: pid }),
       () => prompt('Allow access', pid),
     ]);
