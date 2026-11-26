@@ -755,6 +755,33 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn press_retry_is_closed_and_reaches_the_no_input_sink() {
+        let event = json!({
+            "kind": "press-retry", "line": 1, "operationId": 1, "outcome": "passed-late",
+            "readsStarted": 3, "readsAdmitted": 2, "proofReads": 2, "screenChanged": true,
+            "targetChanged": false, "initialUnchanged": true, "initialDialog": false,
+            "readOverran": false, "firstDisposition": "possible", "networkIdle": "unknown"
+        });
+        assert_eq!(clean(&event), Some(event.clone()));
+        for (key, value) in [
+            ("line", json!(0)), ("operationId", json!(0)), ("readsStarted", json!(1.5)),
+            ("readsStarted", json!(9)), ("readsAdmitted", json!(4)), ("proofReads", json!(1)),
+            ("initialDialog", json!("false")), ("outcome", json!("retry")), ("extra", json!("data")),
+        ] {
+            let mut invalid = event.clone();
+            invalid[key] = value;
+            assert_eq!(clean(&invalid), None);
+        }
+        let dir = std::env::temp_dir().join(format!("qaren-press-retry-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut sink = super::Sink::new(&dir.join("core.log"));
+        sink.accept(&event);
+        let text = std::fs::read_to_string(dir.join("core-diagnostics.jsonl")).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(text.trim()).unwrap(), event);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn admission_metric_keeps_only_the_closed_blocked_words() {
         let mut event = json!({
             "kind": "metric", "stage": "admission", "edge": "point", "outcome": "failed", "at": 121500,
