@@ -1445,24 +1445,27 @@ original baseline; an unchanged selected chip or an unstable animation supplies
 no pixel proof. The [pixel comparator](../qaren-core/src/qa/tap-pixels.ts) owns
 the thresholds and supported PNG formats, and the
 [press regression tests](../qaren-core/test/unit/qa/option-redraw-press.test.ts)
-cover the retry and withholding boundaries.
+cover the pixel-proof and withholding boundaries.
 
 Comparison screenshots obey the [selected media policy](#video-publication).
 Metadata-only capture or active screenshot withholding prevents them. They use
 temporary files under the run directory that are removed after reading, and are
 not retained with ledger screenshots. Missing, failed or unsupported captures,
-ineligible targets and insufficient pixel change provide no proof; the existing
-retry and failure behavior remains. A press without pixel proof that leaves a
+ineligible targets and insufficient pixel change provide no proof; the Tap then
+follows the bounded observation window under
+[occluded taps and focus](#occluded-taps-and-focus). A press without pixel proof that leaves a
 control not reported selected unchanged still fails, naming whether the target
 was reported selected before and after.
 
-For presses outside the selection heuristic, before its one retry the walker
+After a Fill refused with `TARGET_MOVED_BEFORE_DISPATCH`, before its one retry the walker
 re-captures until the same target (resolved
 through the same exact-identity rules as the step) holds one native frame
 across two captures, within the
 existing settle readbacks, and the retry dispatches only that target at its
 settled frame; a target that never settles, stops resolving, or is replaced by
 another resolution is not dispatched again and fails with its observed frames.
+A Tap refused that way is not sent again; it enters the bounded observation
+window under [occluded taps and focus](#occluded-taps-and-focus).
 When the runner instead refuses a sent tap or type because its retained target
 is gone or stale (`NO_TEXT_INPUT_TARGET`, `KEYBOARD_TARGET_STALE`, or an Android
 `exact-target-*` reason) and attests mutation `none`, the step fails as
@@ -4543,7 +4546,9 @@ capture, still fails the current step immediately, including during login
 replay, and never triggers recovery. The regressions are in
 [`dev-error-overlay.test.ts`](../qaren-core/test/unit/qa/dev-error-overlay.test.ts).
 
-An action without success evidence after its one retry, a step target that
+An action other than a Tap without success evidence after its one retry (a
+Tap instead ends in the bounded observation window under
+[occluded taps and focus](#occluded-taps-and-focus)), a step target that
 does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still
 unsure after its re-ask gets a deterministic recovery, subject to the
 [quoted-wait deadline limits](#plan-checks-and-screen-evidence), then the step runs once more from a fresh
