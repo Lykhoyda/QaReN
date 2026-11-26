@@ -49,7 +49,7 @@ appId: <bundle identifier>
 devClientScheme: exp+<slug>
 ```
 
-Before asking for a mode, read the authoritative [screenshot and video privacy policy](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#video-publication) and explain its limits. Ask: “Which screenshot and video privacy policy applies to this app when run from this checkout: strict (default) or non-strict (test data only)?” Write `video: <answer>` only after an explicit answer, preserving existing configuration. With no answer, write nothing and say `video policy not declared: strict rules apply; doctor will remind you.`
+Read the linked [screenshot and video privacy policy](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#video-publication) and explain its limits. Ask which media policy applies to this checkout. Dev mode uses non-strict rules and is the default when video is absent. Choose video: strict when the app can show real private data. Write a declaration only after an explicit answer. With no answer, preserve the existing configuration. If the key is absent, say 'No video policy is declared. Dev-mode media rules apply. Set video: strict for strict media withholding.'
 
 The keys and their validation are owned by the CLI's [`config.rs`](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/src/config.rs).
 

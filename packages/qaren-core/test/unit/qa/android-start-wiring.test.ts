@@ -13,7 +13,21 @@ import { parsePlan, preparePlan } from '../../../dist/qa/plan.js';
 import type { WireRequest } from '../../../dist/qa/wire.js';
 
 const root = fileURLToPath(new URL('../../../../../', import.meta.url));
-type Kind = 'W2' | 'W1a' | 'W1b' | 'W1c' | 'W1d' | 'W1e';
+type Kind = 'W2' | 'W1a' | 'W1b' | 'W1c' | 'W1d' | 'W1e' | 'W3' | 'W4' | 'T2' | 'W5' | 'T3';
+// Each kind's walk budget and the watchdog that kills its child.
+const budgets: Record<Kind, { walkMs: number; killMs: number }> = {
+  W1a: { walkMs: 8000, killMs: 16_000 },
+  W1b: { walkMs: 8000, killMs: 16_000 },
+  W1c: { walkMs: 20_000, killMs: 45_000 },
+  W1d: { walkMs: 8000, killMs: 16_000 },
+  W1e: { walkMs: 36_000, killMs: 45_000 },
+  W2: { walkMs: 20_000, killMs: 45_000 },
+  W3: { walkMs: 70_000, killMs: 80_000 },
+  W4: { walkMs: 90_000, killMs: 100_000 },
+  T2: { walkMs: 70_000, killMs: 80_000 },
+  W5: { walkMs: 260_000, killMs: 200_000 },
+  T3: { walkMs: 240_000, killMs: 80_000 },
+};
 async function run(t: TestContext, kind: Kind) {
   const scratch = await mkdtemp(join(tmpdir(), 'qaren-android-start-'));
   const lists: number[] = [];
@@ -75,12 +89,22 @@ async function run(t: TestContext, kind: Kind) {
   const address = server.address();
   assert.ok(address && typeof address === 'object');
   port = address.port;
-  const plan = '1. Tap "synthetic-button"';
+  const plan =
+    kind === 'T2' || kind === 'T3' ? '1. Fill "code" with input CODE' : '1. Tap "synthetic-button"';
+  const restart = kind === 'W5' || kind === 'T3';
+  const counted = kind === 'W3' || kind === 'W4' || kind === 'T2' || restart;
+  const requestsPath = join(scratch, 'metro.bundle-requests');
+  const outcomesPath = join(scratch, 'metro.bundle-outcomes');
+  if (counted) {
+    // W5: a request recorded before the restart, none after it.
+    await writeFile(requestsPath, kind === 'W5' ? '4\n' : '3\n');
+    await writeFile(outcomesPath, '1 0\n');
+  }
   const lease = 'synthetic-start:0123456789abcdef0123456789abcdef';
   const request: WireRequest = {
     runId: 'synthetic-start',
     t0: Date.now(),
-    walkBudgetMs: kind === 'W1e' ? 36_000 : kind === 'W1c' || kind === 'W2' ? 20_000 : 8000,
+    walkBudgetMs: budgets[kind].walkMs,
     attachBudgetMs: 8000,
     plan,
     prepared: preparePlan(plan, parsePlan(plan).blocks),
@@ -95,13 +119,38 @@ async function run(t: TestContext, kind: Kind) {
       metroPort: port,
       metroUrlForDevice: `http://127.0.0.1:${port}`,
       worktree: root,
+      ...(counted
+        ? {
+            metroBundleRequests: {
+              path: requestsPath,
+              atLaunch: 3,
+              outcomesPath,
+              completedAtLaunch: 1,
+              failedAtLaunch: 0,
+            },
+          }
+        : {}),
+      ...(restart
+        ? {
+            androidLaunchUrl: `exp+${kind === 'T3' ? 't3canary' : 'synthetic'}://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A${port}%2F%3FdisableOnboarding%3D1`,
+          }
+        : {}),
     },
   };
   const walk = new URL('../../../dist/qa/walk.js', import.meta.url);
   const privacy = new URL('../../../dist/qa/privacy.js', import.meta.url);
   const fixtureBin = join(scratch, 'fixture-bin');
-  if (kind === 'W2') {
+  // A fixture adb first on the child's PATH; it never forwards to a real adb.
+  const writeAdb = async (body: string) => {
     await mkdir(fixtureBin);
+    const shim = join(fixtureBin, 'adb');
+    await writeFile(
+      shim,
+      `#!${process.execPath}\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\n${body}`,
+    );
+    await chmod(shim, 0o700);
+  };
+  if (kind === 'W2') {
     const fixtures = new URL('../../fixtures/android-first-views/', import.meta.url);
     // In launch order: no process yet, a busy process whose dump timed out, loading, first views.
     const served = ['not-running', 'timeout', 'loading', 'loaded'];
@@ -110,13 +159,8 @@ async function run(t: TestContext, kind: Kind) {
         readFile(new URL(`${name}.txt`, fixtures), 'utf8'),
       ),
     );
-    const shim = join(fixtureBin, 'adb');
-    await writeFile(
-      shim,
-      `#!${process.execPath}
-      const fs = require('node:fs');
-      const args = process.argv.slice(2);
-      if (JSON.stringify(args) !== JSON.stringify(['-s', 'synthetic-android', 'shell', 'dumpsys', 'activity', 'top'])) {
+    await writeAdb(
+      `if (JSON.stringify(args) !== JSON.stringify(['-s', 'synthetic-android', 'shell', 'dumpsys', 'activity', 'top'])) {
         process.stderr.write('fixture adb: refused command\\n');
         process.exit(1);
       }
@@ -128,7 +172,67 @@ async function run(t: TestContext, kind: Kind) {
       process.stdout.write(${JSON.stringify(outputs)}[index]);
     `,
     );
-    await chmod(shim, 0o700);
+  }
+  if (restart) {
+    const [dead, picker] = await Promise.all(
+      ['complete-after-kill', 'launcher'].map((name) =>
+        readFile(
+          new URL(`../../fixtures/android-first-views/${name}.txt`, import.meta.url),
+          'utf8',
+        ),
+      ),
+    );
+    await writeAdb(
+      `fs.appendFileSync(${JSON.stringify(join(scratch, 'adb-calls'))}, JSON.stringify(args) + '\\n');
+      const state = ${JSON.stringify(join(scratch, 'device-state'))};
+      const now = fs.existsSync(state) ? fs.readFileSync(state, 'utf8') : 'first';
+      const is = (expected) => JSON.stringify(args) === JSON.stringify(expected);
+      const shell = ['-s', 'synthetic-android', 'shell'];
+      // W5: no process until QaReN's start; T3: a picker until the force-stop, and a start that fails.
+      const running = ${JSON.stringify(kind)} === 'W5' ? now === 'started' : now === 'first';
+      if (is([...shell, 'dumpsys', 'activity', 'top'])) {
+        process.stdout.write(running ? ${JSON.stringify(picker)} : ${JSON.stringify(dead)});
+      } else if (is([...shell, 'pidof', 'com.example.synthetic'])) {
+        if (!running) process.exit(1);
+        process.stdout.write('1234\\n');
+      } else if (is([...shell, 'ps', '-A'])) {
+        process.stdout.write('USER PID PPID VSZ RSS WCHAN ADDR S NAME\\nroot 1 0 0 0 0 0 S init\\n');
+      } else if (is([...shell, 'am', 'force-stop', 'com.example.synthetic'])) {
+        fs.writeFileSync(state, 'stopped');
+      } else if (args[3] === 'am' && args[4] === 'start') {
+        if (${JSON.stringify(kind)} === 'T3') {
+          process.stderr.write('Error: Activity not started, unable to resolve Intent { dat=' + args.at(-2) + ' }\\n');
+          process.exit(1);
+        }
+        fs.writeFileSync(state, 'started');
+      } else {
+        process.stderr.write('fixture adb: refused command\\n');
+        process.exit(1);
+      }
+    `,
+    );
+  } else if (counted) {
+    const top = await readFile(
+      new URL(
+        `../../fixtures/android-first-views/${kind === 'W4' ? 'complete-after-kill' : 'launcher'}.txt`,
+        import.meta.url,
+      ),
+      'utf8',
+    );
+    await writeAdb(
+      `fs.appendFileSync(${JSON.stringify(join(scratch, 'adb-calls'))}, JSON.stringify(args) + '\\n');
+      const is = (expected) => JSON.stringify(args) === JSON.stringify(expected);
+      if (is(['-s', 'synthetic-android', 'shell', 'dumpsys', 'activity', 'top'])) {
+        process.stdout.write(${JSON.stringify(top)});
+      } else if (is(['-s', 'synthetic-android', 'shell', 'pidof', 'com.example.synthetic'])) {
+        if (${JSON.stringify(kind === 'W4')}) process.exit(1);
+        process.stdout.write('1234\\n');
+      } else {
+        process.stderr.write('fixture adb: refused command\\n');
+        process.exit(1);
+      }
+    `,
+    );
   }
   const script = `
     import {mainRequest, openSession} from ${JSON.stringify(walk.href)};
@@ -149,7 +253,7 @@ async function run(t: TestContext, kind: Kind) {
     [
       join(root, 'scripts/qaren-sim-sandbox.sh'),
       process.execPath,
-      ...(kind === 'W2'
+      ...(kind === 'W2' || counted
         ? [
             '--input-type=module',
             '-e',
@@ -181,18 +285,25 @@ async function run(t: TestContext, kind: Kind) {
   child.stdout.on('data', (bytes) => (stdout += bytes));
   child.stderr.on('data', (bytes) => (stderr += bytes));
   const closed = once(child, 'close');
-  const timeout = setTimeout(
-    () => child.kill('SIGKILL'),
-    kind === 'W1e' || kind === 'W1c' || kind === 'W2' ? 45_000 : 16_000,
-  );
+  const timeout = setTimeout(() => child.kill('SIGKILL'), budgets[kind].killMs);
+
   t.after(async () => {
     clearTimeout(timeout);
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     await closed;
   });
   child.stdin.end(
-    kind === 'W2'
-      ? `${JSON.stringify({ v: 1, runId: request.runId, seq: 1, type: 'request', payload: request })}\n`
+    kind === 'W2' || counted
+      ? `${JSON.stringify({
+          v: 1,
+          runId: request.runId,
+          seq: 1,
+          type: 'request',
+          payload:
+            kind === 'T2' || kind === 'T3'
+              ? { ...request, inputProtocol: 1, inputs: { CODE: 'synthetic-private-value' } }
+              : request,
+        })}\n`
       : '',
   );
   const [exit, signal] = await closed;
@@ -217,7 +328,13 @@ async function run(t: TestContext, kind: Kind) {
     envelopes.some((row) => row.type === 'admitted'),
     false,
   );
-  return { started, lists, upgrades, reads, result, stderr };
+  const adbCalls = (await readFile(join(scratch, 'adb-calls'), 'utf8').catch(() => ''))
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as string[]);
+  const refusedAt = Date.now();
+  return { started, refusedAt, lists, upgrades, reads, result, stderr, stdout, adbCalls, port };
 }
 function spaced(reads: { at: number }[]) {
   assert.ok(reads.length >= 2, 'at least two reads witness polling');
@@ -339,3 +456,100 @@ test('W1e: real retries retain one gate and its polling clock', { timeout: 50_00
   assert.ok(r.reads.at(-1)!.at - r.reads[0].at > 30_000, 'reads reach the second readiness window');
   assert.match(r.stderr, /target_readiness_timeout/);
 });
+
+const pidofCalls = (calls: string[][]) => calls.filter((args) => args.includes('pidof')).length;
+
+test(
+  'W3: the real entry refuses a start with no bundle request at the attach budget, naming a live process',
+  { timeout: 90_000 },
+  async (t) => {
+    const r = await run(t, 'W3');
+    assert.equal(r.result.code, 'CDP_NOT_CONNECTED');
+    assert.ok(r.refusedAt - r.started < 45_000, `refused after ${r.refusedAt - r.started} ms`);
+    assert.match(r.result.message, /app alive; bundle request not_received/);
+    assert.deepEqual(r.lists, []);
+    assert.equal(pidofCalls(r.adbCalls), 1);
+  },
+);
+test(
+  'W4: the real entry names a dead process after two empty reads',
+  { timeout: 110_000 },
+  async (t) => {
+    const r = await run(t, 'W4');
+    assert.equal(r.result.code, 'CDP_NOT_CONNECTED');
+    assert.ok(r.refusedAt - r.started < 65_000, `refused after ${r.refusedAt - r.started} ms`);
+    assert.match(r.result.message, /app dead; bundle request not_received/);
+    assert.ok(r.lists.length > 0);
+    assert.deepEqual(r.upgrades, []);
+    assert.equal(pidofCalls(r.adbCalls), 2);
+  },
+);
+test(
+  'T2: a strict input withholds the note while the facts keep the state',
+  { timeout: 90_000 },
+  async (t) => {
+    const r = await run(t, 'T2');
+    assert.equal(r.result.message, '[private output withheld]');
+    assert.equal(r.result.admission?.liveness, 'alive');
+    assert.equal(r.result.admission?.bundleRequest, 'not_received');
+    assert.doesNotMatch(r.stdout, /was running|at the count check/);
+  },
+);
+
+const named = (calls: string[][], word: string) => calls.filter((args) => args.includes(word));
+
+test(
+  'W5: the real entry restarts a dead start once and refuses it on the rebased count once its own budget has passed',
+  { timeout: 220_000 },
+  async (t) => {
+    const r = await run(t, 'W5');
+    assert.equal(r.result.code, 'CDP_NOT_CONNECTED');
+    const after = r.refusedAt - r.started;
+    assert.ok(after > 100_000 && after < 130_000, `refused after ${after} ms`);
+    assert.match(r.result.message, /app alive; bundle request not_received/);
+    assert.match(r.result.message, /; QaReN stopped the app and issued one recovery start command/);
+    assert.equal(r.result.admission?.relaunches, 1);
+    assert.equal(r.result.admission?.relaunchFailed, false);
+    assert.equal(named(r.adbCalls, 'ps').length, 1);
+    assert.equal(named(r.adbCalls, 'force-stop').length, 1);
+    const [start, ...more] = named(r.adbCalls, 'start');
+    assert.deepEqual(more, []);
+    assert.deepEqual(start, [
+      '-s',
+      'synthetic-android',
+      'shell',
+      'am',
+      'start',
+      '-a',
+      'android.intent.action.VIEW',
+      '--ez',
+      'EXDevMenuDisableAutoLaunch',
+      'true',
+      '-d',
+      `exp+synthetic://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A${r.port}%2F%3FdisableOnboarding%3D1`,
+      'com.example.synthetic',
+    ]);
+    assert.equal(named(r.adbCalls, 'pidof').length, 7);
+    const stopped = r.stderr.indexOf('android start: restart: the app was stopped at');
+    const sent = r.stderr.indexOf('android start: restart: start sent at');
+    assert.ok(stopped >= 0 && sent > stopped, r.stderr);
+    assert.doesNotMatch(r.stderr, /expo-development-client/);
+  },
+);
+test(
+  'T3: a strict input withholds a failed restart while the facts keep it',
+  { timeout: 90_000 },
+  async (t) => {
+    const r = await run(t, 'T3');
+    assert.equal(r.result.message, '[private output withheld]');
+    assert.equal(r.result.admission?.relaunches, 1);
+    assert.equal(r.result.admission?.relaunchFailed, true);
+    assert.equal(r.result.admission?.liveness, 'dead');
+    assert.equal(r.result.admission?.bundleRequest, 'not_received');
+    assert.equal(named(r.adbCalls, 'start').length, 1);
+    assert.ok(r.refusedAt - r.started < 45_000, `refused after ${r.refusedAt - r.started} ms`);
+    for (const text of [r.stdout, r.stderr]) {
+      assert.doesNotMatch(text, /t3canary|synthetic-private-value|unable to resolve Intent/);
+    }
+  },
+);

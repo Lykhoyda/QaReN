@@ -4506,7 +4506,7 @@ fn borrowed_ios_stop_in_cleanup_enforces_owner_lease_quiescence_admission_and_id
         let wt = RunRecord::run_dir(&repo, "borrowed-ios-run").join("wt");
         std::fs::create_dir_all(&wt).unwrap();
         record.resources.pr_worktree = Some(qaren::runrecord::PrWorktreeResource {
-            repo_root: repo.clone(),
+            repo_root: repo.to_path_buf(),
             path: wt.clone(),
         });
         let lock = record.resources.lease.as_ref().unwrap().lock_dir.clone();

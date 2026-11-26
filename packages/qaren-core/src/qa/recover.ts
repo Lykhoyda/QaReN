@@ -14,6 +14,7 @@ import { hostPath, MODAL_HOST_TYPES, type HostAssociationDiagnostic } from './ho
 import { concealsScreen } from './privacy.js';
 import { reactOnlyTarget, targetOnScreen } from './resolve.js';
 import type { Reason } from './untrusted.js';
+import type { UncertainReason } from '../domain/qa-dispatch.js';
 import type { ActResult } from './walker.js';
 
 export interface LoginMarker {
@@ -58,7 +59,8 @@ export interface OptInDecision {
 export type LoginReplay =
   | 'pass'
   | 'fail'
-  | { fail: Reason }
+  // suggestion: the nested login failure's own fixed plan edit, when it has one the outer failure can carry.
+  | { fail: Reason; subreason?: UncertainReason; suggestion?: string }
   | { refuse: { code: string; message: string } };
 
 export interface RecoverDeps {
@@ -76,7 +78,7 @@ export type Recovery =
       screenClass?: InterruptionScreenClass;
     }
   // repeatedOptIn: the decline label of an opt-in that returned after recovery declined it.
-  | { fail: Reason; repeatedOptIn?: string }
+  | { fail: Reason; repeatedOptIn?: string; subreason?: UncertainReason; suggestion?: string }
   | { refuse: { code: string; message: string } };
 
 // Deterministic, in this order; undefined means nothing applies and the original failure stands.

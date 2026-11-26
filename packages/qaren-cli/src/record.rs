@@ -75,6 +75,26 @@ impl VideoReason {
         }
     }
 
+    // What a public body says for this reason; free-form recorder detail stays local.
+    pub fn public_detail(self) -> &'static str {
+        match self {
+            Self::NotRecorded => "no capture was written",
+            Self::RecorderFailed => "the recorder failed",
+            Self::FfmpegMissing => "ffmpeg",
+            Self::EncodeFailed => "encode failed",
+            Self::NoPlayableDuration => "ffprobe found no playable duration",
+            Self::Cancelled => "the run was cancelled",
+            Self::RuntimeInputWithheld => "runtime inputs withhold recording",
+            Self::Interrupted => "app continuity was interrupted after admission",
+            Self::NoAdmittedFrame => "no admitted app frame was recorded",
+            Self::NoWindow => "no positive publication window was recorded",
+            Self::TrimFailed => "the admitted part of the recording could not be prepared",
+            Self::AndroidUnsupported => "Android API <34 stops screen recording at 180 s",
+            Self::PublishedCopyMissing => "published recording is unavailable",
+            Self::Other => "the recorder did not produce a publishable video",
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NotRecorded => "not-recorded",
@@ -167,7 +187,7 @@ pub fn video_next_step(status: &VideoStatus) -> Option<&'static str> {
             Some("install ffmpeg and ffprobe, then rerun with --record; the raw capture is kept in media/")
         }
         VideoStatus::Unavailable { detail: reason, .. } if reason == "runtime inputs withhold recording" => {
-            Some("runs with runtime inputs are recorded only when the app config declares video: non-strict and private output mode is off")
+            Some("Recording a run with runtime inputs requires non-strict rules, a TEST-PII-only inventory, and private output mode off. A standard run uses non-strict rules with no video key or with video: non-strict. Keep real secrets classified as SECRET.")
         }
         VideoStatus::Unavailable { detail: reason, .. } if reason.starts_with("Android API <34") => {
             Some("use an emulator with API 34 or later to record")
@@ -205,6 +225,9 @@ impl VideoPublication {
 pub enum VideoPolicy {
     Strict,
     NonStrict,
+    // The config has no `video` key: dev mode, so non-strict rules apply.
+    DefaultNonStrict,
+    // Recorded by versions before the dev-mode default, whose runs used strict rules; new standard CLI runs do not record this word.
     #[default]
     Undeclared,
     #[serde(other)]
@@ -216,8 +239,18 @@ impl VideoPolicy {
         match self {
             Self::Strict => "strict",
             Self::NonStrict => "non-strict",
+            Self::DefaultNonStrict => "default-non-strict",
             Self::Undeclared => "undeclared",
             Self::Unknown => "unknown",
+        }
+    }
+
+    // The rules a run follows: the dev-mode default follows non-strict; a legacy undeclared record, strict.
+    pub fn rules(self) -> Self {
+        match self {
+            Self::DefaultNonStrict => Self::NonStrict,
+            Self::Undeclared => Self::Strict,
+            other => other,
         }
     }
 
@@ -229,7 +262,7 @@ impl VideoPolicy {
         if self == Self::Unknown || *strict == VideoPublication::Unknown {
             return VideoPublication::Unknown;
         }
-        if self != Self::NonStrict {
+        if self.rules() != Self::NonStrict {
             return strict.clone();
         }
         match non_strict {
@@ -701,12 +734,13 @@ fn ffmpeg_encode(
 ) -> bool {
     let mut args: Vec<String> = vec!["-y".into(), "-v".into(), "error".into()];
     args.extend(input.iter().map(|a| a.to_string()));
+    // The fps filter builds the 30 fps output from presentation times; "-r 30" held simulator frames for seconds.
     args.extend(
         [
             "-c:v",
             "libx264",
-            "-r",
-            "30",
+            "-vf",
+            "fps=30",
             "-pix_fmt",
             "yuv420p",
             "-movflags",
@@ -984,7 +1018,7 @@ mod tests {
         }
         assert_eq!(
             video_next_step(&unavailable("runtime inputs withhold recording")),
-            Some("runs with runtime inputs are recorded only when the app config declares video: non-strict and private output mode is off")
+            Some("Recording a run with runtime inputs requires non-strict rules, a TEST-PII-only inventory, and private output mode off. A standard run uses non-strict rules with no video key or with video: non-strict. Keep real secrets classified as SECRET.")
         );
         assert_eq!(
             video_next_step(&unavailable(
@@ -1227,9 +1261,14 @@ mod tests {
             .expect_run("ffprobe", CmdOutput::success("12.5\n"));
         assert_eq!(finalize(&mut runner, &run_dir), VideoStatus::Available);
         let encode = &runner.mock.calls[1].args;
-        for arg in ["libx264", "30", "yuv420p", "+faststart"] {
+        for arg in ["libx264", "yuv420p", "+faststart"] {
             assert!(encode.contains(&arg.to_string()), "{arg}: {encode:?}");
         }
+        let input = encode.iter().position(|a| a == "-i").unwrap();
+        let filter = encode.iter().position(|a| a == "-vf").expect("-vf");
+        assert!(filter > input + 1, "{encode:?}");
+        assert_eq!(encode[filter + 1], "fps=30", "{encode:?}");
+        assert!(!encode.contains(&"-r".to_string()), "{encode:?}");
     }
 
     #[test]

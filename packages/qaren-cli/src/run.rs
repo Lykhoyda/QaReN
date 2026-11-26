@@ -54,6 +54,8 @@ pub struct RunRequest {
     pub restart_device: bool,
     pub shutdown_device_on_exit: bool,
     pub fresh_install: bool,
+    // qaren check --installed-app: walk the app already installed on the simulator; never build, install or remove it.
+    pub installed_app: bool,
     pub runtime_dir: PathBuf,
     pub node: Option<PathBuf>,
     pub lock_root: PathBuf,
@@ -164,6 +166,16 @@ struct Device {
     booted_at_ms: Option<u64>,
     // Set when the selection's lock read could not tell; the run proceeds and says so.
     lock_note: Option<String>,
+}
+
+// The stderr notice for a config without a `video` key (dev mode); an explicit policy prints none.
+fn video_policy_notice(policy: record::VideoPolicy, config_path: &Path) -> Option<String> {
+    (policy == record::VideoPolicy::DefaultNonStrict).then(|| {
+        crate::redact::redact_secrets(&format!(
+            "▸ video policy not declared in {}: dev-mode (non-strict) rules apply; declare video: strict for privacy mode",
+            config_path.display()
+        ))
+    })
 }
 
 fn platform_str(platform: Platform) -> &'static str {
@@ -306,6 +318,50 @@ fn pr_failure(detail: String) -> Failure {
     )
 }
 
+// Said when the fact is seen, before any reset or install, so it stays true whatever the run does next.
+fn non_development_notice(runner: &mut dyn Runner, udid: &str, app_id: &str) -> Option<String> {
+    let bundle = prepare::installed_bundle_path(runner, udid, app_id)?;
+    prepare::embedded_js_bundle(&bundle).map(|_| format!("a non-development build of {app_id} was installed when this run started. A default run replaces the installed app with QaReN's development build; --fresh-install removes it first. To test an installed build as it is: qaren check --installed-app"))
+}
+
+fn installed_app_unsupported(detail: &str, next: &str) -> Failure {
+    Failure::new(
+        "preflight",
+        FailureCode::InstalledAppUnsupported,
+        detail,
+        next,
+    )
+}
+
+// Returned before a run record exists, so each next step reaches the receipt as written.
+fn refuse_installed_app_pairs(req: &RunRequest) -> Result<(), Failure> {
+    if req.platform != Platform::Ios {
+        return Err(installed_app_unsupported(
+            "installed-app mode supports the iOS simulator only in this version",
+            "run without --installed-app, or use --platform ios with a simulator",
+        ));
+    }
+    if req.fresh_install {
+        return Err(installed_app_unsupported(
+            "--fresh-install uninstalls the app, and installed-app mode never removes the app it tests",
+            "drop --fresh-install; or drop --installed-app to let QaReN install its development build",
+        ));
+    }
+    if req.record {
+        return Err(installed_app_unsupported(
+            "installed-app mode makes no recording",
+            "drop --record",
+        ));
+    }
+    if req.pr.is_some() {
+        return Err(installed_app_unsupported(
+            "installed-app mode is not available for qaren pr",
+            "run qaren check --installed-app instead",
+        ));
+    }
+    Ok(())
+}
+
 // Only pre-record failures may escape without teardown.
 fn run_inner(
     runner: &mut dyn Runner,
@@ -323,8 +379,11 @@ fn run_inner(
         req.restart_device,
         req.shutdown_device_on_exit,
     )?;
-    let (config, config_raw) = CheckConfig::load(&req.config_path)?;
-    let video_policy_source =
+    if req.installed_app {
+        refuse_installed_app_pairs(req)?;
+    }
+    let (mut config, config_raw) = CheckConfig::load(&req.config_path)?;
+    let mut video_policy_source =
         match req
             .config_path
             .strip_prefix(&req.project_root)
@@ -343,6 +402,20 @@ fn run_inner(
                     .to_string_lossy()
             ),
         };
+    let mut login_block_dropped = false;
+    if req.installed_app {
+        if config.video == record::VideoPolicy::NonStrict {
+            eprintln!("▸ installed-app mode: strict video rules apply; `video: non-strict` in the config is not used");
+        }
+        config.video = record::VideoPolicy::Strict;
+        video_policy_source = "installed-app mode".to_string();
+        if config.login_block.is_some() {
+            eprintln!("▸ installed-app mode: the login block is not replayed; write the login steps in the plan");
+            config.login_block = None;
+            config.login_marker = None;
+            login_block_dropped = true;
+        }
+    }
     config.validate_for_platform(req.platform)?;
     if req.platform == Platform::Ios {
         if let Some(workspace) = config.ios.as_ref().and_then(|ios| ios.build.as_ref()) {
@@ -429,14 +502,9 @@ fn run_inner(
     let input_owner = crate::redact::capture_input_scope().expect("run input scope");
     let resolved_inputs = input_owner.admit(&names)?;
     resolved_inputs.declare_test_pii(&non_secret_names(&inventory, &names)?);
-    if config.video == record::VideoPolicy::Undeclared {
-        eprintln!(
-            "{}",
-            crate::redact::redact_secrets(&format!(
-                "▸ video policy not declared in {}: strict rules apply",
-                req.config_path.display()
-            ))
-        );
+    // Installed-app mode set the policy to strict above, so it prints no notice.
+    if let Some(notice) = video_policy_notice(config.video, &req.config_path) {
+        eprintln!("{notice}");
     }
     let login_snapshot = inventory.get("loginSnapshot").cloned();
     let prepared = preflight_inputs(
@@ -450,6 +518,7 @@ fn run_inner(
         &inventory,
         &resolved_inputs,
         preflight_jev,
+        req.installed_app,
     )?;
     // The parser read the file by path; the walk must use the bytes that passed.
     if read_plan(&req.plan_file)? != plan {
@@ -561,52 +630,59 @@ fn run_inner(
             )));
         }
     }
-    prepare::check_prereqs(runner, &scenario, req.android_home.as_deref())?;
-    let probe = crate::adapters::pnpm::prove_group(
-        runner,
-        &crate::adapters::pnpm::group_probe_spec(&cand.project_root),
-        crate::adapters::pnpm::PROBE_ATTEMPTS,
-        config.deadlines.install_deps_seconds,
-    );
-    ensure_running(runner, "prereqs")?;
-    match probe.outcome {
-        crate::adapters::pnpm::GroupOutcome::Proved => {}
-        crate::adapters::pnpm::GroupOutcome::Unproven => {
-            return Err(Failure::new(
-                "prereqs",
-                FailureCode::PnpmProcessGroupUnsupported,
-                format!(
-                    "{}; its exec launch did not prove that it preserves QaReN's process group ({})",
-                    crate::adapters::pnpm::source_detail(runner),
-                    probe.attempts.last().unwrap().output.summary()
-                ),
-                crate::adapters::pnpm::GROUP_FIX,
-            ));
+    let probe = if req.installed_app {
+        prepare::check_installed_prereqs(runner)?;
+        ensure_running(runner, "prereqs")?;
+        None
+    } else {
+        prepare::check_prereqs(runner, &scenario, req.android_home.as_deref())?;
+        let probe = crate::adapters::pnpm::prove_group(
+            runner,
+            &crate::adapters::pnpm::group_probe_spec(&cand.project_root),
+            crate::adapters::pnpm::PROBE_ATTEMPTS,
+            config.deadlines.install_deps_seconds,
+        );
+        ensure_running(runner, "prereqs")?;
+        match probe.outcome {
+            crate::adapters::pnpm::GroupOutcome::Proved => {}
+            crate::adapters::pnpm::GroupOutcome::Unproven => {
+                return Err(Failure::new(
+                    "prereqs",
+                    FailureCode::PnpmProcessGroupUnsupported,
+                    format!(
+                        "{}; its exec launch did not prove that it preserves QaReN's process group ({})",
+                        crate::adapters::pnpm::source_detail(runner),
+                        probe.attempts.last().unwrap().output.summary()
+                    ),
+                    crate::adapters::pnpm::GROUP_FIX,
+                ));
+            }
+            crate::adapters::pnpm::GroupOutcome::TimedOut => {
+                let durations: Vec<String> = probe
+                    .attempts
+                    .iter()
+                    .map(|a| a.output.duration_ms.to_string())
+                    .collect();
+                let load = match crate::core::host_load_1m() {
+                    Some(load) => format!("host 1-minute load {load:.1}"),
+                    None => "host load unavailable".to_string(),
+                };
+                return Err(Failure::new(
+                    "prereqs",
+                    FailureCode::PnpmProbeTimedOut,
+                    format!(
+                        "{}; its exec probe timed out on {} attempt(s) ({} ms) within {} ms and proved nothing about process groups; the host is likely busy ({load})",
+                        crate::adapters::pnpm::source_detail(runner),
+                        probe.attempts.len(),
+                        durations.join(", "),
+                        probe.elapsed_ms
+                    ),
+                    "re-run qaren check when the machine is less loaded, or run qaren doctor",
+                ));
+            }
         }
-        crate::adapters::pnpm::GroupOutcome::TimedOut => {
-            let durations: Vec<String> = probe
-                .attempts
-                .iter()
-                .map(|a| a.output.duration_ms.to_string())
-                .collect();
-            let load = match crate::core::host_load_1m() {
-                Some(load) => format!("host 1-minute load {load:.1}"),
-                None => "host load unavailable".to_string(),
-            };
-            return Err(Failure::new(
-                "prereqs",
-                FailureCode::PnpmProbeTimedOut,
-                format!(
-                    "{}; its exec probe timed out on {} attempt(s) ({} ms) within {} ms and proved nothing about process groups; the host is likely busy ({load})",
-                    crate::adapters::pnpm::source_detail(runner),
-                    probe.attempts.len(),
-                    durations.join(", "),
-                    probe.elapsed_ms
-                ),
-                "re-run qaren check when the machine is less loaded, or run qaren doctor",
-            ));
-        }
-    }
+        Some(probe)
+    };
     std::fs::create_dir_all(&req.runs_root).map_err(|e| {
         Failure::new(
             "preflight",
@@ -635,6 +711,18 @@ fn run_inner(
     ) {
         Ok(lease) => lease,
         Err(busy) if busy.failure.code == FailureCode::DeviceBusy => {
+            if req.installed_app {
+                if let Some(holder) =
+                    crate::commands::cleanup::dead_holder_owns_simulator(&req.runs_root, &busy)
+                {
+                    return Err(Failure::new(
+                        "lease",
+                        FailureCode::DeviceBusy,
+                        format!("the device lease is held by unfinished run {holder}, which created this simulator; cleaning that run up can delete the simulator and every app on it"),
+                        format!("use a simulator QaReN did not create; or run qaren cleanup {holder} --json yourself if this simulator may be deleted"),
+                    ));
+                }
+            }
             recovered = Some(crate::commands::cleanup::reclaim_dead_holder_with_runtime(
                 runner,
                 &req.runs_root,
@@ -653,8 +741,10 @@ fn run_inner(
         Err(busy) => return Err(busy.failure),
     };
     // After reclaim, so a dead holder's surviving Metro is stopped by its own cleanup first.
-    if let Err(f) = prepare::check_port_free(runner, config.metro_port) {
-        return Err(lease::release_or_annotate(&lease, f));
+    if !req.installed_app {
+        if let Err(f) = prepare::check_port_free(runner, config.metro_port) {
+            return Err(lease::release_or_annotate(&lease, f));
+        }
     }
 
     if pr_state.is_none() {
@@ -760,6 +850,12 @@ fn run_inner(
             ("video_policy_source".into(), video_policy_source.clone()),
         ]
         .into_iter()
+        .chain(login_block_dropped.then(|| {
+            (
+                "login_block".to_string(),
+                "not replayed in installed-app mode".to_string(),
+            )
+        }))
         .chain(adb_server_started.map(adb_server_note))
         .chain(
             device
@@ -770,6 +866,7 @@ fn run_inner(
         .collect(),
         verb: verb(req),
         bundle_requests_at_launch: None,
+        android_launch_url: None,
         manifest_warm: None,
         lane_owned: req.platform == Platform::Ios
             && (req.boot_device || req.restart_device || req.fresh_install),
@@ -782,7 +879,7 @@ fn run_inner(
         let finish_failed = |ctx: Ctx, failure: Failure| {
             finish_failed(ctx, &node, &req.runtime_dir, failure, false)
         };
-        if probe.attempts.len() > 1 {
+        if let Some(probe) = probe.as_ref().filter(|probe| probe.attempts.len() > 1) {
             for (i, attempt) in probe.attempts.iter().enumerate() {
                 let label = format!("pnpm-group-probe_attempt_{}", i + 1);
                 ctx.timings
@@ -869,7 +966,7 @@ fn run_inner(
                 Err(f) => return finish_failed(ctx, f),
             }
         }
-        if req.platform == Platform::Ios {
+        if req.platform == Platform::Ios && !req.installed_app {
             if let Err(f) = install_run_deps(&mut ctx, &config, pr_state.as_ref()) {
                 return finish_failed(ctx, f);
             }
@@ -931,6 +1028,13 @@ fn run_inner(
                 );
             }
         }
+        if req.platform == Platform::Ios && !req.installed_app {
+            if let Some(notice) = non_development_notice(ctx.runner, &device.id, &config.app_id) {
+                eprintln!("▸ {notice}");
+                ctx.notes
+                    .push(("non_development_app_installed".to_string(), notice));
+            }
+        }
         if req.fresh_install {
             if let Err(f) = reset_app(&mut ctx, &device.id, &config.app_id, android_env.as_ref()) {
                 return finish_failed(ctx, f);
@@ -944,99 +1048,121 @@ fn run_inner(
         }
         let t = ctx.mark("deps", t);
         events::stage("deps", StageState::Passed, None, None);
-        if let Err(f) = ensure_running(&*ctx.runner, "build") {
-            return finish_failed(ctx, f);
-        }
-        events::stage("build_decision", StageState::Running, None, None);
-
-        let plan_decision = match prepare::plan_build(&mut ctx) {
-            Ok(plan) => plan,
-            Err(f) => return finish_failed(ctx, f),
-        };
-        ctx.record.build = Some(plan_decision.clone());
-        if plan_decision.decision == BuildDecision::Clean && req.platform == Platform::Ios {
-            let shortfall = match tightest_volume(ctx.runner, &[&req.runs_root, &project_root]) {
-                Ok((kb, path)) => clean_ios_build_shortfall(kb, path),
-                Err(f) => return finish_failed(ctx, f),
-            };
-            if let Some(detail) = shortfall {
-                // The receipt's next action becomes `qaren cleanup` once resources are owned, so the detail carries the remedy.
-                let detail = format!("{detail}; {FREE_DISK_FIX}");
-                let f = Failure::new(
-                    "build",
-                    FailureCode::DiskBudgetExceeded,
-                    detail,
-                    FREE_DISK_FIX,
-                );
-                return finish_failed(ctx, f);
-            }
-        }
-        // iOS claims its build lock inside build_ios_locked, so the lock covers only the build.
-        let ios_build =
-            plan_decision.decision != BuildDecision::Reuse && req.platform == Platform::Ios;
-        if plan_decision.decision != BuildDecision::Reuse && !ios_build {
-            if let Err(f) = prepare::claim_build_lock(&mut ctx, &req.lock_root) {
-                return finish_failed(ctx, f);
-            }
-        }
-        ctx.record.phase = Phase::ResourcesAllocated;
-        if let Err(f) = ctx.save() {
-            return finish_failed(ctx, f);
-        }
-        let t = ctx.mark("plan", t);
-        let decision = plan_decision.decision.as_str();
-        events::stage("build_decision", StageState::Passed, Some(decision), None);
-
-        if plan_decision.decision == BuildDecision::Reuse {
+        let (t, installed_js) = if req.installed_app {
+            events::stage(
+                "build_decision",
+                StageState::Passed,
+                Some("installed"),
+                None,
+            );
             events::stage("prebuild", StageState::Skipped, None, None);
             events::stage("native_build", StageState::Skipped, None, None);
             events::stage("install_launch_ready", StageState::Running, None, None);
-            if let Err(f) = prepare::run_reuse_path(&mut ctx, &plan_decision, t) {
-                return finish_failed(ctx, f);
-            }
-            events::stage("install_launch_ready", StageState::Passed, None, None);
-        } else if ios_build {
-            let built = match prepare::build_ios_locked(&mut ctx, &plan_decision, &req.lock_root) {
-                Ok(built) => built,
+            let js = match prepare::launch_installed_app(&mut ctx) {
+                Ok(js) => js,
                 Err(f) => return finish_failed(ctx, f),
             };
-            events::stage("install_launch_ready", StageState::Running, None, None);
-            let now = ctx.runner.now_epoch_ms();
-            if let Err(f) = prepare::run_reuse_path(&mut ctx, &built, now) {
+            events::stage("install_launch_ready", StageState::Passed, None, None);
+            events::stage("verify", StageState::Skipped, None, None);
+            (ctx.mark("install_launch_ready", t), Some(js))
+        } else {
+            if let Err(f) = ensure_running(&*ctx.runner, "build") {
                 return finish_failed(ctx, f);
             }
-            events::stage("install_launch_ready", StageState::Passed, None, None);
-        } else {
-            if plan_decision.decision == BuildDecision::Clean {
-                events::stage("prebuild", StageState::Running, None, None);
-                if let Err(f) = prepare::run_clean_preparation(&mut ctx, &plan_decision) {
+            events::stage("build_decision", StageState::Running, None, None);
+
+            let plan_decision = match prepare::plan_build(&mut ctx) {
+                Ok(plan) => plan,
+                Err(f) => return finish_failed(ctx, f),
+            };
+            ctx.record.build = Some(plan_decision.clone());
+            if plan_decision.decision == BuildDecision::Clean && req.platform == Platform::Ios {
+                let shortfall = match tightest_volume(ctx.runner, &[&req.runs_root, &project_root])
+                {
+                    Ok((kb, path)) => clean_ios_build_shortfall(kb, path),
+                    Err(f) => return finish_failed(ctx, f),
+                };
+                if let Some(detail) = shortfall {
+                    // The receipt's next action becomes `qaren cleanup` once resources are owned, so the detail carries the remedy.
+                    let detail = format!("{detail}; {FREE_DISK_FIX}");
+                    let f = Failure::new(
+                        "build",
+                        FailureCode::DiskBudgetExceeded,
+                        detail,
+                        FREE_DISK_FIX,
+                    );
                     return finish_failed(ctx, f);
                 }
-                events::stage("prebuild", StageState::Passed, None, None);
-            } else {
+            }
+            // iOS claims its build lock inside build_ios_locked, so the lock covers only the build.
+            let ios_build =
+                plan_decision.decision != BuildDecision::Reuse && req.platform == Platform::Ios;
+            if plan_decision.decision != BuildDecision::Reuse && !ios_build {
+                if let Err(f) = prepare::claim_build_lock(&mut ctx, &req.lock_root) {
+                    return finish_failed(ctx, f);
+                }
+            }
+            ctx.record.phase = Phase::ResourcesAllocated;
+            if let Err(f) = ctx.save() {
+                return finish_failed(ctx, f);
+            }
+            let t = ctx.mark("plan", t);
+            let decision = plan_decision.decision.as_str();
+            events::stage("build_decision", StageState::Passed, Some(decision), None);
+
+            if plan_decision.decision == BuildDecision::Reuse {
                 events::stage("prebuild", StageState::Skipped, None, None);
+                events::stage("native_build", StageState::Skipped, None, None);
+                events::stage("install_launch_ready", StageState::Running, None, None);
+                if let Err(f) = prepare::run_reuse_path(&mut ctx, &plan_decision, t) {
+                    return finish_failed(ctx, f);
+                }
+                events::stage("install_launch_ready", StageState::Passed, None, None);
+            } else if ios_build {
+                let built =
+                    match prepare::build_ios_locked(&mut ctx, &plan_decision, &req.lock_root) {
+                        Ok(built) => built,
+                        Err(f) => return finish_failed(ctx, f),
+                    };
+                events::stage("install_launch_ready", StageState::Running, None, None);
+                let now = ctx.runner.now_epoch_ms();
+                if let Err(f) = prepare::run_reuse_path(&mut ctx, &built, now) {
+                    return finish_failed(ctx, f);
+                }
+                events::stage("install_launch_ready", StageState::Passed, None, None);
+            } else {
+                if plan_decision.decision == BuildDecision::Clean {
+                    events::stage("prebuild", StageState::Running, None, None);
+                    if let Err(f) = prepare::run_clean_preparation(&mut ctx, &plan_decision) {
+                        return finish_failed(ctx, f);
+                    }
+                    events::stage("prebuild", StageState::Passed, None, None);
+                } else {
+                    events::stage("prebuild", StageState::Skipped, None, None);
+                }
+                events::stage("native_build", StageState::Running, None, None);
+                if let Err(f) = prepare::build_and_ready(&mut ctx) {
+                    return finish_failed(ctx, f);
+                }
+                // build_and_ready splits native_build from install, as on iOS.
+                events::stage("install_launch_ready", StageState::Passed, None, None);
             }
-            events::stage("native_build", StageState::Running, None, None);
-            if let Err(f) = prepare::build_and_ready(&mut ctx) {
-                return finish_failed(ctx, f);
+            let t = ctx.mark("build_and_ready", t);
+            events::stage("verify", StageState::Running, None, None);
+            let fp = match prepare::recheck_fingerprint(&mut ctx, &plan_decision) {
+                Ok(fp) => fp,
+                Err(f) => return finish_failed(ctx, f),
+            };
+            if plan_decision.decision != BuildDecision::Reuse && !ios_build {
+                if let Err(f) = prepare::record_build_result(&mut ctx, &fp) {
+                    return finish_failed(ctx, f);
+                }
+                prepare::release_build_lock(&mut ctx);
             }
-            // build_and_ready splits native_build from install, as on iOS.
-            events::stage("install_launch_ready", StageState::Passed, None, None);
-        }
-        let t = ctx.mark("build_and_ready", t);
-        events::stage("verify", StageState::Running, None, None);
-        let fp = match prepare::recheck_fingerprint(&mut ctx, &plan_decision) {
-            Ok(fp) => fp,
-            Err(f) => return finish_failed(ctx, f),
+            let t = ctx.mark("verify", t);
+            events::stage("verify", StageState::Passed, None, None);
+            (t, None)
         };
-        if plan_decision.decision != BuildDecision::Reuse && !ios_build {
-            if let Err(f) = prepare::record_build_result(&mut ctx, &fp) {
-                return finish_failed(ctx, f);
-            }
-            prepare::release_build_lock(&mut ctx);
-        }
-        let t = ctx.mark("verify", t);
-        events::stage("verify", StageState::Passed, None, None);
         if let Err(f) = ensure_running(&*ctx.runner, "walk") {
             return finish_failed(ctx, f);
         }
@@ -1086,7 +1212,7 @@ fn run_inner(
         if !recording_requested {
             events::stage("recording", StageState::Skipped, None, None);
         } else if resolved_inputs.has_inputs()
-            && (config.video != record::VideoPolicy::NonStrict
+            && (config.video.rules() != record::VideoPolicy::NonStrict
                 || crate::redact::private_output_mode())
         {
             events::stage("recording", StageState::Skipped, None, None);
@@ -1122,6 +1248,9 @@ fn run_inner(
         // Any exit after this point carries the check's video statement; the normal path replaces it.
         if pr_state.is_none() {
             let provisional = match &video {
+                _ if req.installed_app => {
+                    "not recorded: installed-app mode makes no recording".to_string()
+                }
                 _ if !req.record => {
                     "not recorded; pass --record to qaren check to record this walk".to_string()
                 }
@@ -1163,8 +1292,9 @@ fn run_inner(
             run_dir: run_dir.clone(),
             lease: lease.wire(),
             login_block: config.login_block.clone(),
-            video_policy: config.video,
+            video_policy: config.video.rules(),
             login_marker: config.login_marker.clone(),
+            app_source: req.installed_app.then_some("installed"),
             target: CoreTarget {
                 device_id: device.id.clone(),
                 device_name: device.name.clone(),
@@ -1185,6 +1315,7 @@ fn run_inner(
                     ),
                 manifest_warm: ctx.manifest_warm.clone(),
                 warm_lane: ctx.record.resources.lane.is_some(),
+                android_launch_url: ctx.android_launch_url.clone(),
             },
         };
         let spec = core::spawn_spec(
@@ -1294,9 +1425,25 @@ fn run_inner(
         }
 
         // Captured before teardown removes the candidate worktree.
-        let verified = candidate::verify_unchanged(ctx.runner, &ctx.record.candidate);
+        let verified = match &installed_js {
+            Some(before) => {
+                let app_id = ctx.record.candidate.app_id.clone();
+                match prepare::installed_js_sha256(ctx.runner, &device.id, &app_id) {
+                    Some(now) if &now == before => Ok(()),
+                    Some(_) => Err(candidate::CandidateCheck::Drifted(
+                        "the installed app's JavaScript changed during the run".to_string(),
+                    )),
+                    None => Err(candidate::CandidateCheck::Unreadable(
+                        "the installed app could not be read after the walk".to_string(),
+                    )),
+                }
+            }
+            None => candidate::verify_unchanged(ctx.runner, &ctx.record.candidate),
+        };
         let final_verification = FinalVerification {
-            tested: ctx.record.candidate.git_sha.clone(),
+            tested: installed_js
+                .clone()
+                .unwrap_or_else(|| ctx.record.candidate.git_sha.clone()),
             matched: verified.is_ok(),
             detail: verified
                 .as_ref()
@@ -1318,7 +1465,16 @@ fn run_inner(
                     .push(("candidate_drift".to_string(), check.detail().to_string()));
             }
             Err(candidate::CandidateCheck::Unreadable(detail)) => {
-                let unavailable = Failure::candidate_unavailable("verify");
+                let unavailable = if installed_js.is_some() {
+                    Failure::new(
+                        "verify",
+                        FailureCode::CandidateUnavailable,
+                        "the installed app could not be read after the walk",
+                        "check that the app is still installed on the simulator, then re-run",
+                    )
+                } else {
+                    Failure::candidate_unavailable("verify")
+                };
                 outcome.verdict = Verdict::Refused {
                     code: "CANDIDATE_UNAVAILABLE".to_string(),
                     message: unavailable.detail.to_string(),
@@ -1453,7 +1609,7 @@ fn run_inner(
         }
 
         if let Some(entry) = outcome.ledger.media_withheld.as_ref().and_then(|media| {
-            if config.video == record::VideoPolicy::NonStrict {
+            if config.video.rules() == record::VideoPolicy::NonStrict {
                 media.video.as_ref().or(media.screenshots.as_ref())
             } else {
                 media.screenshots.as_ref().or(media.video.as_ref())
@@ -1462,6 +1618,10 @@ fn run_inner(
             ctx.notes
                 .push(("media_withheld".to_string(), entry.receipt_note()));
         }
+        // The ledger already carries the run's policy and its source (set above, before the ledger was written).
+        if let Some(hint) = report::generic_value_hint(&outcome.ledger, req.installed_app) {
+            hints.push(hint);
+        }
         let boundary = |core: &dyn Fn() -> Failure| {
             walk_failure(
                 outcome.failure.clone(),
@@ -1469,6 +1629,7 @@ fn run_inner(
                 outcome.ledger.failure.as_ref(),
                 &ctx.runs_root,
                 &ctx.record,
+                req.installed_app,
             )
         };
         let (mut result, mut failure) = match &outcome.verdict {
@@ -1481,14 +1642,20 @@ fn run_inner(
             ),
             Verdict::Refused { code, message } => (
                 ReceiptResult::Refused,
-                Some(boundary(&|| Failure {
-                    subreason: Failure::core_refusal_subreason(code),
-                    ..Failure::new(
+                Some(boundary(&|| {
+                    let failure = Failure::new(
                         "prove",
                         refusal_code(code),
                         format!("{code}: {message}"),
                         Failure::core_refusal_next_action(code),
-                    )
+                    );
+                    Failure {
+                        subreason: Failure::core_refusal_subreason(code),
+                        suggestion: code
+                            .starts_with("INSTALLED_APP_")
+                            .then(|| failure.next_action.clone()),
+                        ..failure
+                    }
                 })),
             ),
         };
@@ -1502,11 +1669,12 @@ fn run_inner(
             {
                 Some(crate::failure::AdmissionCause::RunCancelled)
             } else {
-                outcome
-                    .ledger
-                    .admission
-                    .as_ref()
-                    .and_then(|facts| crate::failure::AdmissionCause::from_inner(&facts.inner))
+                outcome.ledger.admission.as_ref().and_then(|facts| {
+                    crate::failure::AdmissionCause::from_facts(
+                        facts,
+                        req.platform == Platform::Android,
+                    )
+                })
             };
             if let Some(cause) = cause {
                 if code != "RUN_CANCELLED" {
@@ -1590,10 +1758,20 @@ fn run_inner(
             );
         }
 
+        let note = |key: &str| {
+            ctx.notes
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.clone())
+        };
+        let installed_app = note("installed_app_version").zip(note("installed_app_build"));
         let report_path = match report::write(
             &run_dir,
             &ReportInput {
                 video: published_video.as_ref(),
+                installed_app: installed_app.as_ref().map(|(version, build)| {
+                    (version.as_str(), build.as_str(), final_verification.matched)
+                }),
                 run_id: &run_id,
                 platform: platform_str(req.platform),
                 app_id: &config.app_id,
@@ -1698,7 +1876,8 @@ fn run_inner(
                     .map(str::to_string),
                 video_publication,
                 video_policy: config.video,
-                video_policy_source: Some(video_policy_source),
+                // Public records name no config path; the local ledger, report and receipt keep the redacted one.
+                video_policy_source: None,
                 non_strict_publication: outcome.ledger.non_strict_publication.clone(),
                 tested_older_commit: tested_older_commit.is_some(),
                 blocks,
@@ -1754,6 +1933,7 @@ fn run_inner(
                 Some(recipes::clear(&req.plan_file, platform, &plan))
             }
         };
+        let owed = Owed::read(&ctx.record, all_clean);
         let mut receipt = finish_receipt(ctx, result, failure);
         receipt.recipe = recipe;
         receipt.tested_older_commit = tested_older_commit;
@@ -1790,6 +1970,7 @@ fn run_inner(
             }
             receipt.next_action = next;
         }
+        settle_uncertain(&mut receipt, &owed);
         receipt
     };
     Ok(held(ctx))
@@ -2248,6 +2429,18 @@ mod block_start_tests {
             assert_eq!(Failure::core_refusal_next_action(inner), next, "{inner}");
         }
         assert_eq!(refusal_code("DEV_REDBOX"), FailureCode::CoreRefused);
+    }
+
+    #[test]
+    fn native_snapshot_incomplete_next_action_claims_no_rerun() {
+        assert_eq!(
+            refusal_code("NATIVE_SNAPSHOT_INCOMPLETE"),
+            FailureCode::CoreRefused
+        );
+        assert_eq!(
+            Failure::core_refusal_next_action("NATIVE_SNAPSHOT_INCOMPLETE"),
+            "QaReN could not prove it read the whole screen. Report the run id with the available snapshot detail."
+        );
     }
 
     fn home_with_reports(name: &str, coalitions: &[&str]) -> PathBuf {
@@ -3759,6 +3952,7 @@ fn walk_failure(
     ledger: Option<&core::LedgerFailure>,
     runs_root: &Path,
     record: &RunRecord,
+    installed_app: bool,
 ) -> Failure {
     // A CLI-owned cause (deadline, cancellation, candidate drift) supersedes the walk and keeps its own guidance.
     let (mut failure, ledger) = match cli {
@@ -3781,7 +3975,42 @@ fn walk_failure(
         failure.next_action = OutputText::from_output("inspect_last_observed_screen");
         failure = failure.with_recovery(RecoveryReason::PreviousPlanPress);
     }
-    if let Some(repeat) = repeat_of(runs_root, record, &failure) {
+    // A step that ended uncertain says why in front of its usual next action.
+    let uncertain = if failure.code == FailureCode::PlanStepFailed {
+        failure
+            .subreason
+            .as_deref()
+            .and_then(crate::failure::uncertain_words)
+    } else {
+        None
+    };
+    if let Some(words) = uncertain {
+        failure.next_action =
+            OutputText::from_output(&format!("{words}; {}", failure.next_action.as_str()));
+    }
+    // Before the repeat note, which wraps the next action rather than replacing it.
+    if installed_app
+        && failure.code == FailureCode::PlanStepFailed
+        && !previous_press
+        && uncertain.is_none()
+    {
+        let base = failure.next_action.as_str().trim_end();
+        let stop = if base.ends_with(['.', '!', '?']) {
+            ""
+        } else {
+            "."
+        };
+        let text = OutputText::from_output(&format!("{base}{stop} {INSTALLED_APP_STEP}"));
+        failure.next_action = text.clone();
+        failure.suggestion = Some(text);
+    }
+    // Repeat matching stays with target-class failures: an uncertain outcome is no evidence about the plan.
+    let repeat = if uncertain.is_some() {
+        None
+    } else {
+        repeat_of(runs_root, record, &failure)
+    };
+    if let Some(repeat) = repeat {
         // The machine next action stays stable on a repeat; failure.repeat still records it.
         if !previous_press {
             failure.next_action = OutputText::from_output(&repeat_note(&failure, &repeat));
@@ -3791,7 +4020,157 @@ fn walk_failure(
     failure
 }
 
+// What the run's own cleanup still has to do, read before finish_receipt consumes the record.
+struct Owed {
+    held: bool,
+    unclean: bool,
+    // Teardown gives the build lock no leg of its own, so all_clean does not see a failed release.
+    build_lock: bool,
+    pr_worktree: bool,
+    simulator_stop: bool,
+}
+
+impl Owed {
+    fn read(record: &RunRecord, all_clean: bool) -> Self {
+        let resources = &record.resources;
+        Owed {
+            held: record.held.is_some(),
+            unclean: !all_clean,
+            build_lock: resources.build_lock.is_some(),
+            pr_worktree: resources.pr_worktree.is_some(),
+            simulator_stop: resources.ios_simulator.is_some()
+                && !resources.can_release_borrowed_ios_stop(),
+        }
+    }
+
+    fn any(&self) -> bool {
+        self.held || self.unclean || self.build_lock
+    }
+
+    // The consequential effects cleanup may have, one sentence each, named only when this run recorded it.
+    fn effects(&self) -> String {
+        let mut effects = String::new();
+        if self.held {
+            effects.push_str(" It may end the hold.");
+        }
+        if self.build_lock {
+            effects.push_str(" It may release the build lock that teardown did not release.");
+        }
+        if self.pr_worktree {
+            effects.push_str(" It may remove this run's PR worktree with any files in it.");
+        }
+        if self.simulator_stop {
+            effects.push_str(" It may shut the simulator down and remove its log store, as --shutdown-device-on-exit asked.");
+        }
+        effects
+    }
+}
+
+// The run's own cleanup after the review, in complete sentences: the user's OK where ending the hold or shutting
+// down a lent simulator needs it, the step (with a runner action's own precondition), what it may do, where its result is.
+fn cleanup_step(run_id: &str, owed: &Owed, action: Option<crate::failure::RecoveryAction>) -> String {
+    use crate::failure::RecoveryAction::*;
+    let (before, after) = match action {
+        Some(RepairRecordStorage) => (
+            "check that this run's record storage is writable, restore it if needed, then ",
+            " once; do not remove its lease manually",
+        ),
+        Some(RetryCleanupAfterExit) => ("wait until the recorded driver exits, then ", " once"),
+        Some(RequestExactSimulatorShutdown) => ("request shutdown of only this run's simulator, then ", ""),
+        _ => ("", ""),
+    };
+    let mut ok = Vec::new();
+    if owed.held {
+        ok.push("end the hold and the inspection it keeps open");
+    }
+    if action == Some(RequestExactSimulatorShutdown) {
+        ok.push("shut down this lent simulator");
+    }
+    let condition = if ok.is_empty() {
+        String::new()
+    } else {
+        format!(", and only with the user's OK to {}", ok.join(" and to "))
+    };
+    format!(
+        "After reviewing the evidence{condition}, {before}run qaren cleanup {run_id} --json{after}. It attempts to release this run's recorded resources.{} Check the cleanup receipt for the result.",
+        owed.effects()
+    )
+}
+
+// The one final writer of an uncertain step's next actions and recovery; it runs after every other receipt rule.
+fn settle_uncertain(receipt: &mut Receipt, owed: &Owed) {
+    use crate::failure::{Recovery, RecoveryAction, RecoveryRung};
+    let Some(failure) = receipt
+        .failure
+        .as_mut()
+        .filter(|f| f.code == FailureCode::PlanStepFailed)
+    else {
+        return;
+    };
+    let Some(words) = failure.subreason.as_deref().and_then(crate::failure::uncertain_words) else {
+        return;
+    };
+    let run_id = receipt.run_id.as_str();
+    let review = crate::failure::UNCERTAIN_REVIEW;
+    let stop = crate::failure::UNCERTAIN_STOP;
+    let held = receipt
+        .held
+        .as_ref()
+        .map(|held| {
+            format!(
+                " This run recorded {} for inspection; check qaren status {run_id} for their current status.",
+                held.retained.join(", ")
+            )
+        })
+        .unwrap_or_default();
+    // A runner recovery keeps its reason, selected rung and action; the owner writes every text and flag of it.
+    let runner = receipt
+        .recovery
+        .as_ref()
+        .filter(|r| r.key.as_deref() == Some("ios_runner_cleanup"))
+        .map(|r| (r.reason, r.next_rung.zip(Some(r.action))));
+    let (next, recovery) = match runner {
+        // Retain and report: nothing is to be done to the run.
+        Some((reason, None)) => (
+            format!("{words}; {}", crate::failure::UNCERTAIN_RETAIN),
+            Recovery::uncertain_runner(reason, None, run_id),
+        ),
+        // A selected runner cleanup comes after the review and counts what it may destroy and whose OK it needs.
+        Some((reason, Some((rung, action)))) => {
+            let step = cleanup_step(run_id, owed, Some(action));
+            let next = format!("{words}; {review}{held} {step} {stop}");
+            let lent_shutdown = action == RecoveryAction::RequestExactSimulatorShutdown;
+            let selected = RecoveryRung {
+                rung,
+                applicable: true,
+                destroys_state: owed.held || owed.pr_worktree || owed.simulator_stop || lent_shutdown,
+                requires_user_ok: owed.held || lent_shutdown,
+                instruction: step,
+                action: Some(action),
+            };
+            (next, Recovery::uncertain_runner(reason, Some(selected), run_id))
+        }
+        None => {
+            let cleanup = if owed.any() {
+                format!(" {}", cleanup_step(run_id, owed, None))
+            } else {
+                String::new()
+            };
+            (
+                format!("{words}; {review}{held}{cleanup} {stop}"),
+                Recovery::action_uncertain(owed.any().then_some(run_id)),
+            )
+        }
+    };
+    receipt.recovery = Some(recovery.clone());
+    failure.recovery = Some(Box::new(crate::failure::FailureRecovery::Build(recovery)));
+    failure.next_action = OutputText::from_output(&next);
+    receipt.next_action = failure.next_action.to_string();
+}
+
 const PREVIOUS_PLAN_PRESS: &str = "previous-plan-press";
+
+const INSTALLED_APP_STEP: &str = "This run used --installed-app: QaReN read the native screen only. A target must carry an accessibility identifier (testID) or an exact visible label; a control known only to React is not found, a name shared by a wrapper and its inner control is ambiguous, and an unplanned app screen or login wall is not handled (add those steps to the plan). Quote the control's own testID, or run without --installed-app.";
 
 const REPEAT_SCAN: usize = 20;
 
@@ -4073,6 +4452,7 @@ fn preflight_inputs(
     inventory: &Value,
     inputs: &crate::redact::ResolvedInputs<'_>,
     accounting: &mut Option<core::JevRollup>,
+    quoted_only: bool,
 ) -> Result<Value, Failure> {
     let unavailable = || {
         Failure::new(
@@ -4085,6 +4465,9 @@ fn preflight_inputs(
     let mut request = serde_json::json!({ "v": 1, "phase": "plan-preflight", "plan": plan, "platform": platform_str(platform), "appId": config.app_id });
     if let Some(login) = inventory.get("loginSnapshot") {
         request["loginSnapshot"] = login.clone();
+    }
+    if quoted_only {
+        request["quotedOnly"] = Value::Bool(true);
     }
     let mut bytes = Vec::new();
     inputs
@@ -4226,6 +4609,7 @@ mod last_screen_tests {
             Some(seen),
             Path::new("/nonexistent-qaren-runs"),
             &record,
+            false,
         )
     }
 
@@ -4241,9 +4625,10 @@ mod last_screen_tests {
         assert_eq!(failure.code, FailureCode::PlanStepFailed);
         assert_eq!(failure.step, Some(2));
         assert_eq!(failure.subreason.as_deref(), Some("absent"));
-        assert!(failure
-            .next_action
-            .starts_with("the target of line 2 was not on the last observed screen"));
+        assert_eq!(
+            failure.next_action.as_str(),
+            "the target of line 2 was not on the last observed screen, which lists 1 enabled controls in failure.screen; consider reading that screen in source and inserting the missing step before line 2"
+        );
         let control = &failure.screen.as_ref().unwrap().controls[0];
         assert_eq!(control.id.as_deref(), Some("qa-next"));
         assert!(control.enabled);
@@ -4331,6 +4716,7 @@ mod last_screen_tests {
             Some(&render_error),
             &root,
             &record("check-20261030T082000Z", "abc"),
+            false,
         );
         assert_eq!(failure.code, FailureCode::PlanStepFailed);
         assert_eq!(failure.step, Some(2));
@@ -4355,6 +4741,7 @@ mod last_screen_tests {
             Some(&seen),
             &root,
             &first,
+            false,
         );
         assert_eq!(failure.code, FailureCode::PlanStepFailed);
         assert!(failure.screen.is_some());
@@ -4375,6 +4762,7 @@ mod last_screen_tests {
             Some(&seen),
             &root,
             &record("check-20261030T082000Z", "abc"),
+            false,
         );
         assert!(again.repeat.is_some());
         assert_eq!(again.next_action.as_str(), "inspect_last_observed_screen");
@@ -4389,9 +4777,64 @@ mod last_screen_tests {
             Some(&seen),
             &root,
             &record("check-20261030T083000Z", "abc"),
+            false,
         );
         assert!(kept.recovery.is_none());
         assert_eq!(kept.next_action.as_str(), "re-run");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_withheld_dismissal_after_a_planned_press_ladder_states_only_what_was_observed() {
+        let root = runs_root("previous-press-wording");
+        let suggestion = OutputText::from_output("Add a step after line 1: Tap \"Not now\".");
+        let mut seen = ledger_failure(screen());
+        seen.suggestion = Some(suggestion.clone());
+        seen.subreason = Some("previous-plan-press".into());
+        let failure = walk_failure(
+            None,
+            &|| plan_step_failure(Some(&seen)),
+            Some(&seen),
+            &root,
+            &record("check-20261030T081500Z", "abc"),
+            false,
+        );
+        assert_eq!(failure.code, FailureCode::PlanStepFailed);
+        assert_eq!(failure.suggestion, Some(suggestion));
+        assert_eq!(failure.subreason.as_deref(), Some("previous-plan-press"));
+        assert!(failure.screen.is_some());
+        assert_eq!(failure.next_action.as_str(), "inspect_last_observed_screen");
+        let recovery = failure.build_recovery().unwrap();
+        assert_eq!(recovery.reason, RecoveryReason::PreviousPlanPress);
+        assert_eq!(recovery.next_rung, None);
+        assert_eq!(
+            recovery.action,
+            crate::failure::RecoveryAction::InspectLastObservedScreen
+        );
+        assert!(!recovery.destroys_state && !recovery.requires_user_ok);
+        assert_eq!(
+            recovery.ladder.iter().map(|rung| rung.rung).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5]
+        );
+        assert!(recovery
+            .ladder
+            .iter()
+            .all(|rung| !rung.applicable && !rung.destroys_state));
+        let instructions: Vec<&str> = recovery
+            .ladder
+            .iter()
+            .map(|rung| rung.instruction.as_str())
+            .collect();
+        assert_eq!(
+            instructions,
+            [
+                "inspect the last observed screen before retrying",
+                "no restart of the app, Metro or the runner is indicated by this observation",
+                "no device restart is indicated by this observation",
+                "no native rebuild is indicated by this observation",
+                "no cleanup or fresh prepare is indicated by this observation",
+            ]
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -4422,7 +4865,7 @@ mod last_screen_tests {
             )
         };
         let mut first = record("check-20261030T081500Z", "abc");
-        let failure = walk_failure(None, &refusal, Some(&seen), &root, &first);
+        let failure = walk_failure(None, &refusal, Some(&seen), &root, &first, false);
         assert_eq!(failure.code, FailureCode::BlockStartMissing);
         assert_eq!(failure.subreason.as_deref(), Some("absent"));
         assert!(failure.screen.is_some());
@@ -4436,6 +4879,7 @@ mod last_screen_tests {
             Some(&seen),
             &root,
             &record("check-20261030T082000Z", "abc"),
+            false,
         );
         assert_eq!(again.code, FailureCode::BlockStartMissing);
         assert_eq!(
@@ -4462,6 +4906,7 @@ mod last_screen_tests {
             Some(&ledger_failure(screen())),
             Path::new("/nonexistent-qaren-runs"),
             &record("check-20261030T090000Z", "abc"),
+            false,
         );
         assert_eq!(failure.code, FailureCode::CandidateDrifted);
         assert_eq!(
@@ -4497,6 +4942,7 @@ mod last_screen_tests {
             Some(&seen),
             &root,
             &current,
+            false,
         );
         assert_eq!(failure.step, Some(3));
         assert_eq!(
@@ -4510,7 +4956,7 @@ mod last_screen_tests {
     fn runner_recovery_preserves_target_guidance_in_both_next_actions() {
         let mut record = record("check-1", "abc");
         record.resources.runner_cleanup_cause = Some(crate::failure::RecoveryReason::StorageFailed);
-        let recovery = "Restore write access to this run's record storage, then rerun qaren cleanup check-1 --json once; do not remove its lease manually.";
+        let recovery = "Check that this run's record storage is writable, restore it if needed, then rerun qaren cleanup check-1 --json once; do not remove its lease manually.";
         for (suggestion, repeat, guidance) in [
             (true, false, "insert the missing step before line 2"),
             (false, true, "same failure, plan unchanged"),
@@ -4595,5 +5041,967 @@ mod last_screen_tests {
         let failure = step_failure(&ledger_failure(screen()));
         assert!(repeat_of(&root, &current, &failure).is_none());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    const MODE: &str = "This run used --installed-app: QaReN read the native screen only. A target must carry an accessibility identifier (testID) or an exact visible label; a control known only to React is not found, a name shared by a wrapper and its inner control is ambiguous, and an unplanned app screen or login wall is not handled (add those steps to the plan). Quote the control's own testID, or run without --installed-app.";
+    const GENERAL: &str = "read the report, fix the app or the plan, then re-run";
+
+    fn installed_failure(seen: &core::LedgerFailure, root: &Path, run_id: &str) -> Failure {
+        walk_failure(
+            None,
+            &|| plan_step_failure(Some(seen)),
+            Some(seen),
+            root,
+            &record(run_id, "abc"),
+            true,
+        )
+    }
+
+    fn unsuggested(subreason: &str) -> core::LedgerFailure {
+        let mut seen = ledger_failure(screen());
+        seen.suggestion = None;
+        seen.subreason = Some(subreason.into());
+        seen
+    }
+
+    #[test]
+    fn an_installed_app_step_failure_names_the_mode_after_the_general_line() {
+        let failure = installed_failure(
+            &unsuggested("absent"),
+            Path::new("/nonexistent-qaren-runs"),
+            "check-20261030T090000Z",
+        );
+        let expected = format!("{GENERAL}. {MODE}");
+        assert_eq!(failure.code, FailureCode::PlanStepFailed);
+        assert_eq!(failure.next_action.as_str(), expected);
+        assert_eq!(failure.suggestion.as_deref(), Some(expected.as_str()));
+        assert!(failure.repeat.is_none());
+    }
+
+    #[test]
+    fn an_installed_app_step_failure_names_the_mode_after_the_ledger_suggestion() {
+        let seen = ledger_failure(screen());
+        let failure = installed_failure(
+            &seen,
+            Path::new("/nonexistent-qaren-runs"),
+            "check-20261030T090000Z",
+        );
+        let expected = format!("{}. {MODE}", seen.suggestion.as_deref().unwrap());
+        assert_eq!(failure.next_action.as_str(), expected);
+        assert_eq!(failure.suggestion.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn an_installed_app_step_failure_does_not_double_a_suggestion_s_closing_period() {
+        let mut seen = ledger_failure(screen());
+        seen.suggestion = Some(OutputText::from_output(
+            "Add a step after line 1: Tap \"Don't Allow\".",
+        ));
+        let failure = installed_failure(
+            &seen,
+            Path::new("/nonexistent-qaren-runs"),
+            "check-20261030T090000Z",
+        );
+        let expected = format!("Add a step after line 1: Tap \"Don't Allow\". {MODE}");
+        assert_eq!(failure.next_action.as_str(), expected);
+        assert_eq!(failure.suggestion.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn a_repeated_installed_app_step_failure_keeps_the_same_failure_note_around_the_mode() {
+        for (subreason, name) in [("absent", "d1"), ("evidence-incomplete", "d2")] {
+            let root = runs_root(&format!("repeat-installed-{name}"));
+            let seen = unsuggested(subreason);
+            let mut earlier = record("check-20261030T081500Z", "abc");
+            earlier.failure = Some(installed_failure(&seen, &root, &earlier.run_id));
+            earlier.save(&root).unwrap();
+            let failure = installed_failure(&seen, &root, "check-20261030T082000Z");
+            let mode = format!("{GENERAL}. {MODE}");
+            assert_eq!(
+                failure.repeat.as_ref().unwrap().previous_run_id,
+                "check-20261030T081500Z",
+                "{name}"
+            );
+            assert_eq!(failure.suggestion.as_deref(), Some(mode.as_str()), "{name}");
+            let next = failure.next_action.as_str();
+            if subreason == "absent" {
+                assert!(next.starts_with("same failure, plan unchanged"), "{next}");
+                assert!(next.ends_with(MODE), "{next}");
+            } else {
+                assert_eq!(
+                    next,
+                    format!("{mode}; the same failure was recorded in run check-20261030T081500Z")
+                );
+            }
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn installed_app_leaves_a_previous_press_and_a_cli_owned_failure_without_the_mode() {
+        let pressed = installed_failure(
+            &unsuggested(PREVIOUS_PLAN_PRESS),
+            Path::new("/nonexistent-qaren-runs"),
+            "check-20261030T090000Z",
+        );
+        assert_eq!(pressed.next_action.as_str(), "inspect_last_observed_screen");
+        assert!(pressed.suggestion.is_none());
+        for cli in [
+            Failure::new("verify", FailureCode::CandidateDrifted, "drifted", "re-run"),
+            Failure::new(
+                "walk",
+                FailureCode::WalkDeadlineExceeded,
+                "deadline",
+                "raise the budget",
+            ),
+        ] {
+            let own = cli.next_action.as_str().to_string();
+            let kept = walk_failure(
+                Some(cli),
+                &|| unreachable!("a CLI-owned failure supersedes the walk verdict"),
+                Some(&ledger_failure(screen())),
+                Path::new("/nonexistent-qaren-runs"),
+                &record("check-20261030T090000Z", "abc"),
+                true,
+            );
+            assert_eq!(kept.next_action.as_str(), own);
+            assert!(kept.suggestion.is_none());
+        }
+    }
+}
+
+#[cfg(test)]
+mod uncertain_reason_tests {
+    use super::*;
+    use serde_json::json;
+
+    const WORDS: [(&str, &str); 7] = [
+        ("keyboard-visible", "The device runner refused the tap because of the on-screen keyboard"),
+        ("alert-blocked", "An app alert was open over the gesture point and the device runner did not perform the drag"),
+        ("dispatch-unconfirmed", "QaReN could not confirm the outcome of the action"),
+        ("context-unverified", "QaReN could no longer validate the dispatch context after the action was authorized"),
+        ("deadline-expired", "The time allowed for the action ran out after it was authorized"),
+        ("scroll-unverified", "A scroll towards the target was not confirmed and the capture after it could not be used"),
+        ("unknown", "QaReN recorded no classified reason for the uncertain outcome"),
+    ];
+    const GENERIC: &str = "read the report, fix the app or the plan, then re-run";
+
+    fn seen(subreason: &str) -> core::LedgerFailure {
+        serde_json::from_value(json!({
+            "step": 7,
+            "seen": "ACTION_OUTCOME_UNCERTAIN; last observed on screen: PRIVATE-screen-label private-canary",
+            "subreason": subreason,
+        }))
+        .unwrap()
+    }
+
+    fn record(run_id: &str, platform: &str) -> RunRecord {
+        serde_json::from_value(json!({
+            "schema": RUN_SCHEMA, "run_id": run_id, "created_at": "2026-10-30T08:15:00Z",
+            "scenario": {"schema": "qaren/1", "name": "test", "platform": platform,
+                "candidate": {"project_root": ".", "app_id": "test", "revision": "HEAD"}},
+            "scenario_path": "scenario.yaml", "scenario_sha256": "0", "plan_sha256": "plan",
+            "candidate": {"repo_root": ".", "project_root": ".", "app_id": "test",
+                "git_sha": "abc", "git_dirty": false, "lockfile_sha256": null},
+            "phase": "cleaned", "prepare": null
+        }))
+        .unwrap()
+    }
+
+    fn walk(
+        seen: &core::LedgerFailure,
+        root: &Path,
+        record: &RunRecord,
+        installed: bool,
+    ) -> Failure {
+        walk_failure(
+            None,
+            &|| plan_step_failure(Some(seen)),
+            Some(seen),
+            root,
+            record,
+            installed,
+        )
+    }
+
+    fn runs_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("qaren-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    #[test]
+    fn l1_each_reason_stands_in_front_of_the_usual_next_action() {
+        let none = Path::new("/nonexistent-qaren-runs");
+        for (word, words) in WORDS {
+            for platform in ["ios", "android"] {
+                let failure = walk(&seen(word), none, &record("check-1", platform), false);
+                assert_eq!(failure.code, FailureCode::PlanStepFailed);
+                assert_eq!(failure.step, Some(7));
+                assert_eq!(failure.subreason.as_deref(), Some(word));
+                assert!(failure.suggestion.is_none() && failure.repeat.is_none());
+                assert!(failure.recovery.is_none());
+                assert_eq!(failure.next_action.as_str(), format!("{words}; {GENERIC}"));
+            }
+            // --installed-app adds no sentence to an uncertain step: its target advice ends in a re-run.
+            let installed = walk(&seen(word), none, &record("check-1", "ios"), true);
+            assert_eq!(installed.next_action.as_str(), format!("{words}; {GENERIC}"));
+            assert!(installed.suggestion.is_none());
+            assert!(installed.recovery.is_none() && installed.repeat.is_none());
+        }
+        for word in ["absent", "gremlins"] {
+            let failure = walk(&seen(word), none, &record("check-1", "ios"), false);
+            assert_eq!(failure.next_action.as_str(), GENERIC);
+        }
+        let refused = walk_failure(
+            None,
+            &|| {
+                Failure::new(
+                    "walk",
+                    FailureCode::CoreRefused,
+                    "refused",
+                    "follow the refusal",
+                )
+            },
+            Some(&seen("unknown")),
+            none,
+            &record("check-1", "ios"),
+            false,
+        );
+        assert_eq!(refused.next_action.as_str(), "follow the refusal");
+    }
+
+    #[test]
+    fn l2_an_identical_earlier_uncertain_failure_is_not_a_repeat() {
+        let root = runs_root("uncertain-repeat");
+        let seen = seen("dispatch-unconfirmed");
+        let mut first = record("check-20261030T081500Z", "ios");
+        let failure = walk(&seen, &root, &first, false);
+        let fixed = failure.next_action.as_str().to_string();
+        first.failure = Some(failure);
+        first.save(&root).unwrap();
+        let again = walk(
+            &seen,
+            &root,
+            &record("check-20261030T082000Z", "ios"),
+            false,
+        );
+        assert!(again.repeat.is_none());
+        assert_eq!(again.next_action.as_str(), fixed);
+        assert_eq!(
+            fixed,
+            format!("QaReN could not confirm the outcome of the action; {GENERIC}")
+        );
+        // A target-class failure on the same records still repeats.
+        let mut absent = record("check-20261030T083000Z", "ios");
+        let target = super::uncertain_reason_tests::seen("absent");
+        absent.failure = Some(walk(&target, &root, &absent, false));
+        absent.save(&root).unwrap();
+        assert!(walk(
+            &target,
+            &root,
+            &record("check-20261030T084000Z", "ios"),
+            false
+        )
+        .repeat
+        .is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn l3_a_ledger_suggestion_stays_the_suggestion_and_follows_the_reason() {
+        let suggestion = "line 12 targets this control; if the interruption is optional, move that step before line 7 or remove it";
+        let mut seen = seen("dispatch-unconfirmed");
+        seen.suggestion = Some(OutputText::from_output(suggestion));
+        let failure = walk(
+            &seen,
+            Path::new("/nonexistent-qaren-runs"),
+            &record("check-1", "ios"),
+            false,
+        );
+        assert_eq!(failure.suggestion.as_deref(), Some(suggestion));
+        assert_eq!(
+            failure.next_action.as_str(),
+            format!("QaReN could not confirm the outcome of the action; {suggestion}")
+        );
+    }
+
+    // A guard: it passes on the base. The receipt's cleanup rules treat this failure as they do today.
+    #[test]
+    fn l5_cleanup_and_runner_recovery_treat_the_failure_as_before() {
+        let mut record = record("check-1", "ios");
+        let none = Path::new("/nonexistent-qaren-runs");
+        let failure = walk(&seen("dispatch-unconfirmed"), none, &record, false);
+        let cleanup = "qaren cleanup check-1 --json";
+        assert_eq!(cleanup_first(cleanup, &failure), cleanup);
+        let retain = "Leave the process, device and lease untouched; report the missing ownership proof and request the owning run or device owner to resolve it.";
+        record.resources.runner_cleanup_cause = Some(RecoveryReason::LeaseUnproven);
+        let mut receipt = Receipt::new(
+            "check",
+            &record.run_id,
+            ReceiptResult::Fail,
+            "cleaned",
+            "2026-10-30T08:15:00Z".into(),
+        );
+        receipt.failure = Some(failure);
+        crate::commands::cleanup::project_runner_recovery(&mut receipt, &record);
+        assert_eq!(receipt.next_action, retain);
+        let failure = receipt.failure.unwrap();
+        assert_eq!(failure.next_action.as_str(), retain);
+        assert_eq!(failure.subreason.as_deref(), Some("dispatch-unconfirmed"));
+        assert_eq!(
+            receipt.recovery.unwrap().key.as_deref(),
+            Some("ios_runner_cleanup")
+        );
+    }
+
+    #[test]
+    fn l4_no_input_value_or_screen_label_reaches_the_reason_or_the_next_action() {
+        let inputs = std::sync::Arc::new(crate::redact::InputValues::from_values(vec![
+            "private-canary".into(),
+        ]));
+        let record = record("check-1", "ios");
+        let none = Path::new("/nonexistent-qaren-runs");
+        crate::redact::with_input_scope(inputs, || {
+            for (word, words) in WORDS {
+                let failure = walk(&seen(word), none, &record, false);
+                let before = serde_json::to_value(&failure).unwrap();
+                let text = crate::redact::durable_json(&json!({ "failure": failure })).unwrap();
+                assert!(!text.contains("private-canary"), "{text}");
+                let after: Value = serde_json::from_str(&text).unwrap();
+                for json in [&before, &after["failure"]] {
+                    assert_eq!(json["subreason"], word);
+                    assert_eq!(json["next_action"], format!("{words}; {GENERIC}"));
+                    assert!(json.get("recovery").is_none());
+                }
+            }
+        });
+    }
+}
+
+// AI-703: the owner's whole table (names the new owner, so it builds only with the change).
+#[cfg(test)]
+mod uncertain_ladder_tests {
+    use super::*;
+    use crate::exec::{CmdOutput, MockRunner};
+    use crate::failure::{Recovery, RecoveryAction};
+    use crate::runrecord::Held;
+    use crate::scenario::Platform;
+    use serde_json::{json, Value};
+
+    const DISPATCH: &str = "QaReN could not confirm the outcome of the action";
+    const REVIEW: &str = "review any available evidence without repeating the action, starting with this run's report.";
+    const HELD: &str = " This run recorded metro, simulator, device_lease for inspection; check qaren status check-1 for their current status.";
+    const STOP: &str = " If you cannot establish whether the action took effect, leave the outcome unresolved and stop.";
+    // The owed cleanup's sentences, written out in full for each condition.
+    const CLEANUP: &str = "After reviewing the evidence, run qaren cleanup check-1 --json. It attempts to release this run's recorded resources.";
+    const HELD_CLEANUP: &str = "After reviewing the evidence, and only with the user's OK to end the hold and the inspection it keeps open, run qaren cleanup check-1 --json. It attempts to release this run's recorded resources.";
+    const STORAGE_CLEANUP: &str = "After reviewing the evidence, check that this run's record storage is writable, restore it if needed, then run qaren cleanup check-1 --json once; do not remove its lease manually. It attempts to release this run's recorded resources.";
+    const RESULT: &str = " Check the cleanup receipt for the result.";
+    const ENDS_HOLD: &str = " It may end the hold.";
+    const LOCK: &str = " It may release the build lock that teardown did not release.";
+    const WORKTREE: &str = " It may remove this run's PR worktree with any files in it.";
+    const SIM_STOP: &str = " It may shut the simulator down and remove its log store, as --shutdown-device-on-exit asked.";
+    const RETAIN: &str = "leave the process, device and lease untouched. Report the recorded runner cleanup reason to the run or device owner.";
+    const NOT_SELECTED: [&str; 5] = [
+        "not selected: a cleanup retry after the recorded driver exits",
+        "not selected: an immediate cleanup of this run's runner",
+        "not selected: a shutdown of this run's simulator",
+        "not selected: a native rebuild, which cannot clear a surviving runner process",
+        "not selected: cleanup and a fresh qaren prepare; a new qaren check or qaren pr starts the plan from its first step and can repeat an action that already took effect",
+    ];
+    const OWNERSHIP: &str = "line 4 targets this control; if the interruption is optional, move that step before line 2 or remove it";
+    const LABEL: &str = "tap PRIVATE-label again";
+    const LSTART: &str = "Mon Nov 24 08:00:00 2026";
+    const UDID: &str = "8F1C2A34-5B6D-4E7F-8091-A2B3C4D5E6F7";
+    // The runner test command production records (tests/orphaned_runner_cleanup.rs argv shape): it names this simulator.
+    const DRIVER_COMMAND: &str = "/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building -project /private/runtime/QarenIosRunner/QarenIosRunner.xcodeproj -scheme QarenIosRunner -destination platform=iOS Simulator,id=8F1C2A34-5B6D-4E7F-8091-A2B3C4D5E6F7 -derivedDataPath /private/derived data -only-testing:QarenIosRunnerUITests/QarenIosRunnerTests/testCommand";
+
+    fn seen(subreason: &str) -> core::LedgerFailure {
+        serde_json::from_value(json!({
+            "step": 7,
+            "seen": "ACTION_OUTCOME_UNCERTAIN; last observed on screen: PRIVATE-screen-label",
+            "subreason": subreason,
+        }))
+        .unwrap()
+    }
+
+    fn record() -> RunRecord {
+        record_on("ios", "walking")
+    }
+
+    fn record_on(platform: &str, phase: &str) -> RunRecord {
+        serde_json::from_value(json!({
+            "schema": RUN_SCHEMA, "run_id": "check-1", "created_at": "2026-11-24T08:15:00Z",
+            "scenario": {"schema": "qaren/1", "name": "test", "platform": platform,
+                "candidate": {"project_root": ".", "app_id": "test", "revision": "HEAD"}},
+            "scenario_path": "scenario.yaml", "scenario_sha256": "0", "plan_sha256": "plan",
+            "candidate": {"repo_root": ".", "project_root": ".", "app_id": "test",
+                "git_sha": "abc", "git_dirty": false, "lockfile_sha256": null},
+            "phase": phase, "prepare": null
+        }))
+        .unwrap()
+    }
+
+    // A runs directory whose path trips the private-key rule: the owner must never interpolate it.
+    fn runs_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("qaren-private key-ai703-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    // What a run's record still holds after teardown. `clean` is teardown's all_clean: the record is saved in phase
+    // `cleaned` when it is true and stays `walking` otherwise (run.rs:1799-1803).
+    #[derive(Clone, Copy, Default)]
+    struct Kept {
+        android: bool,
+        clean: bool,
+        simulator: bool,
+        lease: bool,
+        metro: bool,
+        held: bool,
+        lock: bool,
+        worktree: bool,
+        stop: bool,
+        driver: bool,
+        runner_host: bool,
+    }
+
+    // The record a check or pr run leaves after teardown, built with production's own helpers where one exists: a
+    // borrowed device (run.rs:750), a canonical simulator identity, the lease from lease::acquire (its lock exists on
+    // disk), the runner driver admitted by run::runner_driver, the worktree at worktree::pr_worktree_path, the hold's
+    // retained list by teardown's own rule (run.rs:3036-3052). Saved and loaded back through the record-load checks.
+    fn final_record(root: &Path, kept: Kept) -> RunRecord {
+        let run_dir = RunRecord::run_dir(root, "check-1");
+        let (platform, device) = if kept.android { (Platform::Android, "emulator-5554") } else { (Platform::Ios, UDID) };
+        let mut resources = json!({"device_borrowed": true});
+        if kept.android {
+            // The borrowed emulator and its adb route, as the run records them (run.rs:763-792) and teardown keeps them.
+            resources["adb_path"] = "/sdk/platform-tools/adb".into();
+            resources["adb_local_serial"] = device.into();
+            resources["android_emulator"] = json!({"serial": device, "avd": "Pixel_9_API_35", "server_port": 5037,
+                "api_level": 35, "abi": "arm64-v8a"});
+        }
+        if kept.simulator {
+            resources["ios_simulator"] = json!({"udid": UDID, "name": "iPhone 17",
+                "device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-17",
+                "runtime": "com.apple.CoreSimulator.SimRuntime.iOS-26-0"});
+        }
+        if kept.metro {
+            // Prepare refuses a Metro whose identity it could not capture, so a recorded Metro always has one.
+            let mut mock = MockRunner::new();
+            mock.expect_run("lstart=", CmdOutput::success(LSTART));
+            mock.expect_run("command=", CmdOutput::success("node /repo/test-app/node_modules/.bin/expo start --port 8081"));
+            let identity = capture_pid_identity(&mut mock, 6000).unwrap();
+            resources["metro"] = json!({"port": 8081, "endpoint": "http://127.0.0.1:8081",
+                "spawned": {"pid": 6000, "pgid": 6000}, "identity": identity, "log": run_dir.join("logs/metro.log")});
+        }
+        if kept.lock {
+            resources["build_lock"] = json!({"lock_dir": root.join("locks/android-build"), "holder": "qaren-check-1"});
+        }
+        if kept.worktree {
+            resources["pr_worktree"] = json!({"repo_root": "/repo", "path": worktree::pr_worktree_path(&run_dir)});
+        }
+        if kept.stop {
+            resources["borrowed_ios_stop"] = "pending".into();
+            resources["clear_log_on_stop"] = true.into();
+        }
+        if kept.runner_host {
+            resources["runner_host"] = json!({"udid": UDID,
+                "bundle_ids": [ios::RUNNER_HOST_BUNDLE_ID, ios::RUNNER_TEST_HOST_BUNDLE_ID]});
+        }
+        let mut record = record_on(if kept.android { "android" } else { "ios" }, if kept.clean { "cleaned" } else { "walking" });
+        record.resources = serde_json::from_value(resources).unwrap();
+        if kept.lease {
+            let lease = crate::lease::acquire(&mut MockRunner::new(), &root.join("locks"), platform, device, "check-1", None);
+            record.resources.lease = Some(lease.unwrap());
+        }
+        if kept.driver {
+            let mut mock = MockRunner::new();
+            mock.expect_run("pgid=", CmdOutput::success("7000\n"));
+            mock.expect_run("lstart=", CmdOutput::success(LSTART));
+            mock.expect_run("command=", CmdOutput::success(DRIVER_COMMAND));
+            record.resources.runner_drivers.push(runner_driver(&mut mock, 7000, UDID).unwrap());
+            assert_eq!(mock.remaining(), 0);
+        }
+        if kept.held {
+            let r = &record.resources;
+            let retained = [("metro", r.metro.is_some()), ("simulator", r.ios_simulator.is_some()), ("device_lease", r.lease.is_some())];
+            record.held = Some(Held {
+                since: "2026-11-24T08:15:00Z".into(),
+                reason: HOLD_REASON.into(),
+                retained: retained.into_iter().filter(|(_, k)| *k).map(|(n, _)| n.to_string()).collect(),
+            });
+        }
+        record.save(root).unwrap();
+        RunRecord::load(root, "check-1").unwrap()
+    }
+
+    fn failure(suggestion: Option<&str>) -> Failure {
+        let mut seen = seen("dispatch-unconfirmed");
+        seen.suggestion = suggestion.map(OutputText::from_output);
+        walk_failure(
+            None,
+            &|| plan_step_failure(Some(&seen)),
+            Some(&seen),
+            Path::new("/nonexistent-qaren-runs"),
+            &record(),
+            false,
+        )
+    }
+
+    // The three process probes graceful runner cleanup reads, in its order (cleanup/runner.rs graceful_inner).
+    fn group(mock: &mut MockRunner, present: bool) {
+        let rows = if present { "1 1 S\n7000 7000 S\n7001 7000 S\n" } else { "1 1 S\n" };
+        mock.expect_run("ps -A", CmdOutput::success(rows));
+    }
+    fn alive(mock: &mut MockRunner) {
+        mock.expect_run("lstart=", CmdOutput::success(LSTART));
+        mock.expect_run("stat=", CmdOutput::success("S"));
+    }
+    // A matching driver gets INT (identity probed twice: liveness, then birth).
+    fn signalled(mock: &mut MockRunner) {
+        group(mock, true);
+        alive(mock);
+        alive(mock);
+        mock.expect_run("/bin/kill -INT -- 7000", CmdOutput::success(""));
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Driver {
+        // INT sent, the group stays and the leader dies: a per-driver reason, no top-level cause.
+        GroupRemaining,
+        // The group inventory cannot be read: a per-driver reason, no signal.
+        InventoryUnknown,
+        // INT sent, the driver still runs after the bounded wait.
+        GracefulPending,
+        // The driver is gone, but saving its retirement fails: the top-level cause, the driver still recorded.
+        StorageFailed,
+        // No driver: the runner host is proven absent, but saving that fails (cleanup.rs:2167-2173).
+        HostStorageFailed,
+    }
+
+    // Writers 1 and 2 for real, on the record the run's own graceful runner cleanup left; then the owner.
+    fn runner_receipt(name: &str, kept: Kept, driver: Driver, suggestion: Option<&str>) -> (String, Value) {
+        let root = runs_root(name);
+        // The runner rows' records: an iOS run whose runner leg is unclean keeps its simulator and lease.
+        let host_only = matches!(driver, Driver::HostStorageFailed);
+        let kept = Kept { simulator: true, lease: true, metro: kept.metro || kept.held, driver: !host_only, runner_host: host_only, ..kept };
+        let mut record = final_record(&root, kept);
+        let mut mock = MockRunner::new();
+        // A storage row saves under the record file itself, so the save cannot create its run directory.
+        let storage = matches!(driver, Driver::StorageFailed | Driver::HostStorageFailed);
+        let save_root = if storage { RunRecord::path(&root, "check-1") } else { root.clone() };
+        match driver {
+            Driver::GroupRemaining => {
+                signalled(&mut mock);
+                group(&mut mock, true);
+                mock.expect_run("lstart=", CmdOutput::success(""));
+            }
+            Driver::InventoryUnknown => mock.expect_run("ps -A", CmdOutput::success("")),
+            Driver::GracefulPending => {
+                signalled(&mut mock);
+                for _ in 0..30 {
+                    group(&mut mock, true);
+                    alive(&mut mock);
+                }
+            }
+            Driver::StorageFailed => {
+                group(&mut mock, false);
+                mock.expect_run("lstart=", CmdOutput::success(""));
+            }
+            Driver::HostStorageFailed => {
+                // The simulator is booted and shows no runner host: the host leg is clean, then its save fails.
+                let devices = json!({"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-26-0": [{"udid": UDID,
+                    "name": "iPhone 17", "state": "Booted", "isAvailable": true,
+                    "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17"}]}});
+                mock.expect_run("simctl list devices -j", CmdOutput::success(&devices.to_string()));
+                mock.expect_run(&format!("simctl spawn {UDID} launchctl list"),
+                    CmdOutput::success("PID\tStatus\tLabel\n1\t0\tcom.apple.SpringBoard\n"));
+            }
+        }
+        let outcome = if matches!(driver, Driver::HostStorageFailed) {
+            crate::commands::cleanup::cleanup_runner_host(&mut mock, &mut record, &save_root).unwrap()
+        } else {
+            crate::commands::cleanup::cleanup_runner_drivers(&mut mock, &mut record, &save_root).unwrap()
+        };
+        assert!(!outcome.clean(), "{driver:?}");
+        assert_eq!(mock.remaining(), 0, "{driver:?}");
+        match driver {
+            Driver::GroupRemaining | Driver::InventoryUnknown | Driver::GracefulPending => {
+                let evidence = record.resources.runner_driver_cleanup.as_ref().unwrap();
+                assert!(record.resources.runner_cleanup_cause.is_none(), "{driver:?}");
+                let expected = match driver {
+                    Driver::GroupRemaining => RecoveryReason::GroupRemaining,
+                    Driver::InventoryUnknown => RecoveryReason::InventoryUnknown,
+                    _ => RecoveryReason::GracefulPending,
+                };
+                assert_eq!(evidence.details.drivers[0].reason, Some(expected));
+            }
+            Driver::StorageFailed => {
+                assert_eq!(record.resources.runner_cleanup_cause, Some(RecoveryReason::StorageFailed));
+                assert_eq!(record.resources.runner_drivers.len(), 1);
+            }
+            Driver::HostStorageFailed => {
+                assert_eq!(record.resources.runner_cleanup_cause, Some(RecoveryReason::StorageFailed));
+                assert!(record.resources.runner_drivers.is_empty() && record.resources.runner_driver_cleanup.is_none());
+            }
+        }
+        // The runner leg is unclean, so teardown's all_clean is false.
+        let owed = Owed::read(&record, false);
+        let mut runner = MockRunner::new();
+        let ctx = Ctx {
+            runner: &mut runner,
+            runs_root: root.clone(),
+            native_cache_root: root.join("native-store"),
+            native_store_entry: None,
+            plan_fingerprint: None,
+            ios_observation: None,
+            linkage_before_build: None,
+            ios_generated_native: false,
+            record,
+            started_ms: 0,
+            timings: Vec::new(),
+            notes: Vec::new(),
+            verb: "check",
+            bundle_requests_at_launch: None,
+            android_launch_url: None,
+            manifest_warm: None,
+            lane_owned: false,
+            build_deadline_ms: None,
+            build_limit: None,
+            host_wait_ms: 0,
+        };
+        let mut receipt = finish_receipt(ctx, ReceiptResult::Fail, Some(failure(suggestion)));
+        assert_eq!(receipt.recovery.as_ref().unwrap().key.as_deref(), Some("ios_runner_cleanup"));
+        receipt.artifacts.insert("report".into(), RunRecord::run_dir(&root, "check-1").join("report.md"));
+        settle_uncertain(&mut receipt, &owed);
+        let _ = std::fs::remove_dir_all(&root);
+        parts(&receipt)
+    }
+
+    // A receipt as finish_receipt, the artifacts and the unclean rule leave it (a stale top-level next action), then the owner.
+    fn settled(failure: Failure, record: &RunRecord, all_clean: bool) -> Receipt {
+        let mut receipt = Receipt::new("check", "check-1", ReceiptResult::Fail, "walking", "2026-11-24T08:15:00Z".into());
+        receipt.held = record.held.clone();
+        receipt.next_action = "stale".into();
+        receipt.artifacts.insert("report".into(), PathBuf::from("/home/u/private key/runs/check-1/report.md"));
+        receipt.artifacts.insert("ledger".into(), PathBuf::from("/home/u/private key/runs/check-1/ledger.json"));
+        receipt.failure = Some(failure);
+        settle_uncertain(&mut receipt, &Owed::read(record, all_clean));
+        receipt
+    }
+
+    // Both next actions and both recovery copies, as stdout prints them; they are equal.
+    fn parts(receipt: &Receipt) -> (String, Value) {
+        let printed: Value = serde_json::from_str(&receipt.to_json()).unwrap();
+        assert_eq!(printed["failure"]["recovery"], printed["recovery"]);
+        assert_eq!(printed["failure"]["next_action"], printed["next_action"]);
+        (printed["next_action"].as_str().unwrap().to_string(), printed["recovery"].clone())
+    }
+
+    fn banned(text: &str) {
+        for banned in [
+            "then re-run", "--installed-app", "ledger.json", "run again", "last observed screen", "PRIVATE", "line 4",
+            "private key", "withheld", "stay held", "missing ownership proof", "continue to", "it can prove ownership",
+            "reports anything left unresolved", "when you have finished",
+        ] {
+            assert!(!text.contains(banned), "{banned}: {text}");
+        }
+    }
+
+    // The literal runner ladder: one selected rung (instruction, action, flags) or none, every other rung only described.
+    fn runner_ladder(selected: Option<(u8, &str, &str, bool, bool)>) -> Value {
+        let ladder: Vec<Value> = (1..=5u8)
+            .map(|rung| match selected {
+                Some((at, action, text, destroys, ok)) if at == rung => json!({"rung": rung, "applicable": true,
+                    "destroys_state": destroys, "requires_user_ok": ok, "instruction": text, "action": action}),
+                _ => json!({"rung": rung, "applicable": false, "destroys_state": false, "requires_user_ok": false,
+                    "instruction": NOT_SELECTED[usize::from(rung) - 1]}),
+            })
+            .collect();
+        Value::from(ladder)
+    }
+
+    #[test]
+    fn every_state_has_one_true_next_action_and_recovery() {
+        let k = Kept::default();
+        // An iOS check keeps its simulator identity; a held or unclean one keeps the lease; Metro stays when held or when
+        // its group survived (U); the build lock is the Android case of F7; the worktree is an iOS pr run's.
+        let ios = Kept { simulator: true, ..k };
+        let held = Kept { lease: true, metro: true, held: true, ..ios };
+        // (state, kept, next action, cleanup owed)
+        let rows: Vec<(&str, Kept, String, bool)> = vec![
+            ("C", Kept { clean: true, ..ios }, format!("{DISPATCH}; {REVIEW}{STOP}"), false),
+            ("C+lock", Kept { android: true, clean: true, lock: true, ..k }, format!("{DISPATCH}; {REVIEW} {CLEANUP}{LOCK}{RESULT}{STOP}"), true),
+            ("H", held, format!("{DISPATCH}; {REVIEW}{HELD} {HELD_CLEANUP}{ENDS_HOLD}{RESULT}{STOP}"), true),
+            ("H+stop", Kept { stop: true, ..held }, format!("{DISPATCH}; {REVIEW}{HELD} {HELD_CLEANUP}{ENDS_HOLD}{SIM_STOP}{RESULT}{STOP}"), true),
+            ("U", Kept { lease: true, metro: true, ..ios }, format!("{DISPATCH}; {REVIEW} {CLEANUP}{RESULT}{STOP}"), true),
+            ("U+lock", Kept { android: true, lease: true, lock: true, ..k }, format!("{DISPATCH}; {REVIEW} {CLEANUP}{LOCK}{RESULT}{STOP}"), true),
+            ("U+worktree", Kept { worktree: true, ..ios }, format!("{DISPATCH}; {REVIEW} {CLEANUP}{WORKTREE}{RESULT}{STOP}"), true),
+            ("U+stop", Kept { lease: true, stop: true, ..ios }, format!("{DISPATCH}; {REVIEW} {CLEANUP}{SIM_STOP}{RESULT}{STOP}"), true),
+        ];
+        for (i, (state, kept, next, owed)) in rows.into_iter().enumerate() {
+            let root = runs_root(&format!("state-{i}"));
+            let record = final_record(&root, kept);
+            assert_eq!(record.phase, if kept.clean { Phase::Cleaned } else { Phase::Walking }, "{state}");
+            for suggestion in [None, Some(OWNERSHIP), Some(LABEL)] {
+                let receipt = settled(failure(suggestion), &record, kept.clean);
+                let (got, recovery) = parts(&receipt);
+                assert_eq!(got, next, "{state} {suggestion:?}");
+                banned(&got);
+                assert_eq!(recovery["reason"], "action_outcome_uncertain", "{state}");
+                assert!(recovery["next_rung"].is_null(), "{state}");
+                assert_eq!(recovery["action"], "check_action_effect", "{state}");
+                assert_eq!(recovery["automatic"], false, "{state}");
+                assert_eq!(recovery["destroys_state"], false, "{state}");
+                assert_eq!(recovery["requires_user_ok"], false, "{state}");
+                assert_eq!(recovery["own_cleanup_required"], owed, "{state}");
+                assert_eq!(recovery["own_run_id"], if owed { Value::from("check-1") } else { Value::Null }, "{state}");
+                let ladder = recovery["ladder"].as_array().unwrap();
+                assert_eq!(ladder.len(), 5, "{state}");
+                for (i, rung) in ladder.iter().enumerate() {
+                    assert_eq!(rung["rung"], i + 1, "{state}");
+                    assert_eq!(rung["applicable"], false, "{state}");
+                    assert_eq!(rung["destroys_state"], false, "{state}");
+                    assert_eq!(rung["requires_user_ok"], false, "{state}");
+                    assert!(rung["action"].is_null(), "{state}");
+                    banned(rung["instruction"].as_str().unwrap());
+                }
+                assert!(ladder[0]["instruction"].as_str().unwrap().contains("a new qaren check or qaren pr starts the plan from its first step"));
+                let last = ladder[4]["instruction"].as_str().unwrap();
+                assert_eq!(last.contains("teardown was clean"), !owed, "{state}");
+                assert_eq!(last.contains("separate obligation"), owed, "{state}");
+                // The suggestion stays evidence in its own field and never enters the owned texts.
+                assert_eq!(receipt.failure.as_ref().unwrap().suggestion.as_deref(), suggestion, "{state}");
+                assert_eq!(receipt.failure.as_ref().unwrap().subreason.as_deref(), Some("dispatch-unconfirmed"));
+            }
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+
+    #[test]
+    fn a_missing_ledger_changes_nothing() {
+        let root = runs_root("ledger");
+        let record = final_record(&root, Kept { clean: true, simulator: true, ..Kept::default() });
+        let written = settled(failure(None), &record, true);
+        let mut receipt = Receipt::new("check", "check-1", ReceiptResult::Fail, "walking", "2026-11-24T08:15:00Z".into());
+        receipt.next_action = "stale".into();
+        receipt.outcomes.insert("ledger".into(), "could not persist /home/u/private key/runs/check-1/ledger.json: denied".into());
+        receipt.artifacts.insert("report".into(), PathBuf::from("/home/u/private key/runs/check-1/report.md"));
+        receipt.artifacts.insert("ledger".into(), PathBuf::from("/home/u/private key/runs/check-1/ledger.json"));
+        receipt.failure = Some(failure(None));
+        settle_uncertain(&mut receipt, &Owed::read(&record, true));
+        assert_eq!(parts(&receipt), parts(&written));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Runner recovery through the run's own graceful cleanup and the real writers: independent literal texts, every rung.
+    #[test]
+    fn runner_recovery_is_settled_whole_by_the_owner() {
+        let k = Kept::default();
+        for (i, suggestion) in [None, Some(OWNERSHIP), Some(LABEL)].into_iter().enumerate() {
+            // Held, cleanup selected: ending the hold ends the inspection, so it is the user's OK, and the rung says so.
+            let (next, recovery) = runner_receipt(&format!("held-pending-{i}"), Kept { held: true, ..k }, Driver::GracefulPending, suggestion);
+            let step = "After reviewing the evidence, and only with the user's OK to end the hold and the inspection it keeps open, run qaren cleanup check-1 --json. It attempts to release this run's recorded resources. It may end the hold. Check the cleanup receipt for the result.";
+            assert_eq!(next, format!("{DISPATCH}; {REVIEW}{HELD} {step}{STOP}"), "{suggestion:?}");
+            assert_eq!(recovery, json!({"key": "ios_runner_cleanup", "reason": "graceful_pending", "next_rung": 2,
+                "action": "cleanup_owned_runner", "automatic": false, "destroys_state": true, "requires_user_ok": true,
+                "own_cleanup_required": true, "own_run_id": "check-1",
+                "ladder": runner_ladder(Some((2, "cleanup_owned_runner", step, true, true)))}));
+
+            // Unheld pr run with its worktree kept: cleanup removes the run's own files; no further OK. Unheld with a
+            // pending exit stop: --shutdown-device-on-exit already authorized the shutdown and the log removal.
+            for (name, kept, effect) in [("worktree", Kept { worktree: true, ..k }, WORKTREE), ("stop", Kept { stop: true, ..k }, SIM_STOP)] {
+                let (next, recovery) = runner_receipt(&format!("{name}-{i}"), kept, Driver::GracefulPending, suggestion);
+                let step = format!("{CLEANUP}{effect}{RESULT}");
+                assert_eq!(next, format!("{DISPATCH}; {REVIEW} {step}{STOP}"), "{name}");
+                assert_eq!(recovery["ladder"], runner_ladder(Some((2, "cleanup_owned_runner", &step, true, false))), "{name}");
+                assert_eq!((recovery["destroys_state"].clone(), recovery["requires_user_ok"].clone()), (Value::from(true), Value::from(false)));
+            }
+
+            // Storage could not be saved, with a driver recorded (its retirement) or without one (the host's absence):
+            // the storage check comes first, then one cleanup; nothing destroyed.
+            for (j, driver) in [Driver::StorageFailed, Driver::HostStorageFailed].into_iter().enumerate() {
+                let (next, recovery) = runner_receipt(&format!("storage-{i}-{j}"), k, driver, suggestion);
+                let step = format!("{STORAGE_CLEANUP}{RESULT}");
+                assert_eq!(next, format!("{DISPATCH}; {REVIEW} {step}{STOP}"), "{driver:?}");
+                assert_eq!(recovery, json!({"key": "ios_runner_cleanup", "reason": "storage_failed", "next_rung": 1,
+                    "action": "repair_record_storage", "automatic": false, "destroys_state": false, "requires_user_ok": false,
+                    "own_cleanup_required": true, "own_run_id": "check-1",
+                    "ladder": runner_ladder(Some((1, "repair_record_storage", &step, false, false)))}), "{driver:?}");
+            }
+
+            // Retain and report on a reachable per-driver reason, held or not: no review, hold text or cleanup after it.
+            for (j, (kept, driver, reason)) in [
+                (Kept { held: true, ..k }, Driver::GroupRemaining, "group_remaining"),
+                (k, Driver::InventoryUnknown, "inventory_unknown"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let (next, recovery) = runner_receipt(&format!("retain-{i}-{j}"), kept, driver, suggestion);
+                assert_eq!(next, format!("{DISPATCH}; {RETAIN}"), "{reason}");
+                assert_eq!(recovery, json!({"key": "ios_runner_cleanup", "reason": reason, "next_rung": null,
+                    "action": "retain_and_report", "automatic": false, "destroys_state": false, "requires_user_ok": false,
+                    "own_cleanup_required": true, "ladder": runner_ladder(None)}), "{reason}");
+            }
+        }
+    }
+
+    // Synthetic stress row: every runner reason at the pin (25), with the projection's arguments, under all 16 combinations
+    // of kept resources, including combinations the run cannot reach (F14: only StorageFailed, GracefulPending and the
+    // retain-and-report reasons reach this receipt; the production shapes are the rows above). The owner keeps the typed
+    // reason and selection and writes every text and flag; no rung but the selected one instructs. The containment check
+    // below runs with no input masking in scope (see the masking row).
+    #[test]
+    fn every_runner_reason_is_settled_without_inherited_text() {
+        use RecoveryReason::*;
+        let every = [
+            BudgetExhausted, BuildBudgetExhausted, BuildProcessFailed, BuildTimeLimit, OwnershipUnresolved,
+            PersistenceFailed, IdentityUnavailable, ForeignAdmissionUnresolved, CandidateDrifted, RunCancelled,
+            GracefulPending, IdentityMismatch, IdentityUnknown, CommandIneligible, LeaseUnproven, OwnerUnproven,
+            CoreUnproven, InventoryUnknown, DriverSurvived, GroupRemaining, HostRemaining, HostCleanupFailed,
+            DriverExited, StorageFailed, PreviousPlanPress,
+        ];
+        for reason in every {
+            for destroys in [false, true] {
+                let projected = Recovery::ios_runner(reason, "check-1", destroys, false, true);
+                for bits in 0..16u8 {
+                    let owed = Owed {
+                        held: bits & 1 != 0,
+                        unclean: true,
+                        build_lock: bits & 2 != 0,
+                        pr_worktree: bits & 4 != 0,
+                        simulator_stop: bits & 8 != 0,
+                    };
+                    let mut receipt = Receipt::new("check", "check-1", ReceiptResult::Fail, "walking", "2026-11-24T08:15:00Z".into());
+                    receipt.failure = Some(failure(None));
+                    receipt.recovery = Some(projected.clone());
+                    settle_uncertain(&mut receipt, &owed);
+                    let (next, _) = parts(&receipt);
+                    let settled = receipt.recovery.as_ref().unwrap();
+                    let at = format!("{reason:?} {bits}");
+                    assert_eq!(settled.key.as_deref(), Some("ios_runner_cleanup"), "{at}");
+                    assert_eq!(settled.reason, reason, "{at}");
+                    assert_eq!(settled.next_rung, projected.next_rung, "{at}");
+                    assert_eq!(settled.action, projected.action, "{at}");
+                    assert!(!settled.automatic && settled.own_cleanup_required, "{at}");
+                    banned(&next);
+                    let lent = projected.action == RecoveryAction::RequestExactSimulatorShutdown;
+                    for step in &settled.ladder {
+                        banned(&step.instruction);
+                        if Some(step.rung) == settled.next_rung {
+                            assert!(step.applicable, "{at}");
+                            assert_eq!(step.action, Some(settled.action), "{at}");
+                            assert_eq!((step.destroys_state, step.requires_user_ok), (settled.destroys_state, settled.requires_user_ok), "{at}");
+                            assert_eq!(step.destroys_state, owed.held || owed.pr_worktree || owed.simulator_stop || lent, "{at}");
+                            assert_eq!(step.requires_user_ok, owed.held || lent, "{at}");
+                            assert_eq!(step.instruction.contains("only with the user's OK"), step.requires_user_ok, "{at}");
+                            assert!(next.contains(&format!(" {} If you cannot", step.instruction)), "{at}");
+                        } else {
+                            assert_eq!(step.instruction, NOT_SELECTED[usize::from(step.rung) - 1], "{at}");
+                            assert!(!step.applicable && !step.destroys_state && !step.requires_user_ok && step.action.is_none(), "{at}");
+                        }
+                    }
+                    match settled.next_rung {
+                        None => {
+                            assert_eq!(next, format!("{DISPATCH}; {RETAIN}"), "{at}");
+                            assert!(!settled.destroys_state && !settled.requires_user_ok && settled.own_run_id.is_none(), "{at}");
+                        }
+                        Some(_) => {
+                            assert!(next.starts_with(&format!("{DISPATCH}; {REVIEW}")) && next.ends_with(STOP), "{at}");
+                            assert_eq!(settled.own_run_id.as_deref(), Some("check-1"), "{at}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // D9: the selected step is reused verbatim before output masking. A protected input value that spans the step's end
+    // and the stop sentence is masked in both printed next actions, while the printed rung keeps the whole step.
+    #[test]
+    fn the_selected_step_is_reused_before_output_masking() {
+        let inputs = std::sync::Arc::new(crate::redact::InputValues::from_values(vec!["result. If you cannot".into()]));
+        crate::redact::with_input_scope(inputs, || {
+            let owed = Owed { held: true, unclean: true, build_lock: false, pr_worktree: false, simulator_stop: false };
+            let mut receipt = Receipt::new("check", "check-1", ReceiptResult::Fail, "walking", "2026-11-24T08:15:00Z".into());
+            receipt.failure = Some(failure(None));
+            receipt.held = Some(Held {
+                since: "2026-11-24T08:15:00Z".into(),
+                reason: HOLD_REASON.into(),
+                retained: vec!["metro".into(), "simulator".into(), "device_lease".into()],
+            });
+            receipt.recovery = Some(Recovery::ios_runner(RecoveryReason::GracefulPending, "check-1", false, false, true));
+            settle_uncertain(&mut receipt, &owed);
+            let printed: Value = serde_json::from_str(&receipt.to_json()).unwrap();
+            let step = "After reviewing the evidence, and only with the user's OK to end the hold and the inspection it keeps open, run qaren cleanup check-1 --json. It attempts to release this run's recorded resources. It may end the hold. Check the cleanup receipt for the result.";
+            let masked = format!("{DISPATCH}; {REVIEW}{HELD} {}[REDACTED_INPUT] establish whether the action took effect, leave the outcome unresolved and stop.", step.trim_end_matches("result."));
+            assert_eq!(printed["next_action"], masked.as_str());
+            assert_eq!(printed["failure"]["next_action"], masked.as_str());
+            assert_eq!(printed["failure"]["recovery"], printed["recovery"]);
+            let rung = &printed["recovery"]["ladder"][1];
+            assert_eq!(rung["instruction"], step);
+            assert_eq!((rung["destroys_state"].clone(), rung["requires_user_ok"].clone()), (Value::from(true), Value::from(true)));
+            assert_eq!((printed["recovery"]["destroys_state"].clone(), printed["recovery"]["requires_user_ok"].clone()), (Value::from(true), Value::from(true)));
+        });
+    }
+
+    #[test]
+    fn owed_reads_the_hold_the_legs_the_lock_the_worktree_and_the_stop() {
+        // Each record in its own runs root: a second real lease on the same device would be refused as busy.
+        let read = |name: &str, kept: Kept, all_clean: bool| {
+            let root = runs_root(name);
+            let owed = Owed::read(&final_record(&root, kept), all_clean);
+            let _ = std::fs::remove_dir_all(&root);
+            owed
+        };
+        let k = Kept::default();
+        let ios = Kept { simulator: true, ..k };
+        let none = read("owed-none", Kept { clean: true, ..ios }, true);
+        assert!(!none.any() && none.effects().is_empty());
+        assert!(read("owed-unclean", ios, false).any());
+        let lock = read("owed-lock", Kept { android: true, clean: true, lock: true, ..k }, true);
+        assert!(lock.any());
+        assert_eq!(lock.effects(), LOCK);
+        // A held run's lease leg is Held, so its teardown is never clean.
+        let held = read("owed-held", Kept { lease: true, metro: true, held: true, ..ios }, false);
+        assert!(held.any());
+        assert_eq!(held.effects(), ENDS_HOLD);
+        // Synthetic: every effect at once, to fix their order.
+        let all = read("owed-all", Kept { lease: true, held: true, lock: true, worktree: true, stop: true, ..ios }, false);
+        assert_eq!(all.effects(), [ENDS_HOLD, LOCK, WORKTREE, SIM_STOP].concat());
+    }
+
+    #[test]
+    fn other_failures_are_left_alone() {
+        let target = walk_failure(
+            None,
+            &|| plan_step_failure(Some(&seen("absent"))),
+            Some(&seen("absent")),
+            Path::new("/nonexistent-qaren-runs"),
+            &record(),
+            false,
+        );
+        let mut refused = Failure::new("walk", FailureCode::CoreRefused, "refused", "follow the refusal");
+        refused.subreason = Some("unknown".into());
+        let mut cancelled = Failure::cancelled("finalize", "signal");
+        cancelled.subreason = Some("dispatch-unconfirmed".into());
+        let owed = Owed { held: true, unclean: true, build_lock: true, pr_worktree: true, simulator_stop: true };
+        for failure in [target, refused, cancelled] {
+            for recovery in [None, Some(Recovery::ios_runner(RecoveryReason::GracefulPending, "check-1", true, false, true))] {
+                let mut receipt = Receipt::new("check", "check-1", ReceiptResult::Fail, "cleaned", "2026-11-24T08:15:00Z".into());
+                receipt.next_action = "unchanged".into();
+                receipt.failure = Some(failure.clone());
+                receipt.recovery = recovery;
+                let before = serde_json::to_value(&receipt).unwrap();
+                settle_uncertain(&mut receipt, &owed);
+                assert_eq!(serde_json::to_value(&receipt).unwrap(), before);
+            }
+        }
+        let mut empty = Receipt::new("check", "check-1", ReceiptResult::Pass, "cleaned", "2026-11-24T08:15:00Z".into());
+        settle_uncertain(&mut empty, &owed);
+        assert!(empty.failure.is_none() && empty.recovery.is_none());
     }
 }

@@ -276,7 +276,9 @@ extension QarenIosRunnerTests {
       return qaReadOnlyRefusal()
     }
     var payload = DataPayload(snapshotGeneration: currentSnapshotGeneration)
-    payload.hitProbe = readHitProbe(app: target, command: command)
+    let read = readHitProbeWithReason(app: target, command: command)
+    payload.hitProbe = read.result
+    payload.liveCheckReason = read.reason
     return Response(ok: true, data: payload)
   }
 
@@ -555,23 +557,22 @@ extension QarenIosRunnerTests {
         if let response = unsupportedResponse(for: outcome) {
           return response
         }
-        return Response(
-          ok: true,
-          data: DataPayload(
-            message: "tapped",
-            gestureStartUptimeMs: timing.gestureStartUptimeMs,
-            gestureEndUptimeMs: timing.gestureEndUptimeMs,
-            x: touchFrame.x,
-            y: touchFrame.y,
-            referenceWidth: touchFrame.referenceWidth,
-            referenceHeight: touchFrame.referenceHeight,
-            keyboardGuard: keyboardGuardStatus,
-            keyboardGuardMs: keyboardGuardMs,
-            handledMs: currentUptimeMs() - handlingStart,
-            liveCheckMs: liveCheckMs,
-            occlusionCheck: liveCheck.hittable == nil ? "unavailable" : "hit-tested"
-          )
+        var payload = DataPayload(
+          message: "tapped",
+          gestureStartUptimeMs: timing.gestureStartUptimeMs,
+          gestureEndUptimeMs: timing.gestureEndUptimeMs,
+          x: touchFrame.x,
+          y: touchFrame.y,
+          referenceWidth: touchFrame.referenceWidth,
+          referenceHeight: touchFrame.referenceHeight,
+          keyboardGuard: keyboardGuardStatus,
+          keyboardGuardMs: keyboardGuardMs,
+          handledMs: currentUptimeMs() - handlingStart,
+          liveCheckMs: liveCheckMs,
+          occlusionCheck: liveCheck.hittable == nil ? "unavailable" : "hit-tested"
         )
+        payload.liveCheckReason = DispatchGuard.sentAfterUnavailable(liveCheck, reason: lastLiveCheckUnavailable)
+        return Response(ok: true, data: payload)
       }
       return Response(ok: false, error: ErrorPayload(message: "tap requires text or x/y"))
     case .mouseClick:

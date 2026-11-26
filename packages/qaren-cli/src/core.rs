@@ -3,6 +3,7 @@ use crate::failure::{AdmissionCause, AdmissionFacts, Failure, FailureCode};
 use crate::redact::redact_secrets;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -39,6 +40,8 @@ pub struct CoreRequest {
     pub video_policy: crate::record::VideoPolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub login_marker: Option<crate::config::LoginMarker>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_source: Option<&'static str>,
     pub target: CoreTarget,
 }
 
@@ -57,6 +60,9 @@ pub struct CoreTarget {
     // The CLI pinned this lane; the core must observe the app's first screen before row 1.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub warm_lane: bool,
+    // Android: the dev-client deep link of this run's own launch, for the core's one restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub android_launch_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -534,6 +540,66 @@ pub struct Row {
         deserialize_with = "passive"
     )]
     pub covered_by: Option<CoveredBy>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "inconclusive_presses"
+    )]
+    pub inconclusive_presses: Option<BTreeMap<LiveCheckReason, u32>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "press_outcome_unknown"
+    )]
+    pub press_outcome_unknown: Option<u32>,
+}
+
+// Why an iOS tap was sent although its live check gave no answer; `unreported` when the runner named no listed word.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum LiveCheckReason {
+    Expired,
+    NoIdentity,
+    Absent,
+    Ambiguous,
+    Exception,
+    Deadline,
+    ReadFailed,
+    Unreported,
+}
+
+impl LiveCheckReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Expired => "expired",
+            Self::NoIdentity => "no-identity",
+            Self::Absent => "absent",
+            Self::Ambiguous => "ambiguous",
+            Self::Exception => "exception",
+            Self::Deadline => "deadline",
+            Self::ReadFailed => "read-failed",
+            Self::Unreported => "unreported",
+        }
+    }
+}
+
+// Diagnostics only: an empty map, an unlisted word or a zero count drops the field, never the row.
+pub fn inconclusive_counts(value: Value) -> Option<BTreeMap<LiveCheckReason, u32>> {
+    serde_json::from_value::<BTreeMap<LiveCheckReason, u32>>(value)
+        .ok()
+        .filter(|counts| !counts.is_empty() && counts.values().all(|&count| count > 0))
+}
+
+fn inconclusive_presses<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<LiveCheckReason, u32>>, D::Error> {
+    Ok(inconclusive_counts(Value::deserialize(deserializer)?))
+}
+
+fn press_outcome_unknown<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u32>, D::Error> {
+    Ok(passive(deserializer)?.filter(|&count: &u32| count > 0))
 }
 
 // Value-free interruption decision for a step.
@@ -739,6 +805,46 @@ pub struct OverlayHitReceipt {
     pub observation: u64,
     pub live_hit: HitProbeResult,
     pub predicate: OverlayCoverage,
+    // Why an unavailable read gave no answer: one fixed word; any other word drops only this field.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "live_check_reason"
+    )]
+    pub live_check_reason: Option<String>,
+}
+
+// The core's, the iOS client's and the runner's fixed words for a read-only hit probe with no answer.
+const LIVE_CHECK_REASONS: &[&str] = &[
+    "not-identifiable",
+    "no-reader",
+    "no-generation",
+    "no-frame",
+    "late",
+    "threw",
+    "stale-ref",
+    "identity-changed",
+    "runner-refused",
+    "generation-changed",
+    "expired",
+    "no-identity",
+    "absent",
+    "ambiguous",
+    "exception",
+    "deadline",
+    "read-failed",
+    "unreported",
+];
+
+// Any value that is not one listed word drops only this field, never its check or the check's siblings.
+fn live_check_reason<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_str()
+        .filter(|word| LIVE_CHECK_REASONS.contains(word))
+        .map(str::to_owned))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -869,7 +975,17 @@ fn native_capture_ref<'de, D: serde::Deserializer<'de>>(
 fn overlay_checks<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Vec<OverlayHitReceipt>>, D::Error> {
-    Ok(passive(deserializer)?.filter(|checks: &Vec<OverlayHitReceipt>| checks.len() <= 64))
+    // A reason explains only a read that gave no answer.
+    Ok(passive(deserializer)?
+        .filter(|checks: &Vec<OverlayHitReceipt>| checks.len() <= 64)
+        .map(|mut checks| {
+            for check in &mut checks {
+                if check.live_hit != HitProbeResult::Unavailable {
+                    check.live_check_reason = None;
+                }
+            }
+            checks
+        }))
 }
 
 // A plain scroll that passed although every dispatched attempt left the screen unchanged; never an end-of-content proof.

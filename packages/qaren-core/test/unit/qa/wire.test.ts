@@ -8,6 +8,7 @@ import {
   exitCodeFor,
   missingResult,
   parseEnvelope,
+  parsePublicRequest,
   parseRequest,
   readRequest,
   startupRow,
@@ -307,6 +308,22 @@ test('the target may mark a pinned warm lane, and only with true', () => {
     assert.throws(() => parseRequest(line(bad)), /missing required fields/);
 });
 
+test('the request may name the installed app as its source, and only that source', () => {
+  const line = (appSource: unknown) =>
+    JSON.stringify({
+      v: 1,
+      runId: 'check-1',
+      seq: 1,
+      type: 'request',
+      payload: { ...request, appSource },
+    });
+  assert.equal(parsePublicRequest(line('installed')).appSource, 'installed');
+  assert.equal(parseRequest(line('installed')).appSource, 'installed');
+  assert.equal(parsePublicRequest(line(undefined)).appSource, undefined);
+  for (const bad of ['x', 'dev', true, null])
+    assert.throws(() => parsePublicRequest(line(bad)), /missing required fields/);
+});
+
 test('a multibyte character split across chunks still decodes', async () => {
   const line = `${JSON.stringify({ v: 1, runId: 'check-1', seq: 1, type: 'request', payload: { ...request, plan: '✓ "Tasks"\n' } })}\n`;
   const bytes = Buffer.from(line, 'utf8');
@@ -472,3 +489,28 @@ for (const invalid of [
     assert.deepEqual(lines, []);
   });
 }
+
+test('WR1: an Android target may carry only the CLI launch URL for its own Metro port', () => {
+  const url =
+    'rndatest://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8791%2F%3FdisableOnboarding%3D1';
+  const line = (platform: string, androidLaunchUrl: unknown) =>
+    JSON.stringify({
+      v: 1,
+      runId: 'check-1',
+      seq: 1,
+      type: 'request',
+      payload: { ...request, platform, target: { ...request.target, androidLaunchUrl } },
+    });
+  assert.equal(parseRequest(line('android', url)).target.androidLaunchUrl, url);
+  assert.equal(parseRequest(line('android', undefined)).target.androidLaunchUrl, undefined);
+  for (const [platform, bad] of [
+    ['ios', url],
+    ['android', 42],
+    ['android', url.replace('8791', '8792')],
+    ['android', url.replace('127.0.0.1', '10.0.2.2')],
+    ['android', url + '%26x%3D1'],
+    ['android', url.replace('rndatest', 'rnda test')],
+    ['android', 'rnda;test' + url.slice('rndatest'.length)],
+  ] as const)
+    assert.throws(() => parseRequest(line(platform, bad)), /missing required fields/, String(bad));
+});

@@ -14,6 +14,7 @@ import {
 import { REQUIRED_IOS_COMMANDS, REQUIRED_IOS_FEATURES } from '../../../dist/runners/protocol.js';
 import {
   _setActiveSessionForTest,
+  getActiveSession,
   getCachedSnapshot,
   setSnapshotAuthorityProvider,
 } from '../../../dist/agent-device-wrapper.js';
@@ -48,6 +49,43 @@ afterEach(() => {
   _setActiveSessionForTest(null);
   setSnapshotAuthorityProvider(null);
   clearRefMap();
+});
+
+test('a bind snapshot refuses runner UI without recovering the session', async () => {
+  const session = getActiveSession();
+  const requests: { command: string; qaReadOnly?: boolean }[] = [];
+  _setFetchForTest(async (url, init) => {
+    if (String(url).endsWith('/health'))
+      return Response.json({
+        ok: true,
+        protocolVersion: 2,
+        commands: REQUIRED_IOS_COMMANDS,
+        capabilities: REQUIRED_IOS_FEATURES,
+      });
+    requests.push(JSON.parse(String(init?.body)));
+    return Response.json({
+      ok: true,
+      data: {
+        nodes: [{ ...nativeCapture().nodes[0], label: 'AgentDeviceRunner' }],
+        truncated: false,
+      },
+    });
+  });
+  const snapshot = createDeviceSnapshotHandler();
+  const result = parseEnvelope(await snapshot({ action: 'snapshot', leakRecovery: false }));
+  assert.equal(result.ok, false);
+  assert.equal(result.meta.code, 'RUNNER_LEAK');
+  assert.equal(result.meta.recoveryReason, 'not-attempted');
+  assert.equal(result.meta.mutation, 'none');
+  assert.deepEqual(
+    requests.map(({ command, qaReadOnly }) => [command, qaReadOnly]),
+    [['snapshot', undefined]],
+  );
+  assert.equal(getActiveSession(), session);
+
+  // The control enters recovery. The fixture uses this process and provides no
+  // process-birth authority, so teardown refuses before signaling or reopening.
+  await assert.rejects(snapshot({ action: 'snapshot' }), /RUNNER_ADOPTION_REQUIRED/);
 });
 
 test('a walked sign-in code fill waits for a complete post-fill presence capture', async () => {
@@ -485,7 +523,10 @@ test('a container label built from a prefilled child value is masked when comple
     if (truncated !== false) {
       assert.equal(result.verdict, 'REFUSED');
       assert.equal('code' in result && result.code, 'NATIVE_SNAPSHOT_INCOMPLETE');
-      assert.match(result.failure!.seen, truncated ? /causes=truncated\)/ : /causes=unattested\)/);
+      assert.match(
+        result.failure!.seen,
+        truncated ? /causes=read=ordinary,truncated\)/ : /causes=read=ordinary,unattested\)/,
+      );
     } else {
       assert.equal(judge.requests.length, 1, JSON.stringify(result));
       assert.equal(result.verdict, 'FAIL');

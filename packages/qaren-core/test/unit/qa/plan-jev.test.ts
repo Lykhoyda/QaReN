@@ -450,3 +450,34 @@ test('Part A preflight prepares only QA actions and defers Cleanup', async () =>
   );
   assert.deepEqual(readPreparedPlan(markdown, result.prepared), result.prepared.blocks);
 });
+
+test('installed-app preflight refuses every line that needs the model, at its own line, before any Jev call', async () => {
+  const markdown = [
+    '# Installed build',
+    '',
+    '## QA',
+    '1. Tap "Start"',
+    '2. Tap the save button',
+    '3. Visit profile',
+    '✓ "Saved"',
+    '✓ the header shows the name',
+  ].join('\n');
+  const judge = scriptedJudge((questions) =>
+    'preflight' in questions
+      ? { preflight: { type: 'noul', noul: 0.99 } }
+      : Object.fromEntries(Object.entries(questions).map(([id, q]) => [id, choice(q, 'press')])),
+  );
+  const result = await preflightPlan(markdown, judge, { quotedOnly: true });
+  assert.equal(judge.calls.length, 0, 'the model is never asked');
+  assert.ok(!result.ok && result.code === 'PLAN_UNPARSEABLE', JSON.stringify(result));
+  const reason = 'this line needs the model, and installed-app mode runs quoted lines only';
+  const nextAction =
+    'quote the target (its testID or exact label) or make the ✓ line a quoted literal; or run without --installed-app';
+  assert.deepEqual(result.refused, [
+    { line: 5, reason, nextAction },
+    { line: 6, reason, nextAction },
+    { line: 8, reason, nextAction },
+  ]);
+  const quoted = await preflightPlan('1. Tap "A"\n✓ "Done"', throwingJudge(), { quotedOnly: true });
+  assert.ok(quoted.ok && quoted.jevRequired === false && quoted.jev.calls === 0);
+});

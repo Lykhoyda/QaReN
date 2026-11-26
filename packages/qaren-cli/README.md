@@ -86,6 +86,7 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
 | `ios-lane` | Only with `--device <simulator-UUID>`: read-only check of that simulator against the [warm-lane contract](#warm-lane) |
 | `ios-simulator-log` | Reports the [simulator system-log policy](#ios-admission-and-cleanup); this policy row does not inspect or clear a log |
+| `raw-logs` | Reports the process-log policy (see **Process logs** under [iOS admission and cleanup](#ios-admission-and-cleanup)); this policy row does not inspect any log |
 | `ios-lane-log` | Only with `--device <simulator-UUID>`: warns that this simulator keeps typed field text in its system log, with the command that clears its checked log store; it removes nothing |
 | `1x-claude-plugin`, `1x-codex-plugin` | The rn-dev-agent 1.x plugin, marketplace and caches in Claude Code, Codex and Cursor |
 | `1x-mcp` | A hand-registered 1.x MCP server in `~/.claude.json`, `.mcp.json`, `~/.cursor/mcp.json` or `$CODEX_HOME/config.toml` |
@@ -753,12 +754,88 @@ app and running device: `--remove-app` on a borrowed Android device refuses
 probes the device only through the borrowed adb server, rechecking compatibility
 before device probes and reporting them as inconclusive if that check fails.
 
+### Test an installed release build
+
+```sh
+qaren check --installed-app --plan-file <plan.md>
+```
+
+`qaren check --installed-app` requires an iOS simulator with a release build of
+the app you installed yourself. The checkout still needs `package.json`, an
+existing `pnpm-lock.yaml`, and `devClientScheme` in `.qaren/config.yaml`.
+QaReN checks for `git`, `node`, `ps`, and `xcrun`. It launches the installed
+app without replacing it or attaching a debugger.
+
+QaReN taps and types as the plan directs, so a run can change the app's data,
+including data on its servers. QaReN cannot make the run read-only. Use an account
+and environment where those changes are acceptable. Strict media rules always
+apply in this mode.
+
+Use quoted action targets and quoted `✓` literals. Targets must be readable in
+the native accessibility tree by `testID` or exact visible label. A secure-field
+fill passes with `UNVERIFIED_FILL` because the value reads back masked. Verify
+the result with a subsequent step or check. QaReN can handle system dialogs,
+but an unplanned app screen or login wall stops the step and leaves the app in
+place. Add those screens to the plan, including any sign-in steps.
+
+| Case | Result | Next step |
+| --- | --- | --- |
+| `--installed-app` on a verb other than `check`, including `pr` | Usage error (exit 2) | Use `qaren check`. |
+| Android | `INSTALLED_APP_UNSUPPORTED` | Omit `--installed-app` or use an iOS simulator. |
+| `--fresh-install` | `INSTALLED_APP_UNSUPPORTED` | Omit `--fresh-install` to keep the installed app, or omit `--installed-app`. |
+| `--record` | `INSTALLED_APP_UNSUPPORTED` | Omit `--record`. |
+| A missing `devClientScheme`, `package.json` or `pnpm-lock.yaml` | Standard configuration or checkout refusal | Supply the required configuration and checkout files. |
+| A plan line needs model interpretation or does not match the grammar | `PLAN_UNPARSEABLE`, with an entry per invalid line before device access | Quote each target and `✓` literal, use supported plan syntax, or omit `--installed-app`. |
+| A dead run holds the lease for a simulator it created | `DEVICE_BUSY` | Use a simulator QaReN did not create, or clean up the earlier run if its simulator can be deleted. |
+| The app is missing | `INSTALLED_APP_MISSING` | Install the build to test or omit `--installed-app`. |
+| The bundle has no `main.jsbundle` | `INSTALLED_APP_NOT_STANDALONE` | Install a release build with `main.jsbundle` or omit `--installed-app` to test a development build with Metro. |
+| The selected app is one of QaReN's own runner apps | `CORE_REFUSED` | Choose another app. |
+| The launched app exited or its process identity cannot be proven | `CORE_REFUSED` with `INSTALLED_APP_PROCESS_UNPROVEN` | Start the app by hand on the simulator and check that it stays open, then rerun. |
+| The runner cannot bind or read the app | `CORE_REFUSED` with `INSTALLED_APP_BIND_FAILED` or `INSTALLED_APP_READ_FAILED` | Rerun once. If it repeats, report the code and run ID. |
+| Startup exhausts the attach budget (120 seconds by default) or the remaining walk budget | `CORE_REFUSED` with `INSTALLED_APP_OPEN_TIMEOUT` | Rerun once. A first start may build or download the runner. If it repeats, report the code and run ID. |
+| A quoted target is visible only to React | `PLAN_STEP_FAILED` | Give the control a `testID` or exact visible label. |
+| An unplanned app screen or login wall covers the target | `PLAN_STEP_FAILED` | Add the missing steps to the plan. |
+| A tap target matches a wrapper and its inner control | `TARGET_AMBIGUOUS` | Quote the inner control's own identifier. |
+| A fill target does not appear as an input in the native tree | Fill refusal | Use an input exposed in the native tree, or omit `--installed-app`. |
+| The installed app's JavaScript changes during the walk | `CANDIDATE_DRIFTED` | Rerun against an unchanged build. |
+
+The report identifies the installed version and build when that information
+is available. It identifies that build as tested only when the final check
+proves its JavaScript is unchanged.
+
+Installed-app mode always uses strict media rules and records
+`video_policy_source: installed-app mode`. A `non-strict` declaration produces
+an override notice on stderr. There is no recording and no model call. A plan
+with protected inputs takes no screenshots, and typed values are redacted from
+run text. Without protected inputs, screenshots stop when a secure field or
+input value is observed. App-displayed text, such as a name or balance, can
+still appear in local report text and earlier screenshots. Protected values
+travel locally over the private input channel and in the runner's typing and
+verification commands. The simulator's system log can contain typed and displayed
+field text. For runs with inputs, see `platform_log` for clearing guidance.
+When QaReN taps a system dialog button, its label is written to the run log.
+
+This mode skips Metro, the app build, and all pnpm commands. The checkout can
+omit `node_modules`.
+
+A default iOS `check` or `pr` still replaces the installed app with QaReN's
+development build. After simulator admission and boot, before any
+`--fresh-install` reset, build or install, it looks the app up once with
+`simctl get_app_container`. When the installed bundle contains a regular
+`main.jsbundle` file, stderr prints a `▸` notice naming
+`qaren check --installed-app`, and the receipt's `outcomes` record the same
+text under `non_development_app_installed`, whether or not the run then
+succeeds. A missing file, a directory of that name, or a failed or timed-out
+lookup gives no notice. `--installed-app` and `qaren prepare` skip the lookup.
+
 ### Record a check
 
 `qaren check` records no video by default. Once a check reaches the walk, its
 receipt and stderr summary say
-`video: not recorded; pass --record to qaren check to record this walk`; a check
-refused earlier (preflight, build) carries no video line.
+`video: not recorded; pass --record to qaren check to record this walk`
+(`video: not recorded: installed-app mode makes no recording` with
+`--installed-app`, which refuses `--record`); a check refused earlier
+(preflight, build) carries no video line.
 `qaren check --record` records the walk through the same recorder, start rules,
 encode and trimmed copy as `qaren pr`, including the runtime-input rule and the
 Android API 34 requirement. `--record` on `qaren pr` changes nothing, because `pr`
@@ -782,13 +859,14 @@ The receipt's `outcomes` gains these keys:
   carries `unavailable(recording started; the run ended before it was finalized; the raw capture is kept in media/)`.
 - `video_file`: `media/video-published.mp4`, only when the status is `available`
   and that file exists.
-- `video_policy_verdict`: present only with `video_file`. It is the declared
-  [video policy](#video-publication)'s privacy verdict for that file alone
+- `video_policy_verdict`: present only with `video_file`. It is the effective
+  [media policy](#video-publication)'s privacy verdict for that file alone
   (`eligible`, or a withheld value with its reason and `keep this file local`),
   not permission from `qaren publish`.
 - `video_next_step`: when there is no video, what to change: shorten or split the
-  plan, install ffmpeg and ffprobe, declare `video: non-strict` for runs with
-  runtime inputs, use an API 34+ emulator, or rerun with `--record`.
+  plan, install ffmpeg and ffprobe, record runs with runtime inputs (this requires non-strict rules, a TEST-PII-only
+  inventory, and private output mode off; a standard run uses non-strict rules with
+  no video key or with video: non-strict; keep real secrets classified as SECRET), use an API 34+ emulator, or rerun with `--record`.
 
 The stderr summary prints the `video:` and `video file:` lines. Recording adds a
 recorder process and an encode and trim after the walk (each ffmpeg step is
@@ -1373,7 +1451,11 @@ Resolution, frame comparison and hit testing share one 300 ms deadline.
 Missing retained identity, a generation mismatch, zero or ambiguous live
 matches, and failed or over-budget checks leave the check unavailable and
 permit ordinary dispatch as before; the [strict overlay path](#covered-target-recovery)
-instead requires a proven live hit. Stable taps check `XCUIElement.isHittable`; ordinary exact
+instead requires a proven live hit. Such an ordinary tap's reply names why the
+check was unavailable (`expired`, `no-identity`, `absent`, `ambiguous`,
+`exception`, `deadline` or `read-failed`), and its ledger row counts it in
+`inconclusivePresses`; an authorised tap whose outcome stayed unknown is counted in
+`pressOutcomeUnknown` (see [presses sent after an inconclusive live check](#press-guard-evidence)). Stable taps check `XCUIElement.isHittable`; ordinary exact
 fills use the frame guard without an extra hittability read, then keep the
 existing focus-point check when a focus tap is needed. An input's hit test
 applies only when the focus point lies inside its frame; a wrapper-centre focus
@@ -1492,6 +1574,80 @@ system-alert button tap fails `SYSTEM_ALERT_TAP_FAILED` the same way, so neither
 is reported as performed. Issues raised by reads before or after the gesture,
 such as the readback of a code field that vanished after its fill, do not
 change the result.
+
+<a id="uncertain-outcome-reasons"></a>
+When a step ends `ACTION_OUTCOME_UNCERTAIN`, including in nested login replays
+and interruption dismissals, the core sets the existing `failure.subreason` to
+one of seven fixed words. Each word has a fixed explanation:
+
+| `subreason` | When | Explanation |
+| --- | --- | --- |
+| `keyboard-visible` | the iOS runner refused a tap because of the keyboard | The device runner refused the tap because of the on-screen keyboard |
+| `alert-blocked` | the iOS runner refused a drag with `APP_ALERT_INTERRUPTION` and mutation `none` | An app alert was open over the gesture point and the device runner did not perform the drag |
+| `dispatch-unconfirmed` | any other send whose outcome was not confirmed: a runner timeout or transport error, an unconfirmed drag or alert tap, a Maestro flow that threw | QaReN could not confirm the outcome of the action |
+| `context-unverified` | the dispatch context could no longer be validated after the action was authorized | QaReN could no longer validate the dispatch context after the action was authorized |
+| `deadline-expired` | the action's deadline passed after it was authorized | The time allowed for the action ran out after it was authorized |
+| `scroll-unverified` | a scroll towards the target was not confirmed and the capture after it was unusable | A scroll towards the target was not confirmed and the capture after it could not be used |
+| `unknown` | no classified reason; any other value is recorded as `unknown` | QaReN recorded no classified reason for the uncertain outcome |
+
+The first refusal of an action decides the reason; a cancellation keeps
+`RUN_CANCELLED`. On Android, `keyboard-visible` and `alert-blocked` do not
+occur. No input value, screen label or app text reaches the word, its
+explanation or a diagnostic that carries the reason; existing fields such as
+`failure.screen` keep their own masking rules. When the final receipt's failure is this `PLAN_STEP_FAILED`, it keeps that
+`subreason`, and its two next-action values (`failure.next_action` and the
+top-level `next_action`, always equal) and its `recovery` (`failure.recovery`
+and the top-level `recovery`, always equal) are written last, from the run's
+final state. Both next actions start with the explanation and `; ` (subject to
+[input value masking](#input-value-masking), like any receipt text) and go on
+in complete sentences. Nothing in them comes from the app or the plan: a ledger
+`suggestion` stays in `failure.suggestion` and is not repeated in them
+(`report.md` still shows it as a suggested plan edit).
+
+| Final state | After the explanation | `recovery` |
+| --- | --- | --- |
+| Runner recovery that selects no rung (retain and report) | leave the process, device and lease untouched, and report the recorded runner cleanup reason to the run or device owner | `ios_runner_cleanup` with its reason, no rung selected, nothing destroyed, no OK needed |
+| Runner recovery that selects a rung | review any available evidence without repeating the action, starting with this run's report; for a held run, the resources it recorded for inspection and `qaren status <run-id>`; then the selected step, which is the cleanup sentence with the rung's own precondition (a storage failure first checks that the run's record storage is writable and runs the cleanup once; a cleanup retry first waits until the recorded driver exits and runs it once; a simulator shutdown first requests shutdown of only this run's simulator, with the user's OK), and the stop sentence | `ios_runner_cleanup` with its reason, rung and action; that rung's instruction is the selected step itself, and its flags count ending the hold or a simulator shutdown (destroys state, needs the user's OK) and removing the PR worktree or a pending simulator stop (destroys state) |
+| Held | the review; the resources this run recorded for inspection and `qaren status <run-id>` for their current status; the cleanup sentence, which asks for the user's OK to end the hold; the stop sentence | uncertain, cleanup owed |
+| Not held, cleanup owed (an unclean leg, or a build lock whose release failed) | the review, the cleanup sentence, the stop sentence | uncertain, cleanup owed |
+| Not held, teardown clean, no cleanup owed | the review and the stop sentence | uncertain, nothing owed |
+
+The cleanup sentence runs `qaren cleanup <run-id> --json` after the review
+(for a held run, only with the user's OK to end the hold and the inspection it
+keeps open; for a runner simulator shutdown, only with the user's OK to shut
+down the lent simulator), says that it attempts to release this run's recorded resources,
+names only the consequential effects this run recorded (ending the hold,
+releasing a build lock teardown did not release, removing the run's PR worktree
+with any files in it, shutting the simulator down and removing its log store as
+`--shutdown-device-on-exit` asked) and points to the cleanup receipt for the
+result. The stop sentence says: if you cannot establish whether the action took
+effect, leave the outcome unresolved and stop. A runner recovery's rungs other
+than the selected one say only that they are not selected. An uncertain
+`recovery` has `reason: action_outcome_uncertain`, `action: check_action_effect`
+(the review), `next_rung: null`, `automatic`, `destroys_state` and
+`requires_user_ok` false, and five rungs that are not applicable: rung 1 says a
+new `qaren check` or `qaren pr` starts the plan from its first step and can
+repeat an action that already took effect. When cleanup is owed,
+`own_cleanup_required` is true and `own_run_id` names the run; that obligation
+is separate from the ladder's cleanup-and-fresh-prepare rung. A runner recovery
+always has `own_cleanup_required` true; `own_run_id` names the run when a rung
+is selected, and is absent under retain and report, where the run's resources
+wait for their owner. `check --installed-app` adds no sentence to these
+failures. Such a failure is not matched as a repeat. `run.json` keeps the
+walk's failure as recorded before these final rules: the explanation followed
+by the usual re-run advice, or by the ledger suggestion when there is one; no
+recovery; and (since this change) no `--installed-app` sentence. `ledger.json`
+carries the word when the CLI persists the core's step-failure ledger.
+
+Limits: a CLI-owned failure that supersedes the walk failure, a cancellation
+that arrives late, and a ledger the CLI writes itself (as for a cancellation
+while it waits for the core to exit) carry neither the word nor the
+explanation. The console line prints `failure: <detail> — next: <next action>`, so the
+explanation follows `— next:` there. Stored words follow [input value masking](#input-value-masking) like
+any other receipt text. The guarantee covers what QaReN's own core writes.
+An unchanged screen and a covered target keep their own failures and get none
+of these reasons. Retries, captures, `failure.seen`, the trace and `report.md`
+do not change.
 
 <a id="covered-target-recovery"></a>
 
@@ -1634,6 +1790,15 @@ an anonymous or ambiguous identity, or an older runner retains the refusal with
 “no live hit read was available”. Each poll probes a carrier at most once and
 reuses the result only within that observation and native snapshot generation.
 The row's `overlayChecks` records `liveHit` and the value-free cutter facts.
+When the production iOS overlay probe gives no answer (`liveHit: unavailable`),
+QaReN records a fixed `liveCheckReason`: one word from QaReN (`not-identifiable`,
+`no-reader`, `no-generation`, `no-frame`), its iOS client (`stale-ref`,
+`identity-changed`, `generation-changed`, `runner-refused`, `late`, `threw`), or
+the runner (`expired`, `no-identity`, `absent`, `ambiguous`, `exception`,
+`deadline`, `read-failed`). `unreported` means that no runner reason was
+accepted: QaReN accepts one only on a reply that is exactly `unavailable` at the
+requested snapshot generation. The same entries appear for an inferred-overlay
+Fill. An older adapter that returns only the bare result can omit the field.
 
 An iOS Fill under the same inferred cover also requires a positive read-only
 probe to skip inferred-overlay clearance. A negative or unavailable probe ends
@@ -1893,7 +2058,7 @@ value. Apart from that one replacement recovery and the ladder step below, faile
 keyboard typing is not retried. Before the pre-focus comparison, fallback tap or
 no-target typing dispatch, the value is protected under the
 [shared masking rules](#input-value-masking), and screenshots follow the
-[declared policy](#video-publication). For block persistence after fallback, see [Saved blocks](#saved-blocks).
+[effective media policy](#video-publication). For block persistence after fallback, see [Saved blocks](#saved-blocks).
 Eligibility is owned
 by the [resolver](../qaren-core/src/qa/resolve.ts), exact identity counting by
 the [shared identity model](../qaren-core/src/qa/identity.ts), and both are
@@ -1991,7 +2156,16 @@ age (`ageMs`) and whether a device action ran after it (`afterDispatch`);
 carry `failure.screen` from the newest admitted observation, without target-miss
 `subreason` or `suggestion`; a previous-planned-press veto may supply the
 [recovery suggestion](#step-recovery). Other non-target causes, including render
-errors and failed scroll dispatches, carry none of these three failure fields. Labels follow the
+errors and scroll dispatches that returned a failed result, carry none of these three
+failure fields. A step that ended `ACTION_OUTCOME_UNCERTAIN`, a scroll included, adds
+only `subreason`, one of the seven [uncertain-outcome reasons](#uncertain-outcome-reasons);
+its `screen` and `suggestion` keep their existing sources (a rejected check's screen
+and the interruption-ownership suggestion). The exception is
+`check --installed-app`: there every `PLAN_STEP_FAILED` other than a
+previous-planned-press veto or an [uncertain outcome](#uncertain-outcome-reasons)
+sets `suggestion` and `next_action` to its usual next
+action followed by a fixed sentence naming the mode's native-screen-only limits;
+a repeat notice below wraps that `next_action` rather than replacing it. Labels follow the
 [input value masking contract](#input-value-masking), including its fixed-control-word
 exception when screen text is withheld; testIDs remain unless they hold a
 protected value, in which case they are masked whole. `suggestion` is one plan edit
@@ -2000,7 +2174,9 @@ for the miss reason; target-miss suggestions carry no app text and point to
 the walk's `next_action`, subject to the [cleanup precedence](#ios-admission-and-cleanup).
 It describes what was observed and never
 proposes a Wait for an enabled state, because a quoted Wait passes on a disabled control.
-Repeat matching applies only to target-class failures carrying a `subreason`.
+Repeat matching applies only to target-class failures carrying a `subreason`; a
+failure with one of the seven uncertain-outcome reasons is not target-class and is
+not matched as a repeat.
 When one of the last 20 `check` runs failed the same plan line with the same code and
 subreason on the same platform, app, recorded Git revision, worktree fingerprint
 and plan hash, `failure.repeat` names it and the walk's guidance leads with
@@ -2263,6 +2439,20 @@ Quoted waits and scroll-until targets also accept a unique visible testID as
 identity evidence, independently of literal text; a React-only twin of a native
 element carrying that testID does not break its uniqueness.
 
+On Android, an element can be on screen but hidden in place: Android reports it
+as not visible to the user although its frame overlaps the visible area with its
+centre inside, such as a code field's transparent input behind its digit boxes.
+A Wait never counts such an element present. When a Wait on its testID ends in a
+definite stable absence, the failure's last observed screen shows that element
+hidden in place, and that screen's own diagnosis is that the target is absent,
+the failure says so. For a native input, the suggestion gives examples of
+visible testIDs to wait for and suggests a Tap if the app provides a control
+that focuses the input; for another element, it suggests waiting for a visible
+control. When a saved login block replayed by [recovery](#step-recovery) fails
+that way, the failure of the step it interrupted carries the same suggestion,
+prefixed `in the saved login block:`. iOS reports no visible-to-user fact, so
+this does not apply there.
+
 When a literal check fails and a node's label contains the plan's literal, the
 failure can explain why that node did not count: `not-visible` means it was
 reported not visible to the user or was outside the viewport;
@@ -2381,7 +2571,8 @@ absence observations sharing one screen signature normally fails at its deadline
 “did not appear”; it does not report expired evidence for that stable absence.
 For a quoted value that is not a stored text selector, the failure adds why from
 identifiers and frames only: no captured element carries the identifier, several
-do, or the one that does is React-only, offscreen or has its centre covered.
+do, or the one that does is React-only, offscreen (on Android possibly hidden in
+place, as the failure then says) or has its centre covered.
 When those stable absence observations identify one React-only match, the quoted
 wait fails with `TARGET_REACT_ONLY` (`PLAN_STEP_FAILED`, exit 1). Its detail uses
 identifiers, kinds and frames, without labels, placeholders or field values, to
@@ -2505,8 +2696,8 @@ cause, including streamed rows retained after an interrupted walk.
 `mediaWithheld.screenshots` holds the
 first `reason`, optional `kind` or `source`, `line` and withheld screenshot `count`.
 `mediaWithheld.video` holds the publication-window cause and line, without a
-count: the strict privacy cause for strict or undeclared runs, or the protected
-cause for non-strict runs. In non-strict mode, a later protected cause replaces
+count: the strict privacy cause for strict runs, or the protected
+cause for non-strict runs (including runs without a video key). In non-strict mode, a later protected cause replaces
 an earlier `runtime-input` or `echo` with source `input`, including its observation
 line. A successful pre-plan login resets the video window and, in non-strict mode,
 the screenshot cause and count; a retained cause then uses the new window's
@@ -2522,7 +2713,8 @@ These cases and any refusal before admission report
 which withholds video in either mode.
 When a privacy cause is recorded, the receipt includes one
 `media_withheld=<code>[/<kind|source>]@line <N>` note,
-preferring the video cause in non-strict mode and the screenshot cause otherwise.
+preferring the video cause in non-strict mode (also when the config has no video key) and the screenshot cause otherwise.
+For a run that declares video: strict outside installed-app mode, QaReN checks the first recorded screenshot cause, falling back to the video cause when there is no screenshot entry. If that cause is generic-value and the non-strict video verdict is eligible, the receipt hint MEDIA_WITHHELD_GENERIC_VALUE and the local report give the line, cause and next step.
 `report.md` marks each row with a recorded privacy cause and explains
 the first screenshot cause and line. Line 0 means privacy latched before the walk.
 
@@ -2530,15 +2722,15 @@ the first screenshot cause and line. Line 0 means privacy latched before the wal
 | --- | --- | --- |
 | `secure-field` | A secure field was on screen, even empty. | Start a new run already signed in, without visiting the secure field. |
 | `input-value` | An editable field showed text, including an Android label or hint. | Avoid the screen or clear the field in the app's test data. |
-| `generic-value` | A non-input element exposes an accessibility value; `kind` names its native category. | Check whether the accessibility value carries data. |
+| `generic-value` | A non-input element exposes an accessibility value; `kind` names its native category. | Check whether the accessibility value carries data. This cause alone permits capture under non-strict rules. For a run that declares video: strict outside installed-app mode, the receipt hint and local report give a next step when the first recorded screenshot cause (or the video cause when there is no screenshot entry) is generic-value and the non-strict video verdict is eligible. |
 | `echo` | A value already treated as private reappeared as text; `source` names its provenance. | For `typed`, use a test value the app does not echo, including saved-login literals. `observed` means a value previously seen in a field or other value carrier. `secret`, `code`, `input` and `concealed` are expected privacy guards. |
 | `runtime-input` | The run holds runtime inputs. | Expected for input runs; see [reusable sign-in](#reusable-sign-in-example) for login inputs. |
 | `concealed-fill` | A filled field could not be read back. | For a clean media window, the field must be seen and then leave the screen before login completes; strict screenshots require a new run. |
 | `code-row` | One-character boxes showed a typed value. | Expected for code-entry screens. |
 
-In strict or undeclared mode, the first screenshot cause remains sticky for the run,
+In strict mode, the first screenshot cause remains sticky for the run,
 even after the field leaves the screen. Start a new run on a screen without private
-data or runtime inputs to obtain strict screenshots. In non-strict mode, screenshots
+data or runtime inputs to obtain strict screenshots. In non-strict mode, which is also the default without a video key, screenshots
 use the same protected-value gate and pre-plan login window as video; ordinary
 accessibility values and TEST-PII inputs do not alone withhold them. See
 [video publication](#video-publication). These diagnostics do
@@ -2594,9 +2786,13 @@ The [screen projection](../qaren-core/src/qa/screen.ts) owns this policy.
 
 The native snapshot is the privacy boundary before walking a screen. Capture
 refuses with `NATIVE_SNAPSHOT_INCOMPLETE` unless native completeness is attested;
-the refusal reports a value-free node count and fixed cause codes, with read count
-and elapsed time when Wait exhausts its retry deadline. Native
+the refusal reports a value-free node count and fixed cause codes, with the read
+taken (ordinary or presence), the number of native reads the capture made and its
+elapsed time, waits and the React read included; a Wait that exhausts its deadline
+reports its own polls and time. Native
 acquisition failures also refuse without reinjection or a public-tree fallback.
+The ordinary iOS app-tree traversal emits at most 600 nodes. A truncated result
+makes the walk's privacy capture refuse with `NATIVE_SNAPSHOT_INCOMPLETE`.
 The privacy boundary is unchanged: an incomplete native snapshot is never walked
 or masked. A Wait re-reads on its normal poll cadence within its existing deadline;
 if a complete read recovers but the quoted target stays absent, the Wait retains
@@ -2802,10 +2998,12 @@ private-value masking described below.
 
 ### Input value masking
 
-**Screens with a secure field.** Failure screen-text evidence becomes
-`[screen text withheld: a secure field is on screen]`, and moved-target identity
-labels become `•••`, whenever the capture contains any secure field, including
-empty or offscreen fields. The failure reason remains available, but its appended
+**Screens with a secure field.** When a capture contains any secure field,
+including an empty or offscreen field, moved-target identity labels become `•••`.
+The screen text appended to a failure becomes
+`[screen text withheld: a secure field is on screen]` unless a development error
+overlay is in front, in which case QaReN reports the number of lines withheld.
+The failure reason remains available, but its appended
 screen-text context is withheld. This presence-based rule does not apply to a
 later capture without a secure field; known private values still follow the
 shared masking rules below, but an unknown secret's ordinary-text echo remains
@@ -2908,9 +3106,9 @@ masked whole. Structural masking remains unioned with value-based fragment maski
 
 Opaque tokens preserve complete-value identity for model comparisons. An
 unobserved protected value or hidden input content cannot prove an assertion.
-In strict or undeclared mode, once sensitive input pixels, code rows or a protected
+In strict mode, once sensitive input pixels, code rows or a protected
 value's visible echo are observed, screenshots are withheld for the rest of the walk.
-Non-strict screenshots follow the [declared policy](#video-publication). See the
+Non-strict screenshots follow the [effective media policy](#video-publication). See the
 [structural privacy regression cases](../qaren-core/test/unit/qa/split-digit-privacy.test.ts)
 and [Saved blocks](#saved-blocks).
 
@@ -2930,6 +3128,7 @@ plan preflight -> device selection -> lease + durable run record
 ### Fresh install
 
 `--fresh-install` works with `qaren check` and `qaren pr` on iOS and Android.
+`qaren check --installed-app` refuses it.
 Under the run's device lease, strict admission must succeed before removing the
 selected app and its data. If the app is installed, QaReN uninstalls it and
 reads the app inventory again to prove absence before installation and the walk.
@@ -3349,13 +3548,15 @@ failures.
 
 ### Warm lane
 
-A simulator the run explicitly owns is pinned before launch and, on `check`,
-its first screen is proven before row 1, so the leg starts on a pinned, launched
-app rather than an unknown device. Ownership means `prepare` on iOS (its created
-simulator or `--device <UUID>`), or any `check`/`pr --fresh-install` on its
+Except with `--installed-app`, a simulator the run explicitly owns is pinned
+before launch and `check` proves its first screen before row 1. Ownership means
+`prepare` on iOS (its created simulator or `--device <UUID>`), or any `check`/`pr --fresh-install` on its
 resolved simulator, including automatic selection, or `--boot-device` or
 `--restart-device` with an exact `--device`. Plain `check` on the
 booted simulator reads and writes none of its locale or keyboard settings.
+`check --installed-app` never pins the lane, even with `--boot-device` or
+`--restart-device`; its session open still turns off the simulator's
+autocorrection and prediction.
 
 Before launch, on that UUID only, QaReN reads the device's global domain and
 `com.apple.Preferences` with `simctl spawn <UUID> defaults export` and writes
@@ -3425,13 +3626,13 @@ and types retain their original hash operands, even at the filled field, and a r
 does not mask them to a constant. SECRET matches win on equal or overlapping values; a
 TEST-PII alias cannot leave a SECRET value unmasked in a label hash. Repeated declarations
 across the plan and configured login block must agree before device selection. Input tiers have no
-config or global opt-in and no inferred environment policy; media eligibility follows the separate [declared policy](#video-publication). Any extra `QAREN_INPUT_` variable
+config or global opt-in and no inferred environment policy; media eligibility follows the separate [effective media policy](#video-publication). Any extra `QAREN_INPUT_` variable
 in the environment, even one the plan does not use, keeps logs withheld.
 In a TEST-PII run only `core.log`,
 failure screen text and Fill readback come back redacted by the declared values; Metro and
 other subprocess logs stay withheld as in a SECRET run. Declared-value redaction includes
 an e-mail's local part, plus-less local part, domain and
-percent- or HTML-encoded forms; screenshots and video follow the [declared policy](#video-publication). Derived e-mail forms
+percent- or HTML-encoded forms; screenshots and video follow the [effective media policy](#video-publication). Derived e-mail forms
 shorter than 3 characters (for example a 2-letter local part) are not redacted on their own,
 while the full address and every longer derived form always are. Core evidence and CLI
 logs also redact Unicode case variants, including length-changing mappings such as
@@ -3449,7 +3650,8 @@ secret despite artifact redaction.
   namespace removed after its spec's environment is applied, including names the spec sets.
 - Before device selection, `check` and `pr` run `walk.js --preflight-stdin` twice: an
   inventory of the names required by the plan and the configured login block, then the plan
-  preflight with only those values on private stdin. Missing or empty names refuse
+  preflight with only those values on private stdin. `check --installed-app` inventories
+  the plan alone. Missing or empty names refuse
   `PLAN_INPUT_MISSING` with run id `none`; invalid values and runtime mismatches refuse
   `CORE_REFUSED`. Neither phase writes a run directory, lease or log.
 - `pr` fetches and verifies the head before inventory, then reads the configured login block
@@ -3458,8 +3660,8 @@ secret despite artifact redaction.
   Inputs that block names must also appear in the inventory of the plan and the invoking
   checkout's login block; any other name refuses `PLAN_INPUT_MISSING`. Effective sensitivities
   must match too, including strict defaults, so a PR cannot downgrade an owner's secret.
-  `check` re-reads its owned login block before device selection, and the core rechecks it
-  before the session opens.
+  Unless `--installed-app` is passed, `check` re-reads its owned login block before device
+  selection, and the core rechecks it before the session opens.
 - The core receives the values only inside its stdin request. The walker types them, saves
   slot fills as `inputText: { input: "PASSWORD" }` and replays saved and login blocks with
   the current run's values. A TEST-PII slot saves as
@@ -3474,8 +3676,8 @@ secret despite artifact redaction.
   marker, preflight/subprocess output excerpts and command summaries are withheld, and
   native runner output tails are not retained. After an input is promoted to SECRET before
   typing, subsequent core log writes and failure screen text are withheld. A run that
-  requires inputs skips screenshots and recording unless `video: non-strict`
-  is declared and the run holds only TEST-PII inputs; detected SECRET causes still
+  requires inputs skips screenshots and recording unless non-strict rules apply (no video key, or
+  video: non-strict) and the run holds only TEST-PII inputs; detected SECRET causes still
   withhold screenshot and video publication.
 - Slot runs retain value-free structured events in `core-diagnostics.jsonl` beside `core.log`:
   `metric` has measured stage timings, and `timing` has decision/dispatch timing, finite outcome
@@ -3508,7 +3710,7 @@ secret despite artifact redaction.
   the attempt count, last started and completed boundary, attach stage (only when the last
   started boundary is `attach`), failure class,
   relaunch count, whether the relaunch failed, app liveness (`probe_failed` when the iOS
-  app-job probe errors or times out), the bundle-request observation when probed
+  app-job probe or the Android `pidof` read errors or times out), the bundle-request observation when probed
   (`received`, `not_received`, `unknown` or `probe_failed`) and elapsed, remaining and budget milliseconds.
   Optional bundle outcomes and advertised-device counts follow the
   [admission contract](#development-target-admission).
@@ -3529,7 +3731,7 @@ secret despite artifact redaction.
   verified by the same guard before hashing. This includes later account screens and inputs
   supplied by a configured login block that was never replayed. No echo declaration is
   required for this masking; screenshots and video follow the
-  [declared policy](#video-publication), and output redaction remains active.
+  [effective media policy](#video-publication), and output redaction remains active.
 - After a block's `Expect input NAME on screen` line, until the block ends, a label whose
   whole-value strict echoes are all of declared inputs hashes as the same constant marker; a
   label that also holds an undeclared input's value uses verified redaction instead. Every
@@ -3626,6 +3828,11 @@ in recovery; a fresh install requires separate authorization for app-data loss.
 Other recovery reasons retain their existing 1-based rungs.
 
 Runs and evidence live under `$QAREN_HOME/runs/<run-id>/` (`~/.qaren` by default).
+
+**Process logs.** Process logs in a run's `logs/` folder may contain private app or tool output, such as your app's own console lines in the Metro log. For failures that previously quoted the last lines of a process log, newly created failures record the log's location in `failure.log.file` instead; the displayed path passes through receipt redaction. On Unix, the CLI requests mode `0600` when it creates a subprocess capture file in `logs/`. The process umask can restrict it further. If a coding agent reads log lines into its context, those lines can reach its model. A credential printed by your app or an install script can reach your coding agent when it reads a log or a failed-install receipt. QaReN's capture and summary paths mask known values and common secret patterns or withhold output, but an unrecognized credential can pass through. A planned opt-in privacy mode will omit captured install output from new failed-install receipts and direct raw-log inspection to a person. This version has no switch for suppressing captured install output. For the failing-step detail and walked-row reasons, the findings comment uses fixed summaries for recognized cases and an omission notice for other reasons. A recorded scroll warning takes precedence. A capture-refusal row can also show QaReN's reconstructed capture diagnostic. Local reports, receipts, watch and ledgers keep their existing rendering and redaction. QaReN does not edit a findings comment it has already posted. A run folder is a working folder, not something to share, and QaReN cannot control an upload step you write: uploading a run folder uploads these logs. Run folders made by earlier versions keep their logs, and a failed run's `run.json` may still hold up to 25 log lines under `failure.evidence` until this version next saves that record. Other failure text can contain tool output. For example, a failed dependency install can include the last lines of the captured command. QaReN withholds that summary when the process creating it has any `QAREN_INPUT_*` variable. A later `qaren status` can still display a summary saved by an earlier run.
+
+A receipt that names `artifacts.run_dir` also carries a short form of this notice in `outcomes.raw_logs` when that run has a `logs/` folder; `qaren doctor` reports it as the `raw-logs` policy row.
+
 Device and
 native-build locks are machine-wide by default.
 `QAREN_MACHINE_LOCKS` is on when unset, empty or `1`; `0` opts out to the
@@ -3734,13 +3941,16 @@ ladder. Follow that advice: explicit owned-runner cleanup is the supported recov
 rebuilding cannot clear a surviving driver. If explicit host recovery fails, request
 shutdown of only that simulator, obtain approval first if it is lent, then retry cleanup;
 QaReN has no standalone shutdown command. Missing driver proof means retain and report;
-storage failures require restoring
-write access before one cleanup retry. Fresh preparation follows proven absence.
+storage failures require checking that the run's record storage is writable,
+restoring it if needed, before one cleanup retry. Fresh preparation follows proven absence.
 An unclean check keeps its original failure code. For a non-held run, its
 `next_action` follows runner recovery advice when present; otherwise it points
 to this run's cleanup. Any existing
 target suggestion or repeat guidance follows those cleanup instructions in both
-`failure.next_action` and top-level `next_action`. Lost lease
+`failure.next_action` and top-level `next_action`. An
+[uncertain outcome](#uncertain-outcome-reasons) is the exception: its two
+next actions and its recovery, including a runner recovery's ladder, are
+written last and repeat no suggestion. Lost lease
 or owner proof selects retain-and-report advice, never simulator shutdown.
 
 When the leased simulator had no runner host as the
@@ -3802,7 +4012,9 @@ and keeps the log. Missing
 runtime or candidate-directory evidence also leaves the stop unresolved. Exit shutdown
 cannot be added afterward to a released run. A dead lease
 holder is reclaimed only through that run's cleanup; a live or unprovable holder
-refuses `DEVICE_BUSY`. Every holder records its HOME, and the refusal names
+refuses `DEVICE_BUSY`. `check --installed-app` also refuses `DEVICE_BUSY`, instead
+of reclaiming, a dead holder whose run created the simulator, because that run's
+cleanup can delete the simulator and the installed app. Every holder records its HOME, and the refusal names
 `HOME='<holder home>' qaren cleanup <run-id>`, which recovers it from any session.
 A device, native-build or USB lock whose holder is proven dead (its process gone or
 replaced, as after a reboot) and whose run record (`run.json`, or a native suite's
@@ -3836,6 +4048,11 @@ device, which reclaims the dead holder through the same cleanup. Holds do not ex
 The receipt's top-level `next_action` is `qaren cleanup <run-id> --json`.
 Its `failure.next_action` keeps the plan edit or repeat guidance first, followed by
 the retained resources, `qaren status <run-id>` and `qaren cleanup <run-id> --json`.
+For an [uncertain outcome](#uncertain-outcome-reasons) without runner recovery,
+both next actions are that failure's review guidance, which names the resources
+the run recorded for inspection, `qaren status <run-id>` for their current
+status and, after the review and only with the user's OK to end the hold,
+`qaren cleanup <run-id> --json`.
 If runner recovery is required, the recovery instructions take precedence as
 described above.
 
@@ -4162,6 +4379,27 @@ read when it saw any, and a suggestion to insert a `Wait for` the target before
 that line, or move an earlier wait to an element that renders with it. See
 [row timing](#row-timing) for the measured wait duration.
 
+On Android, an authored Fill with a quoted target that is refused
+`TARGET_NOT_FOUND` on a read with the app in front, before the step has sent any
+action of its own, gets one more attempt: after recovery, QaReN waits 500 ms and
+runs the step again. Its next target decision is taken only on a capture with
+the app in front; on any other surface the step goes back to recovery with its
+first refusal. The ledger records one `retry` row ending "deciding again on a
+fresh read". If the field is then an eligible text field the Fill proceeds. If
+that decision refuses, its refusal carries "; decided again on a fresh read"
+(other clauses may follow it); ordinary recovery can still handle an
+interruption after it and let the step pass, and when the step ends on that
+refusal the receipt keeps the clause. A capture refusal, a later attempt's
+refusal or a cancellation keeps its own receipt. This happens at most once per
+step and never replaces the first-target launch wait. Stored selectors,
+described targets, Tap, Wait, iOS, ambiguous targets and steps that already sent
+a scroll or Fill keep their behavior. A field that turns into a text field later
+than that one fresh capture still fails; wait for an element that renders
+together with the field before the Fill. On every platform, when a Fill's
+on-screen matches are neither all disabled nor all unhittable but none is a
+text field, the suggestion is to quote the text field's own testID or move this
+testID onto the field.
+
 If interruption recovery after a target-resolution failure throws
 `NATIVE_SNAPSHOT_INCOMPLETE`, that capture refusal remains the outcome and adds
 `step-reason=<word>` for the step's first reason: `target-not-found`,
@@ -4461,10 +4699,12 @@ step once protection has lapsed. An opt-in declined outside
 protection is declined again when it returns. System permission alerts follow the
 dialog rules above.
 Login replay also clears the withheld-dismissal diagnostic for the retried item.
-While protected, recovery still answers system
-prompts and dev menus and still replays login, but withholds every app decline,
-including the recheck before dispatch, and an ambiguous decline set does not
-refuse. If login replay has not cleared the veto, a failing target-class step reports
+Planned-press protection leaves the usual
+system-prompt, dev-menu and login-replay rules in effect. While protection is
+active, only the strict permission opt-in above is eligible for an app decline,
+including at the pre-dispatch recheck. Multiple decline candidates alone do not
+produce `INTERRUPTION_AMBIGUOUS` while protected.
+If login replay has not cleared the veto, a failing target-class step reports
 subreason `previous-plan-press`, and `failure.seen` includes
 `the previous planned press succeeded; the next target
 was not found; automatic app dismissal was withheld` (or, when later items passed
@@ -4473,11 +4713,14 @@ later steps passed while a decline control stayed on screen; ...`), and the walk
 `next_action` is `inspect_last_observed_screen`, also on a repeat, with a
 `failure.recovery` of reason `previous_plan_press` whose five rungs are all
 inapplicable. A failed check after such a veto
-carries the same `failure.seen` note without a subreason. A sheet that appears while the planned surface
-is still on screen, including one that opens together with it, is therefore not
-dismissed either. When the protected screen is opt-in shaped or has only a decline
-control, the failure names its class even with text withheld and suggests adding
-a step after the planned press that taps the named decline, with privacy masks intact.
+carries the same `failure.seen` note without a subreason. While planned-press
+protection remains active, recovery can decline a sheet over the planned surface,
+including one that appeared with it, only under the strict permission opt-in
+exception. After a planned-press veto, the failure can identify a permission opt-in
+or a screen with only a decline control. When the walker suggests adding a tap after
+the planned press, it uses the decline label if the label passes its privacy check
+or the words "the decline control" otherwise. Output masking can also affect the
+completed suggestion.
 A failed row's reason also says why recovery dismissed nothing when presence evidence
 was unreadable, late or incomplete, when a decline control's visibility or press could
 not be proven after a planned press, or when a protected screen was not a strict opt-in
@@ -4791,6 +5034,82 @@ a measured zero is retained. Focused Fill records zero settle probes when
 client settle is disabled and native send measurements are available. Availability
 depends on the platform and dispatch path; absent fields do not mean zero cost.
 
+<a id="press-guard-evidence"></a>
+
+**Presses sent after an inconclusive live check.** An ordinary iOS point tap
+whose live hit check is unavailable is still sent as before; QaReN records it
+and does not refuse, delay or change the press. The runner's tap reply carries
+`liveCheckReason`, one of `expired` (the captured target belongs to an older
+snapshot), `no-identity` (the target has neither identifier nor label),
+`absent` (no live match), `ambiguous` (more than one live match), `exception`
+(the live search threw), `deadline` (the 300 ms deadline passed) or
+`read-failed` (the frame or hittability read threw). The core records
+`unreported` when a reply says the check was unavailable without a listed word,
+for example from a runner without this field. The strict path keeps its
+message: `deadline` and `read-failed` still read `unavailable` there.
+
+- Row `inconclusivePresses`: `{word: count}`, the presses of that row sent after
+  an unavailable check.
+- Row `pressOutcomeUnknown`: the authorised press commands of that row with no
+  usable reply, direct or recovered, whose command journal answered `unknown`
+  or could not be read. The step still fails as before; whether the gesture ran
+  is unknown.
+
+Both fields are omitted when nothing was recorded, and the CLI reads them
+passively: an unlisted word or a zero or negative count drops that field and
+keeps the row. Counts are exact for the rows that were written; a press whose
+row was never written, for example because the run was killed, is not counted.
+
+The receipt's `ledger` summary lists them per operation as
+`inconclusive_presses` (`operation_id`, `line`, `counts`) and
+`press_outcome_unknown` (`operation_id`, `line`, `count`). Every attempt of one
+operation is summed, and login-replay steps stay apart from plan steps that
+share a line. A row without an operation id is its own entry, without
+`operation_id`. `report.md` and the published comment add a note beside the
+verdict on any verdict, without changing the verdict
+(` · N presses sent after an inconclusive live check`,
+` · outcome unknown for M press commands`), and the counts on each row line;
+`report.md` adds two Run details lines. A count is not a finding about which
+element was tapped. A run with neither has no new field, list or note.
+
+`logs/core.log` gets one `action-live-check={"reason":…,"reported":…}` line per
+such press, where `reported` is `word`, `none` (no word) or `unlisted`. Like
+other core log lines it is withheld when the run has strict inputs and
+input-redacted otherwise.
+
+In `ledger.json`, every row's `operationId` and `line` and its two evidence
+fields are exempt from input redaction, names and values, and so are the
+receipt's two lists and the `steps` and `ledger` names that lead to them. Token
+masking (`GH_TOKEN`, `GITHUB_TOKEN`) and the published comment's final privacy
+pass still apply:
+
+- An input equal to `operationId`, `line`, `inconclusivePresses`,
+  `pressOutcomeUnknown`, a reason word, or, in the receipt,
+  `inconclusive_presses`, `press_outcome_unknown` or a name inside those lists,
+  is kept: rows keep their ids, lines and evidence and operations are not
+  merged. An input equal to `steps` or `ledger` keeps that name only where it
+  leads to such evidence. An input inside a row's free text (`reason`, `text`)
+  is masked as before.
+- A token equal to a reason word masks it in every map that holds it; the CLI
+  then drops those maps and keeps the rest of each row. A token equal to
+  `operationId` masks that name, so every row reads back with id 0 and each
+  evidence row is its own summary entry. A token equal to `line` or `steps`
+  makes `ledger.json` unreadable and publication stops with its "is unreadable"
+  error; a token equal to `ledger` leaves a receipt without its summary when
+  read back. Masking matches inside longer words: a token equal to `line` also
+  changes `deadline`.
+- The check and the publication are separate processes with their own inputs:
+  a reason word that is an input of the publishing process is masked in the
+  comment and other counts stay; one that is an input of the checking process
+  only is shown.
+- An input equal to another member the ledger needs, such as a row's
+  `attempt`, still makes the ledger unreadable, as before.
+
+Limits: Android records nothing, so the note never appears there and its
+absence says nothing. A tap on a keyboard key returns before the live check.
+Native type focus and the strict path are unchanged. The trace and `qaren watch`
+events do not carry the word.
+
 The ledger's `speed` summary groups timed action/check rows by operation, keeping
 login-replay steps separate from plan steps that share a line and kind. Every retry,
 passing and failing attempt of one operation sums into one logical-step duration,
@@ -4894,10 +5213,11 @@ approval and ownership proof. Total walk expiry before admission uses
 `inspect_admission_budget`; elapsed time alone does not establish bundle mode.
 A live app with no registered target and a received or unknown bundle-request
 signal keeps waiting within the walk budget; once a target registers, setup uses
-the registered-target deadline. Before any target registers, a no-target wait
-can refuse after the attach limit when the app is proven dead or Metro has
+the registered-target deadline. On iOS, before any target registers, a no-target
+wait can refuse after the attach limit when the app is proven dead or Metro has
 received no bundle request since the latest launch. Liveness and bundle-request
 evidence are re-read at that boundary; each relaunch rebases the request count.
+Android's early refusal is described below.
 Patient no-target manifest recovery below keeps
 its distinct warming, relaunch and post-relaunch attach deadlines, all clipped
 to the remaining walk budget.
@@ -4912,8 +5232,9 @@ can precede visible pixels. One gate per admission reads at most every 2 s
 across readiness windows; loading keeps holding and loaded releases. Any other
 answer asks again until 15 s pass with no read showing the app's process,
 counted from the last loading answer or, before one, from the first read; then
-attachment is allowed as before for the rest of the admission. While it asks
-again, each readiness window ends as in a hold, so the wait spends no attach
+attachment is allowed as before until this launch ends or a restart re-arms the
+gate. While it asks again, each readiness window ends as in a hold, so the wait
+spends no attach
 budget. The walk budget bounds the hold, and the attach budget starts at the
 first target registration after it; a start still loading at the walk budget
 refuses `CDP_NOT_CONNECTED/target_readiness_timeout`. Admission-built attach
@@ -4924,6 +5245,105 @@ their run time), target listed, debugger connect, the driver check allowing the
 opening (a decision, not proof of a readable driver table), proof start and
 admission return; the post-admission overlay phase is budgeted separately. iOS
 has no gate.
+
+On Android, when QaReN installs and launches the app itself and at least 15 s of
+the manifest warm-up are left, it runs Metro's request probe with a 5 s limit
+before the manifest request, so Metro's bundle request count is armed before
+launch. Just before the launch it reads Metro's bundle request and outcome counts
+and passes them to the core when both count files are readable; otherwise the
+receipt notes `bundle_request_count=unavailable`. The `expo run:android` route,
+or a Metro that QaReN did not start, passes no counts: the request reads
+`unknown` and the count never refuses. While no readiness wait has returned a
+target, each wait that fails with a readiness timeout of the attach step, and
+that the admission would retry with walk time left, is judged twice. First the
+count, from the attach budget on (unlike the registered-target deadline above,
+this clock includes the first-views hold), unless the wait was an unanswered
+target list: a count file that is readable and equal to its value at launch
+means no bundle request. Otherwise, unless the first-views gate's last decision
+was to hold, and only with at least 41.5 s of walk left, one process probe
+(below), cut at 11 s: two empty reads mean the app is dead, on every route.
+Either is refused at that wait, unless QaReN launched the app itself with its
+dev-client link and the walk budget can still hold the restarted start's own
+budget (below) after the restart's command allowances, 94 s in all: then QaReN
+restarts it, once per admission. If the reads before the stop take so long that
+the force-stop, its proof and the start (81 s of command allowances) could no
+longer return in time for that budget, nothing is stopped and the start is
+refused as without a restart. After a proven stop the start is always sent once;
+on a slow host the restarted start can then get less than its own budget, and
+the walk's end refuses it with its next step. Before the restart it reads the
+device's process table and refuses at once, without a restart, when a row
+matches another automation driver (UIAutomator, Maestro, agent-device or an
+instrumentation) or the table cannot be read; it then reads the reason again,
+and a start that has moved on, or whose count cannot be read again, is left
+alone. The restart is `am force-stop`, a `pidof` that proves the process gone,
+and the same `am start` as the launch, sent once and never repeated, even when
+it times out. The restarted start then has its own budget: the attach budget,
+but at least 60 s, counted from when the start command returned. The early death
+and zero-count rules begin at the end of that budget, with Metro's count rebased
+to the restart. An eligible held turn can check Metro's count. The death probe
+waits for gate release and sufficient walk time. If no probe fits, the walk can
+end with `not_probed`. Other admission failures retain their existing timing. A
+restart that fails after the force-stop is refused at once, and the app may be
+left stopped. `core.log` records an `android start: restart:` line once the app
+is proven stopped and one when the start command returns, without the link; a
+failed force-stop or proof writes neither. The walk deadline cancels
+pending waits and process probes; delayed timer delivery and writing the
+refusal's diagnostics can delay its publication. The CLI's own `adb-am-start`
+attempt notes are unchanged.
+
+Every refusal the Android admission builds itself names the app's process: the
+probe that decided it, or else one probe while time is left in the walk budget:
+an `adb shell pidof` read that prints a process ID is `alive`; an empty read is
+followed one second later by a second read, and two
+empty reads are `dead`; a failed or unexpected read is `probe_failed`. The probe
+is cut at the walk deadline, and with no time left liveness stays `not_probed`.
+For other refusals, when a refusal carries Metro's counts, they are the count it
+was decided on, or else the counts read at the refusal while no wait has returned a
+target, or those of the idle `dev_runtime_unproven` refusal whose message prints
+them; they are what Metro's log recorded on the port at the count check, for every
+device on that port. After a wait has returned a target the counts are left out,
+except for the idle `dev_runtime_unproven` refusal. When recovery fails, including
+at the walk deadline, the refusal keeps the request count observed on the
+deciding turn. If that turn read no count, it reports `unknown`. A count-only
+`received` names the recorded request without claiming a build outcome.
+`elapsedMs` is measured when the refusal is built, after the process read. The
+"likely cause" sentence about the dev client's manifest timeout is iOS-only. On
+Android, the note before the first-views note names the process (`the app's
+process was running`, `was not running` or `could not be checked`), Metro's counts
+(`at the count check Metro had recorded no bundle request on this port since the
+launch`, or a recorded request with a failed, a completed or no completed build,
+or with build outcomes that could not be read, or a recorded request alone
+(`a bundle request was recorded on this Metro port since the launch`) when only
+the count was read) and, for a deadline after the debugger was attached and
+React was ready, the step it ended in. Each Android
+refusal the admission builds itself gets a cause, a `next_action` and the five
+rungs in `failure.recovery`, from the first matching end state:
+
+| End state | Cause | `next_action` |
+| --- | --- | --- |
+| every scoped target answered `__DEV__` false (`DEV_TARGET_MISSING`) | `non_dev_bundle` | `use_development_bundle` |
+| QaReN did not restart: a process-table row matched another automation driver | `app_restart_blocked_by_driver` | `wait_for_other_driver` |
+| QaReN did not restart: the device did not answer | `app_restart_blocked_unreadable` | `check_device_connection` |
+| the restart did not complete | `app_restart_failed` | `check_device_connection` |
+| the app's process not running after a restart | `app_process_dead_after_restart` | `inspect_app_crash` |
+| the app's process not running | `app_process_dead` | `inspect_app_crash` |
+| development mode unproven, React not ready | as on iOS | as on iOS |
+| attached; a deadline ended in the driver check, opening or proof | `attach_budget_after_connect` | `retry_attach_once` |
+| a target wait timed out with no bundle request recorded after a restart | `bundle_not_requested_after_restart` | `check_metro_reachable` |
+| a target wait timed out with no bundle request recorded | `bundle_not_requested` | `retry_launch_once` |
+| a target wait timed out with a request and a failed or no completed build | `bundle_not_built` | `inspect_metro_bundle` |
+| any other target wait timeout, including unreadable build outcomes | `no_attachable_target` | `inspect_app_screen` |
+| any other class | `attach_unexplained` | `inspect_admission_evidence` |
+
+`DEV_TARGET_MISSING` keeps its code, message and next step; on Android its facts
+and note carry the process. Refusals that pass the admission by keep their codes
+and next steps, and the CLI's own walk-expiry refusal is unchanged. With a strict
+input the refusal's text is withheld as before, and the facts and the recovery
+carry the state; for a restart, `relaunches`, `relaunchFailed` and
+`relaunchBlocked` carry it, and no screen or input text is read; with a TEST-PII
+input the text is kept and matching words are redacted. An older `qaren` cannot
+decode these causes and actions in a run folder
+written by this version.
 Target readiness and attachment accept only a runtime Metro reports with the
 requested `appId` bundle identity (and on iOS, under the run's simulator name on
 that same target), so another app on the selected device or another booted
@@ -5011,14 +5431,14 @@ also returns `CDP_NOT_CONNECTED` with measured host load (or an explicit
 unavailable measurement), regardless of load. After admission, deadline
 expiry remains `WALK_DEADLINE_EXCEEDED`.
 The refusal names the observed boundary, typed failure, app liveness and request
-observation, probing liveness within the remaining deadline if this launch had
-not yet done so, and reading an unprobed request signal unless the app is proven
-dead. When available, `warmMs` records the final answer's milliseconds and
+observation; on iOS it probes liveness within the remaining deadline if this launch
+had not yet done so, and reads an unprobed request signal unless the app is proven
+dead (Android's reads are described above). When available, `warmMs` records the final answer's milliseconds and
 `warmAttempts` the total request count from the latest successful manifest warm-up,
 initially the CLI's. A successful admission warm-up replaces them even if the
 subsequent relaunch fails or is skipped; a failed warm-up retains the previous
-measurements. With no bundle request, the likely-cause message follows the
-patient recovery distinction above.
+measurements. With no bundle request, the iOS likely-cause message follows the
+patient recovery distinction above; Android's refusal reads are described above.
 The deadline preserves the latest retry's failure class instead of
 replacing it with a generic probe timeout. Empty target lists, targets on another
 device, another bundle and unanswered list requests have distinct classes.
@@ -5181,10 +5601,10 @@ video also carries a closed `videoReason` code (`not-recorded`,
 `other`) in the receipt and `pr.json`, keeping the detail text unchanged; a
 too-large recording is its own outcome, and unrecognized detail text in older
 `pr.json` files loads as `other`. `qaren publish` stores the reason it published
-in `publication.json` and the receipt's `publicationVideoReason`. When no video
-is attached, the receipt's `video_summary`, `report.md` and `qaren publish`
-repeat the PR comment's video sentence: the withholding reason when the video
-is not eligible, otherwise the unavailability reason. A kept video can also have
+in `publication.json` and the receipt's `publicationVideoReason`. For withheld video, QaReN reports the selected policy's withholding reason. For
+unavailable video, the local report and run receipt can include recorder detail.
+Newly rendered public text and the publish receipt use fixed wording for the
+closed reason, with structured continuity information when available. A kept video can also have
 a `video_summary` explaining recorded runner recovery. The local recording stays
 complete; `qaren publish` uploads only
 `media/video-published.mp4`, trimmed under the [video publication contract](#video-publication).
@@ -5230,7 +5650,8 @@ video or upgrade the original publication verdict.
 
 `qaren publish` posts one comment: the structured PASS/FAIL/REFUSED verdict and refusal code, the
 tested commit, an eligible available video, the plan with ✓/✗ per walked line,
-an available failing screenshot and collapsed run details. Plan lines come only
+an available failing screenshot and collapsed run details. The failing-step
+detail uses a fixed summary or an omission notice. Plan lines come only
 from the walk's own rows, never from the raw plan file, so typed values stay out.
 The hostname, home directory, user name, absolute paths, device UUIDs, the run's
 device ids, serials and ports (recorded privately in `pr.json` as
@@ -5247,7 +5668,7 @@ section between `<!-- qaren-proof:start -->` and `<!-- qaren-proof:end -->` line
 pull request description: the verdict, the tested commit, a link to the comment, and the
 video. The video is the asset the comment upload already produced, used only when the comment
 attached it under the [video publication rules](#video-publication); a withheld or missing
-video shows the comment's own video sentence and no URL. Publishing a new `qaren pr` run
+video shows the comment's own video sentence and no URL. A proof section without a video URL uses the current public wording. Publishing a new `qaren pr` run
 replaces an existing section instead of adding one; re-publishing a run whose section was
 already written leaves it unchanged. Text outside the markers is kept byte for byte relative to the body
 publish last read; publish makes up to three reads and writes only after two consecutive
@@ -5293,16 +5714,11 @@ failed lookup cannot prove publication; the verified push or fallback path
 remains available. Reconciliation neither rewrites history nor claims earlier
 content passed the current privacy gate.
 
-Each step is recorded in `publication.json`. Before retrying an attempted post,
-publication regenerates the QA report from the current verdict file and walk rows,
-or the saved-block report from blocks admitted by the current publication gate,
-applying current identity redaction. It adopts an existing comment only when its
-author is the authenticated GitHub user and its first-line marker matches the
-run ID and SHA-256 fingerprint of that rendered body, excluding the marker line
-and before attachment rewriting. QA reports and saved-block comments each use
-their own fingerprint, so a lost attachment-post result can be reconciled without
-duplicating the report. Without a matching comment it writes `comment.md` or
-`blocks-comment.md` and posts the regenerated body.
+Each step is recorded in `publication.json`. On retry, QaReN regenerates each body. It can adopt the authenticated publisher's
+QA comment using the current marker or the validated marker from the previous
+`comment.md`. A saved-block comment must match the body generated from the currently
+admitted blocks. If no marker matches, QaReN posts the regenerated body. An
+already-posted comment retains its original wording.
 Cached bodies are not reused. Already-posted comments are neither edited nor deleted.
 
 Publication holds an exclusive file-descriptor lock on `publish.lock`; a
@@ -5312,25 +5728,25 @@ contention.
 
 ### Video publication
 
-Declare the video policy in the selected app config (`--config <path>` selects another file); screenshots use the same setting:
+Declare the video policy in the selected app config (`--config <path>` selects another file); screenshots use the same setting; without the key the run uses dev mode (non-strict rules):
 
 ```yaml
 video: non-strict
 ```
 
-- `strict`: today's privacy checks apply; clean walks can publish.
+- `strict`: privacy mode; today's privacy checks apply; clean walks can publish.
 - `non-strict`: use only when the app shows test data. Non-SECRET observations, literal fills and TEST-PII inputs can publish video and screenshots. Detected SECRET causes still withhold them: secure fields (including empty fields), fills into unreadable fields, concealed fills of protected values, code rows and echoes attributable to protected values. A readable, non-secure field whose native label may contain its value does not alone veto a PUBLIC or TEST-PII fill. A run holding SECRET runtime inputs also withholds video and screenshots, even if they are unused.
-- Absent: strict rules apply and doctor reminds you to declare a policy. Any other value, including null, refuses `SCENARIO_INVALID`.
+- Absent: dev mode, the default: non-strict rules apply, recorded as default-non-strict in the receipt, ledger.json and pr.json; doctor warns so the choice is visible. Runs recorded by earlier versions without a declaration keep their recorded undeclared policy and strict rules when published later. Any other value, including null, refuses SCENARIO_INVALID.
 
-The receipt, report and PR comment name the policy and the selected config: its app-relative path for files inside the invoking project, or its filename for external configs, with private values redacted. The path identifies the declaration, not the backend or dataset. Policy and eligibility are persisted with the run; `qaren publish` never re-reads the current app config. A missing or unknown eligibility verdict still withholds video. Saved-block publication retains strict rules; temporary tap-comparison screenshots follow the selected mode.
+The run receipt and local report name the selected config using the existing local redaction: its app-relative path for files inside the invoking project, or its filename for external configs, with private values redacted. The PR comment names the policy and refers to the selected app config. The optional proof section uses the same fixed reference when it gives legacy policy guidance. Both public bodies omit the config path. Policy and eligibility are persisted with the run; `qaren publish` never re-reads the current app config. A missing or unknown eligibility verdict still withholds video. Saved-block publication retains strict rules; temporary tap-comparison screenshots follow the selected mode.
 
-Feature artwork withheld solely for an ordinary accessibility value without a typed safe path (ANT-664) is eligible in non-strict mode and remains withheld in strict or undeclared mode. The [screenshot publication regression](tests/publish_flow.rs) covers this policy decision with synthetic artwork; it does not establish live device acceptance.
+Feature artwork withheld solely for an ordinary accessibility value without a typed safe path (ANT-664) is eligible in non-strict mode and remains withheld in strict mode and in runs recorded as undeclared by earlier versions. The [screenshot publication regression](tests/publish_flow.rs) covers this policy decision with synthetic artwork; it does not establish live device acceptance.
 
-Only the selected config declares the video mode; no flag, environment variable,
-plan annotation or inferred backend selects it. `--record` turns recording on for a
-check; it does not select the video mode.
+The selected config can declare the video mode. `qaren check --installed-app` forces
+strict mode. `--record` turns on recording for a standard check and uses the
+configured video mode.
 
-SECRET text masking and no readback apply in both modes. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict is an operator declaration, not proof: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in published media. QaReN does not mask media regions or identify the backend. Upgrade every CLI/CI runtime before adding the key; older versions refuse it. Removing the key restores strict behavior.
+Both policies mask SECRET runtime inputs in text output and apply the same readback restrictions to those inputs. When a capture contains a secure field, QaReN leaves its screen element's value unset, uses the private values it has learned to mask matching text in output, skips the row screenshot and withholds video publication for that window. Strict rules withhold subsequent row screenshots for the rest of the run. Under non-strict rules, a successful login replay before the first passing plan row restarts the screenshot window from the latest capture. A local recording can contain the screen, including content shown between captures. A runtime input displayed in a non-secure field can be marked `(test-pii)` only if it is test data; that annotation cannot exempt secure fields or code rows. Non-strict rules apply by default or by explicit declaration. Neither establishes that the app contains only test data: an undeclared secret prefilled into a non-secure field, real personal data, or a value visible only between captures can appear in published media. QaReN does not mask media regions or identify the backend. Use a matching CLI and runtime. CLIs that predate the video key reject configs containing it. Removing the key returns to dev mode (non-strict); declare video: strict for privacy mode.
 
 For non-strict privacy withholding, the report and PR comment name the protected
 cause. They offer the `(test-pii)` hint when a SECRET input is observed in a readable,
@@ -5339,7 +5755,7 @@ window. Secure fields, code rows, protected concealed fills and handler-detected
 private fills suppress that hint, even when runtime-input classification came first.
 An unused SECRET input still withholds video without the hint.
 
-The following eligibility rules describe strict and undeclared runs. Both modes keep the same admission/login window, continuity, media validity and size limits.
+The following eligibility rules describe strict runs and runs recorded as undeclared by earlier versions. Both modes keep the same admission/login window, continuity, media validity and size limits.
 
 Video publication eligibility and a value-free withholding reason are persisted
 in `pr.json`. A plan containing any fill/type step keeps the recording local,
@@ -5423,7 +5839,7 @@ For an interrupted video, `pr.json` records the selected counted signal in
 evidence over an earlier unresolved runner or missing-process observation.
 It includes the owner, epoch time, offset from admission, offset from the start
 of the untrimmed recording and optional plan line. Its `videoWithholdingReason`
-follows the declared video policy, so screenshot privacy is not reported as the
+follows the effective media policy, so screenshot privacy is not reported as the
 cause when non-strict video is eligible. A kept video's report names the first
 retained runner recovery inside its publication window; the runner frames remain
 in the copy. Displayed offsets are measured after admission and mark observation
@@ -6197,6 +6613,26 @@ the slot until the run's group is retired. iOS recovery follows the
 [cleanup and orphaned-lock proof rules](#ios-admission-and-cleanup).
 The lock is released after publication (iOS), after preparation (Android) or
 by cleanup, only when owned build authority is retired.
+On Android under `prepare`, the wait for `expo run:android` to build, install
+and start the app follows the compile step's progress rule above from the
+wait's own start: a time cut first becomes eligible at or after
+`deadlines.build_seconds`; past it the wait goes on while it observes the count
+of output lines increasing within the idle window. The window is three times
+the limit, capped at 7200 s. Each turn checks admission after the slot poll and
+cancellation check. A turn admitted by the end of the window finishes its
+probes. A pending or refused turn also finishes its count read. Scheduling,
+probe execution and file I/O can delay the return beyond the window. The limit
+of this wait is not learned. When it ends by `no_progress` or `window` the
+failure stays `READY_DEADLINE_EXCEEDED` and carries the `limit` block with
+`phase` `expo_run_android` and the `build_time_limit` recovery; when the window
+was already 7200 s, its remedy says no higher `deadlines.build_seconds` extends
+the window and, after cleanup, to read the last lines of the build log (or run
+`pnpm exec expo run:android` yourself when the log is withheld) for the step it
+stood on, fix that and run again. At a time cut QaReN sends no signal. Run
+this run's `qaren cleanup` and check its result.
+Cleanup can report unresolved group ownership or retain the slot. A pass
+records `expo_run_android` in `timings_ms`, and a pass after the limit also the
+`build_limit` outcome.
 
 **Credential-authorized dependency prewarming.** Under `deps.policy:
 require-prewarm`, `qaren prewarm <scenario>` is the one deliberate network
@@ -6388,8 +6824,7 @@ packages/qaren-cli/target/debug/qaren cleanup <run-id> --json --remove-app \
   --confirm-remove-app <run-id>/<remote-serial>/<app-id>   # e.g. <run-id>/emulator-5554/com.rndevagent.testapp
 ```
 
-On failure the receipt carries a bounded `failure.code`, log-tail evidence,
-and exactly one safe `next_action` — no invented setup steps.
+Use the top-level `next_action` when it is present. Some newly recorded build and allocation failures also carry `failure.log.file`, whose displayed value passes through receipt redaction.
 
 ## Measured results (2026-08-12, M-series Mac + NUC11TNKi5 over Tailscale)
 

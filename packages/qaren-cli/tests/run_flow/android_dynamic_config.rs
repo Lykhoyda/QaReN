@@ -12,7 +12,7 @@ enum Evaluation {
 }
 const STABLE: Evaluation = Evaluation::Hashes("aaaa", "bbbb");
 
-fn dynamic_app() -> (PathBuf, PathBuf) {
+fn dynamic_app() -> (common::TempRepo, PathBuf) {
     let (repo, app) = app_repo();
     std::fs::write(app.join("app.config.ts"), CONFIG).unwrap();
     (repo, app)

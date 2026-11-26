@@ -687,6 +687,7 @@ extension QarenIosRunnerTests {
       read: { target in
         var hittable: Bool?
         let exception = RunnerObjCExceptionCatcher.catchException({ hittable = target.isHittable })
+        if exception != nil { self.lastLiveCheckUnavailable = "read-failed" }
         return exception == nil ? hittable : nil
       }
     ).hittable
@@ -710,8 +711,8 @@ extension QarenIosRunnerTests {
       lastLiveCheckUnavailable = "no-identity"
       return .unavailable
     }
-    // Deadline, or a frame or hittability read that threw.
-    lastLiveCheckUnavailable = "unavailable"
+    // Kept when the deadline passes; a frame or hittability read that threw sets "read-failed".
+    lastLiveCheckUnavailable = "deadline"
     let expected = CGRect(
       x: retained.rect.x, y: retained.rect.y,
       width: retained.rect.width, height: retained.rect.height
@@ -752,6 +753,7 @@ extension QarenIosRunnerTests {
           }
           matches = agree
         })
+        if exception != nil { self.lastLiveCheckUnavailable = "read-failed" }
         return exception == nil ? matches : nil
       },
       checkHittability: checkHittability,
@@ -768,6 +770,11 @@ extension QarenIosRunnerTests {
   }
 
   func readHitProbe(app: XCUIApplication, command: Command) -> String {
+    readHitProbeWithReason(app: app, command: command).result
+  }
+
+  // The same read, with the word that says why an unavailable read gave no answer.
+  func readHitProbeWithReason(app: XCUIApplication, command: Command) -> (result: String, reason: String?) {
     let savedTarget = lastLiveTarget
     let savedFrames = lastMovedFrames
     let savedUnavailable = lastLiveCheckUnavailable
@@ -778,10 +785,11 @@ extension QarenIosRunnerTests {
     }
     let check = liveTargetCheck(app: app, command: command, deadline: ProcessInfo.processInfo.systemUptime + 0.3)
     switch check {
-    case .hittable(true): return "hittable"
-    case .hittable(false): return "not-hittable"
-    case .moved: return "moved"
-    case .unavailable: return "unavailable"
+    case .hittable(true): return ("hittable", nil)
+    case .hittable(false): return ("not-hittable", nil)
+    case .moved: return ("moved", nil)
+    // Read before the deferred restore: expired, no-identity, absent, ambiguous, exception, deadline or read-failed.
+    case .unavailable: return ("unavailable", lastLiveCheckUnavailable)
     }
   }
 

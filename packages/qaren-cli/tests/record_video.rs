@@ -90,10 +90,181 @@ fn real_publication_of_the_pr1142_timeline_has_no_dark_frame() {
         .count();
     assert_eq!(dark, 0);
     assert_eq!(std::fs::read(&source).unwrap(), original);
-    std::fs::remove_dir_all(dir).unwrap();
 }
 
-fn walking_record() -> (PathBuf, RunRecord) {
+const BURSTS: &str = "color=c=black:s=320x240:r=60:d=6,geq=lum='if(lt(N,100),20+N*5,if(lt(N,250),85+(N-180)*5,155+(N-300)*5))':cb=128:cr=128,select='lt(t,0.2)+between(t,3,3.2)+between(t,5,5.2)'";
+
+fn stores_more_than_its_gap(raw: &std::path::Path) -> bool {
+    let probe = common::checked_stdout(
+        std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "frame=pts_time,duration_time",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(raw),
+        raw,
+    );
+    let mut frames: Vec<(f64, f64)> = String::from_utf8_lossy(&probe)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.trim_end_matches(',').split(',');
+            Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+        })
+        .collect();
+    frames.sort_by(|a, b| a.0.total_cmp(&b.0));
+    frames
+        .windows(2)
+        .any(|pair| pair[0].1 > pair[1].0 - pair[0].0 + 0.05)
+}
+
+fn parse_pairs<T: std::str::FromStr>(value: &str) -> Vec<(T, T)> {
+    value
+        .split(';')
+        .filter(|pair| !pair.trim().is_empty())
+        .map(|pair| {
+            let (a, b) = pair
+                .split_once(',')
+                .unwrap_or_else(|| panic!("expected a,b: {pair}"));
+            let parse = |x: &str| {
+                x.trim()
+                    .parse()
+                    .unwrap_or_else(|_| panic!("not a number: {x}"))
+            };
+            (parse(a), parse(b))
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "requires ffmpeg and ffprobe on PATH"]
+fn bursty_capture_keeps_each_picture_at_its_time() {
+    let dir = common::temp_repo();
+    std::fs::create_dir_all(dir.join("media")).unwrap();
+    let raw = dir.join("media/raw.mov");
+    common::checked_stdout(
+        std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                BURSTS,
+                "-fps_mode",
+                "passthrough",
+                "-c:v",
+                "libx264",
+                "-bf",
+                "2",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&raw),
+        &raw,
+    );
+    assert!(
+        stores_more_than_its_gap(&raw),
+        "the generated clip no longer contains the fault; this ffmpeg writes other durations"
+    );
+
+    let mut failures = Vec::new();
+    let mut runner = qaren::exec::RealRunner::new();
+    match record::finalize(&mut runner, &dir) {
+        VideoStatus::Available => {
+            failures.extend(common::timeline_failures(
+                &raw,
+                &record::video_path(&dir),
+                0.0,
+                None,
+                &[(3.2, 0.183333), (5.2, 3.2)],
+            ));
+            for (start, end) in [(2_900u64, 5_100u64), (2_917, 5_117)] {
+                match record::publication_copy(&mut runner, &dir, Some(start), Some(end), false) {
+                    VideoStatus::Available => failures.extend(common::timeline_failures(
+                        &raw,
+                        &record::published_video_path(&dir),
+                        start as f64 / 1000.0,
+                        Some((end - start) as f64 / 1000.0),
+                        &[(3.2, 0.183333)],
+                    )),
+                    other => failures.push(format!("publication {start}-{end}: {other:?}")),
+                }
+            }
+        }
+        other => failures.push(format!("finalize: {other:?}")),
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+#[test]
+#[ignore = "requires ffmpeg and ffprobe on PATH"]
+fn kept_capture_keeps_each_picture_at_its_time() {
+    let Ok(kept) = std::env::var("QAREN_TEST_RAW_CAPTURE") else {
+        panic!("set QAREN_TEST_RAW_CAPTURE to a kept raw capture (raw.mov or raw.mp4)");
+    };
+    let kept = PathBuf::from(kept);
+    let dir = common::temp_repo();
+    std::fs::create_dir_all(dir.join("media")).unwrap();
+    let raw = if kept.extension().is_some_and(|ext| ext == "mp4") {
+        dir.join("media/raw.mp4")
+    } else {
+        dir.join("media/raw.mov")
+    };
+    std::fs::copy(&kept, &raw).unwrap();
+    let first = common::first_frame_time(&raw);
+    let arrivals: Vec<(f64, f64)> = std::env::var("QAREN_TEST_ARRIVALS_S")
+        .map(|value| parse_pairs(&value))
+        .unwrap_or_default();
+    let windows: Vec<(u64, u64)> = std::env::var("QAREN_TEST_PUBLICATION_WINDOWS_MS")
+        .map(|value| parse_pairs(&value))
+        .unwrap_or_default();
+
+    let mut failures = Vec::new();
+    let mut runner = qaren::exec::RealRunner::new();
+    match record::finalize(&mut runner, &dir) {
+        VideoStatus::Available => {
+            failures.extend(common::timeline_failures(
+                &raw,
+                &record::video_path(&dir),
+                first,
+                None,
+                &arrivals,
+            ));
+            for (start, end) in windows {
+                let from = first + start as f64 / 1000.0;
+                let to = first + end as f64 / 1000.0;
+                let inside_window: Vec<(f64, f64)> = arrivals
+                    .iter()
+                    .copied()
+                    .filter(|&(new_s, old_s)| {
+                        [new_s, old_s].iter().all(|t| (from..=to).contains(t))
+                    })
+                    .collect();
+                match record::publication_copy(&mut runner, &dir, Some(start), Some(end), false) {
+                    VideoStatus::Available => failures.extend(common::timeline_failures(
+                        &raw,
+                        &record::published_video_path(&dir),
+                        from,
+                        Some((end - start) as f64 / 1000.0),
+                        &inside_window,
+                    )),
+                    other => failures.push(format!("publication {start}-{end}: {other:?}")),
+                }
+            }
+        }
+        other => failures.push(format!("finalize: {other:?}")),
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+fn walking_record() -> (common::TempRepo, RunRecord) {
     let repo = common::temp_repo();
     let record = common::base_record(
         &repo,
@@ -286,7 +457,7 @@ impl qaren::exec::Runner for GitRemoves {
     }
 }
 
-fn pr_run_record() -> (PathBuf, RunRecord, PathBuf) {
+fn pr_run_record() -> (common::TempRepo, RunRecord, PathBuf) {
     let (root, mut record) = walking_record();
     record.resources.recorder = Some(RecorderResource {
         pid: Some(7100),
@@ -303,7 +474,7 @@ fn pr_run_record() -> (PathBuf, RunRecord, PathBuf) {
     let wt = qaren::worktree::pr_worktree_path(&RunRecord::run_dir(&root, &record.run_id));
     std::fs::create_dir_all(&wt).unwrap();
     record.resources.pr_worktree = Some(qaren::runrecord::PrWorktreeResource {
-        repo_root: root.clone(),
+        repo_root: root.to_path_buf(),
         path: wt.clone(),
     });
     record.save(&root).unwrap();
@@ -669,7 +840,7 @@ fn cancellation_during_recorder_readiness_stops_and_retires_the_recorder() {
     assert_eq!(mock.remaining(), 0);
 }
 
-fn android_walking_record() -> (PathBuf, RunRecord) {
+fn android_walking_record() -> (common::TempRepo, RunRecord) {
     use qaren::runrecord::BorrowedEmulatorResource;
     let (root, mut record) = walking_record();
     record.scenario.platform = qaren::scenario::Platform::Android;
@@ -702,7 +873,7 @@ fn android_walking_record() -> (PathBuf, RunRecord) {
     (root, record)
 }
 
-fn android_recording_record() -> (PathBuf, RunRecord) {
+fn android_recording_record() -> (common::TempRepo, RunRecord) {
     let (root, mut record) = android_walking_record();
     record.resources.recorder = Some(RecorderResource {
         pid: Some(7100),

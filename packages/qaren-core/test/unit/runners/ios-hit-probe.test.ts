@@ -41,6 +41,7 @@ struct DataPayload: Codable {
   var handledMs: Double? = nil; var liveCheckMs: Double? = nil
   var snapshotGeneration: Int? = nil; var hitProbe: String? = nil
   var occlusionCheck: String? = nil
+  var liveCheckReason: String? = nil
 }
 struct Response { let ok: Bool; var data: DataPayload? = nil; var error: ErrorPayload? = nil }
 struct QuiescenceStatus { var capabilities: [String] = []; static func current() -> Self { Self() } }
@@ -77,8 +78,11 @@ final class XCUIApplication {
 }
 enum RunnerObjCExceptionCatcher {
   static var fail = false
+  static var failOn = 0
+  static var calls = 0
   static func catchException(_ read: () -> Void) -> String? {
-    if fail { return "exception" }
+    calls += 1
+    if fail || calls == failOn { return "exception" }
     read(); return nil
   }
 }
@@ -93,6 +97,8 @@ final class Harness {
   static let occludedDispatchMessage = "occluded"
   var resolutionDelay = 0.0
   var typed = 0
+  var coordinateTaps = 0
+  var forbidCoordinates = false
   func withTemporaryScrollIdleTimeoutIfSupported(_ app: XCUIApplication, _ operation: () -> Void) { operation() }
   func resolveTypeCommandTarget(app: XCUIApplication, command: Command) -> TypeTargetOutcome {
     Thread.sleep(forTimeInterval: resolutionDelay)
@@ -101,7 +107,11 @@ final class Harness {
   func isExactInputFocused(app: XCUIApplication, element: XCUIElement) -> Bool { element.focused }
   func waitForExactInputFocus(app: XCUIApplication, element: XCUIElement, timeoutMs: Int) -> Bool { element.focused }
   func keyboardFrameIfVisible(app: XCUIApplication) -> CGRect? { nil }
-  func tapAt(app: XCUIApplication, x: Double, y: Double, anchor: XCUIElement? = nil) -> RunnerInteractionOutcome { preconditionFailure("strict focus must never use coordinates") }
+  func tapAt(app: XCUIApplication, x: Double, y: Double, anchor: XCUIElement? = nil) -> RunnerInteractionOutcome {
+    precondition(!forbidCoordinates, "strict focus must never use coordinates")
+    coordinateTaps += 1
+    return .performed
+  }
   func findElement(app: XCUIApplication, text: String) -> XCUIElement? { app.nodes.first }
   func activateElement(app: XCUIApplication, element: XCUIElement, action: String) -> RunnerInteractionOutcome { element.tap(); return .performed }
   func resolvedTouchVisualizationFrame(app: XCUIApplication, x: Double, y: Double) -> (x: Double, y: Double, referenceWidth: Double, referenceHeight: Double) { (x, y, 400, 800) }
@@ -190,7 +200,53 @@ app.nodes = [target]; target.frame.origin.y = 25; probe("moved")
 target.frame.origin.y = 20
 RunnerObjCExceptionCatcher.fail = true; probe("unavailable"); RunnerObjCExceptionCatcher.fail = false
 target.delay = 0.32; probe("unavailable"); target.delay = 0
+func reason(_ expected: String?, _ generation: Int = 7) {
+  let payload = h.execute(command(generation)).data
+  precondition(payload?.hitProbe == (expected == nil ? "hittable" : "unavailable"))
+  precondition(payload?.liveCheckReason == expected, "\\(String(describing: expected))")
+  precondition(h.lastLiveCheckUnavailable == "original")
+}
+retain(); reason(nil)
+retain(nil, nil); reason("no-identity")
+retain(); reason("expired", 6)
+app.nodes = [target, XCUIElement()]; reason("ambiguous")
+app.nodes = []; reason("absent")
+app.nodes = [target]; target.delay = 0.4; reason("deadline"); target.delay = 0
+retain()
 precondition(h.liveTargetCheck(app: app, command: command(), deadline: 0) == .unavailable)
+func ordinaryTap(_ generation: Int = 7) -> Response {
+  h.coordinateTaps = 0; target.taps = 0; RunnerObjCExceptionCatcher.calls = 0
+  return h.tap(try! decoder.decode(Command.self, from: Data(#"{"command":"tap","x":40,"y":40,"snapshotGeneration":\\#(generation),"snapshotNodeIndex":6}"#.utf8)))
+}
+func sent(_ scenario: String, word: String?, check: String, generation: Int = 7) {
+  let reply = ordinaryTap(generation)
+  precondition(reply.ok, "ordinary tap refused \\(scenario)")
+  precondition(h.coordinateTaps == 1 && target.taps == 0, "ordinary tap \\(scenario) was not one coordinate tap")
+  let encoded = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(reply.data!)) as! [String: Any]
+  precondition(encoded["occlusionCheck"] as? String == check, "\\(scenario): occlusionCheck \\(String(describing: encoded["occlusionCheck"]))")
+  precondition(encoded["liveCheckReason"] as? String == word, "\\(scenario): liveCheckReason \\(String(describing: encoded["liveCheckReason"]))")
+}
+func reset() {
+  app.nodes = [target]; target.hit = true; target.delay = 0; target.frame.origin.y = 20; retain()
+  RunnerObjCExceptionCatcher.fail = false; RunnerObjCExceptionCatcher.failOn = 0
+}
+reset(); sent("hittable", word: nil, check: "hit-tested")
+reset(); app.nodes = [target, XCUIElement()]; sent("two matches", word: "ambiguous", check: "unavailable")
+reset(); app.nodes = []; sent("no match", word: "absent", check: "unavailable")
+reset(); retain(nil, nil); sent("no identity", word: "no-identity", check: "unavailable")
+reset(); sent("another generation", word: "expired", check: "unavailable", generation: 6)
+reset(); RunnerObjCExceptionCatcher.fail = true; sent("search threw", word: "exception", check: "unavailable")
+reset(); RunnerObjCExceptionCatcher.failOn = 2; sent("frame read threw", word: "read-failed", check: "unavailable")
+reset(); RunnerObjCExceptionCatcher.failOn = 3; sent("hit read threw", word: "read-failed", check: "unavailable")
+reset(); target.delay = 0.32; sent("deadline", word: "deadline", check: "unavailable")
+reset(); target.hit = false
+let occluded = ordinaryTap()
+precondition(!occluded.ok && occluded.error?.code == "FOCUS_TARGET_OCCLUDED" && h.coordinateTaps == 0 && target.taps == 0)
+reset(); target.frame.origin.y = 25
+let movedTap = ordinaryTap()
+precondition(!movedTap.ok && movedTap.error?.code == "TARGET_MOVED_BEFORE_DISPATCH" && h.coordinateTaps == 0 && target.taps == 0)
+reset()
+h.forbidCoordinates = true
 func typeCommand(focused: Bool = false) -> Command {
   try! decoder.decode(Command.self, from: Data("{\\"command\\":\\"type\\",\\"text\\":\\"x\\",\\"snapshotGeneration\\":7,\\"snapshotNodeIndex\\":6,\\"requireLiveHit\\":true,\\"focused\\":\\(focused)}".utf8))
 }
@@ -221,6 +277,10 @@ precondition(payload.liveCheckMs! >= 0 && payload.handledMs! >= 0)
 precondition(payload.handledMs! >= payload.gestureEndUptimeMs! - payload.gestureStartUptimeMs!)
 let encoded = try! JSONSerialization.jsonObject(with: JSONEncoder().encode(payload)) as! [String: Any]
 precondition(encoded["liveCheckMs"] != nil && encoded["handledMs"] != nil)
+target.taps = 0; target.delay = 0.32
+let late = h.tap(tap)
+precondition(!late.ok && late.error?.code == "LIVE_HIT_UNPROVEN" && target.taps == 0)
+precondition(late.error!.message.hasPrefix("LIVE_HIT_UNPROVEN: unavailable;"), late.error!.message)
 
 `,
   });

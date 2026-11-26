@@ -83,6 +83,7 @@ test('terminal clearance telemetry preserves public rows, screenshots and one-se
     const result = await runPlan(parsePlan('1. Tap "go"').blocks!, f.deps);
     assert.equal(result.verdict, 'FAIL');
     assert.match(result.failure!.seen, /stayed off screen after one scroll: its centre/);
+    assert.equal(result.failure?.subreason, 'present-but-unavailable');
     assert.equal(sends, 1);
     assert.equal(f.captures(), 3);
     assert.equal(shots, 1);

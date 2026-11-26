@@ -85,7 +85,7 @@ fn real_unbound_group_survives_launcher_exit_and_cleanup_retries() {
         log: dir.join("logs/metro.log"),
     });
     record.resources.pr_worktree = Some(PrWorktreeResource {
-        repo_root: root.clone(),
+        repo_root: root.to_path_buf(),
         path: wt.clone(),
     });
     record.save(&runs).unwrap();

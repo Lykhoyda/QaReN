@@ -325,6 +325,7 @@ const ADMISSION_KEYS: &[&str] = &[
     "inner",
     "relaunches",
     "relaunchFailed",
+    "relaunchBlocked",
     "liveness",
     "bundleRequest",
     "bundleBuilt",
@@ -453,6 +454,7 @@ fn clean(value: &Value) -> Option<Value> {
                 "inner",
                 "relaunches",
                 "relaunchFailed",
+                "relaunchBlocked",
                 "liveness",
                 "bundleRequest",
                 "bundleBuilt",
@@ -631,6 +633,7 @@ fn clean(value: &Value) -> Option<Value> {
             "liveness" => Some(&["not_probed", "alive", "dead", "probe_failed"]),
             "bundleRequest" => Some(&["received", "not_received", "unknown", "probe_failed"]),
             "bundleBuilt" => Some(crate::failure::admission::BUNDLE_BUILT),
+            "relaunchBlocked" => Some(crate::failure::admission::RELAUNCH_BLOCKED),
             "healthDetail" => Some(HEALTH_DETAILS),
             "hostChild" => Some(&["alive", "exited", "unknown"]),
             "exitSignal" => Some(RUNNER_SIGNALS),
@@ -750,6 +753,26 @@ fn private_file(path: &Path) -> Option<File> {
 mod tests {
     use super::clean;
     use serde_json::json;
+
+    #[test]
+    fn admission_metric_keeps_only_the_closed_blocked_words() {
+        let mut event = json!({
+            "kind": "metric", "stage": "admission", "edge": "point", "outcome": "failed", "at": 121500,
+            "admission": "refused", "attempt": 4, "lastStarted": "relaunch", "lastCompleted": "retry_wait",
+            "inner": "target_readiness_timeout", "relaunches": 0, "relaunchFailed": false,
+            "relaunchBlocked": "driver_busy", "liveness": "alive", "bundleRequest": "not_received",
+            "elapsedMs": 121500, "remainingMs": 1078500
+        });
+        assert_eq!(clean(&event), Some(event.clone()));
+        event["relaunchBlocked"] = "device_unreadable".into();
+        assert_eq!(clean(&event), Some(event.clone()));
+        event["relaunchBlocked"] = "busy".into();
+        assert_eq!(clean(&event), None);
+        let mut elsewhere =
+            json!({"kind": "metric", "stage": "settle", "edge": "end", "outcome": "ok", "at": 1});
+        elsewhere["relaunchBlocked"] = "driver_busy".into();
+        assert_eq!(clean(&elsewhere), None);
+    }
 
     #[test]
     fn t6_dispatch_trace_keeps_only_closed_words_and_boolean_ok() {

@@ -140,6 +140,31 @@ fn a_private_key_on_either_stream_withholds_the_whole_command_log_in_any_arrival
 }
 
 #[test]
+fn a_fresh_command_log_is_created_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = common::temp_repo();
+    let control = dir.join("control.txt");
+    std::fs::write(&control, "control\n").unwrap();
+    let log = dir.join("fresh.log");
+    assert!(!log.exists());
+    let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+    runner
+        .spawn_group(&shell("printf 'line\\n'\n: > done", &dir), &log)
+        .unwrap();
+    until(|| dir.join("done").exists());
+    runner.flush_logs().unwrap();
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let (log_mode, control_mode) = (mode(&log), mode(&control));
+    if control_mode & 0o077 == 0 {
+        eprintln!(
+            "umask leaves control mode {control_mode:o}: default creation and 0600 look the same here"
+        );
+    }
+    assert_eq!(log_mode, control_mode & 0o600, "log {log_mode:o}, control {control_mode:o}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn a_log_without_a_private_key_keeps_every_line() {
     let stored = spawned_log("printf 'starting\\n'\nprintf 'warn\\n' >&2\nprintf 'tail line\\n'");
     assert!(stored.starts_with("earlier command\n"), "{stored}");
@@ -311,7 +336,7 @@ fn the_bundle_request_count_exists_only_once_metro_logs_a_request() {
 }
 
 #[test]
-fn an_evidence_tail_naming_a_private_key_never_reaches_run_json() {
+fn a_log_naming_a_private_key_never_reaches_run_json() {
     let dir = common::temp_repo();
     let log = dir.join("tunnel.log");
     for mention in [
@@ -327,12 +352,12 @@ fn an_evidence_tail_naming_a_private_key_never_reaches_run_json() {
             "ssh tunnel died".to_string(),
             "inspect the tunnel log",
         )
-        .with_evidence(vec![qaren::commands::log_tail(&log, 25)]);
+        .with_log(&log);
         persist_failure(&dir, "tailrun", failure.clone());
         let recorded =
             std::fs::read_to_string(qaren::runrecord::RunRecord::path(&dir, "tailrun")).unwrap();
         assert!(!recorded.contains(FAKE_BODY), "{recorded}");
-        assert_eq!(failure.evidence, vec![PRIVATE_KEY_WITHHELD.to_string()]);
+        assert!(failure.evidence.is_empty());
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -854,13 +879,10 @@ fn subprocess_fixture_worker() {
     let failure = Failure::new(
         "build",
         FailureCode::BuildFailed,
-        "fixture failed",
+        format!("fixture failed; .env echo {KEY}"),
         "inspect log",
     )
-    .with_evidence(vec![
-        qaren::commands::log_tail(&log, 25),
-        format!(".env echo {KEY}"),
-    ]);
+    .with_log(&log);
     persist_failure(dir, "build-failure", failure);
 
     let output = runner.run(&shell(
@@ -882,8 +904,7 @@ fn subprocess_fixture_worker() {
         FailureCode::DepsInstallFailed,
         output.stdout.clone(),
         "retry",
-    )
-    .with_evidence(vec![output.stdout]);
+    );
     assert!(!serde_json::to_string(&failure).unwrap().contains(KEY));
     persist_failure(dir, "capture-failure", failure);
 
@@ -988,19 +1009,23 @@ fn a_live_tail_never_copies_a_body_whose_mention_awaits_its_newline() {
     let spawned = runner.spawn_group(&shell(&script, &dir), &log).unwrap();
     until(|| dir.join("done").exists());
     runner.flush_logs().unwrap();
+    let live = std::fs::read_to_string(&log).unwrap();
+    assert!(live.contains(PRIVATE_KEY_WITHHELD), "{live}");
+    assert!(!live.contains(FAKE_BODY), "{live}");
     let failure = Failure::new(
         "metro",
         FailureCode::TunnelFailed,
         "not ready".to_string(),
         "inspect the log",
     )
-    .with_evidence(vec![qaren::commands::log_tail(&log, 25)]);
+    .with_log(&log);
     persist_failure(&dir, "liverun", failure);
     unsafe { libc::kill(-spawned.pgid, libc::SIGKILL) };
     let recorded =
         std::fs::read_to_string(qaren::runrecord::RunRecord::path(&dir, "liverun")).unwrap();
     assert!(!recorded.contains(FAKE_BODY), "{recorded}");
-    assert!(recorded.contains(PRIVATE_KEY_WITHHELD), "{recorded}");
+    let value: serde_json::Value = serde_json::from_str(&recorded).unwrap();
+    assert_eq!(value["failure"]["log"]["file"], log.display().to_string());
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -1203,8 +1228,7 @@ fn registry_output_fixture_worker() {
                         FailureCode::DepsInstallFailed,
                         &retained,
                         "check registry setup",
-                    )
-                    .with_evidence(vec![retained.clone()]);
+                    );
                     persist_failure(dir, "registryrun", failure.clone());
                     no_canary(
                         &std::fs::read_to_string(qaren::runrecord::RunRecord::path(
@@ -1356,5 +1380,52 @@ fn a_test_pii_only_run_withholds_subprocess_logs_and_summaries_from_startup() {
     assert_eq!(unused_secret, "[private output withheld]\n");
     let test_pii = drained("metro.log", &["EMAIL"], false);
     assert_eq!(test_pii, "[private output withheld]\n");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+// Lets a waiting child end on every exit path of the test, a failed assertion included.
+struct Release(std::path::PathBuf);
+impl Drop for Release {
+    fn drop(&mut self) {
+        let _ = std::fs::write(&self.0, "");
+    }
+}
+
+#[test]
+fn r7_a_group_child_asked_to_count_is_counted_while_it_lives() {
+    let dir = common::temp_repo();
+    let _release = Release(dir.join("release"));
+    let mut runner = RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into());
+    let wait =
+        "n=0; while [ ! -f release ] && [ \"$n\" -lt 1000 ]; do n=$((n+1)); sleep 0.01; done";
+    let counted = dir.join("build.log");
+    runner
+        .spawn_group(
+            &shell(
+                &format!("printf 'compiling\\nsee the private key file\\n'\n{wait}"),
+                &dir,
+            )
+            .count_lines(),
+            &counted,
+        )
+        .unwrap();
+    let plain = dir.join("metro.log");
+    runner
+        .spawn_group(&shell(&format!("printf 'one\\n'\n{wait}"), &dir), &plain)
+        .unwrap();
+    until(|| qaren::exec::log::read_line_count(&counted) == Some(2));
+    runner.flush_logs().unwrap();
+    let live = std::fs::read_to_string(&counted).unwrap();
+    assert!(live.contains(PRIVATE_KEY_WITHHELD), "{live}");
+    assert!(!live.contains("compiling"), "{live}");
+    until(|| {
+        runner.flush_logs().unwrap();
+        std::fs::read_to_string(&plain)
+            .unwrap_or_default()
+            .contains("one")
+    });
+    assert!(!qaren::exec::log::line_count_path(&plain).exists());
+    drop(_release);
+    std::thread::sleep(Duration::from_millis(100));
     std::fs::remove_dir_all(dir).unwrap();
 }

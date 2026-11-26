@@ -74,6 +74,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) verb: &'static str,
     // Metro's drained bundle-request count and (completed, failed) outcomes when the CLI launched the app.
     pub(crate) bundle_requests_at_launch: Option<(u64, (u64, u64))>,
+    // The dev-client deep link of this run's own Android launch; the core's one restart sends it again.
+    pub(crate) android_launch_url: Option<String>,
     // The dev client manifest warm-up that cleared the launch.
     pub(crate) manifest_warm: Option<crate::core::ManifestWarm>,
     // The run owns this exact iOS simulator and pins its locale and keyboard before launch.
@@ -160,20 +162,25 @@ impl<'a> Ctx<'a> {
                     | FailureCode::WatchmanVolumeStalled
                     | FailureCode::CandidateUnavailable
                     | FailureCode::DeviceNotBooted
+                    | FailureCode::InstalledAppMissing
+                    | FailureCode::InstalledAppNotStandalone
             ) {
                 format!("{cleanup}; then {}", failure.next_action)
             } else {
-                let remedy = self
-                    .notes
-                    .iter()
-                    .rev()
-                    .find(|(key, _)| {
-                        key == "build_failure_next_action"
-                            && failure.code == FailureCode::BuildFailed
-                    })
-                    .map(|(_, value)| format!("; only after cleanup completes: {value}"))
-                    .unwrap_or_default();
-                format!("{cleanup}{remedy}")
+                let limit = failure.limit.as_deref().map(LimitFacts::remedy);
+                match limit.as_deref().or_else(|| {
+                    self.notes
+                        .iter()
+                        .rev()
+                        .find(|(key, _)| {
+                            key == "build_failure_next_action"
+                                && failure.code == FailureCode::BuildFailed
+                        })
+                        .map(|(_, value)| value.as_str())
+                }) {
+                    Some(remedy) => format!("{cleanup}; only after cleanup completes: {remedy}"),
+                    None => cleanup,
+                }
             };
             failure.next_action = crate::redact::OutputText::from_output(&next);
         }
@@ -681,6 +688,7 @@ fn prepare_validated(
         notes: Vec::new(),
         verb: "prepare",
         bundle_requests_at_launch: None,
+        android_launch_url: None,
         manifest_warm: None,
         lane_owned: scenario.platform == Platform::Ios,
         build_deadline_ms: None,
@@ -1113,16 +1121,31 @@ pub(crate) fn check_prereqs(
             }
         }
     }
-    let mut missing = Vec::new();
-    for tool in tools {
-        let output = runner.run(&CmdSpec::new("which", "/usr/bin/which", &[tool], 10));
-        if !output.ok() {
-            missing.push(tool.to_string());
-        }
-    }
+    let mut missing = missing_tools(runner, &tools);
     if scenario.platform == Platform::Android && !handoff {
         missing.extend(missing_android_sdk(android_home));
     }
+    prereqs_result(missing)
+}
+
+// Installed-app mode runs no pnpm, Metro or build, so it needs only these tools.
+pub(crate) fn check_installed_prereqs(runner: &mut dyn Runner) -> Result<(), Failure> {
+    prereqs_result(missing_tools(runner, &["git", "node", "ps", "xcrun"]))
+}
+
+fn missing_tools(runner: &mut dyn Runner, tools: &[&str]) -> Vec<String> {
+    tools
+        .iter()
+        .filter(|tool| {
+            !runner
+                .run(&CmdSpec::new("which", "/usr/bin/which", &[**tool], 10))
+                .ok()
+        })
+        .map(|tool| tool.to_string())
+        .collect()
+}
+
+fn prereqs_result(missing: Vec<String>) -> Result<(), Failure> {
     if missing.is_empty() {
         Ok(())
     } else {
@@ -2263,7 +2286,7 @@ fn allocate_android(ctx: &mut Ctx, android_home: Option<&str>) -> Result<(), Fai
                 tunnel_log.display()
             ),
         )
-        .with_evidence(vec![super::log_tail(&tunnel_log, 25)]));
+        .with_log(&tunnel_log));
     };
     wait_for_local_listener(
         ctx,
@@ -2342,7 +2365,7 @@ fn allocate_android(ctx: &mut Ctx, android_home: Option<&str>) -> Result<(), Fai
                 server_log.display()
             ),
         )
-        .with_evidence(vec![super::log_tail(&server_log, 25)]));
+        .with_log(&server_log));
     };
     wait_for_local_listener(
         ctx,
@@ -3320,7 +3343,7 @@ fn allocate_usb(
                 server_log.display()
             ),
         )
-        .with_evidence(vec![super::log_tail(&server_log, 25)]));
+        .with_log(&server_log));
     };
     wait_for_local_listener(
         ctx,
@@ -3543,7 +3566,7 @@ fn spawn_metro_only(ctx: &mut Ctx, listen: metro::Listen) -> Result<(), Failure>
                 ctx.record.run_id
             ),
         )
-        .with_evidence(vec![super::log_tail(&metro_log, 25)]));
+        .with_log(&metro_log));
     }
     Ok(())
 }
@@ -3566,7 +3589,7 @@ fn wait_metro_responding(ctx: &mut Ctx) -> Result<(), Failure> {
                     ctx.record.run_id
                 ),
             )
-            .with_evidence(vec![super::log_tail(&metro_resource.log, 25)]));
+            .with_log(&metro_resource.log));
         }
         let port_output = ctx.runner.run(&metro::port_owner_spec(metro_resource.port));
         let owner = match metro::parse_port_owner(&port_output) {
@@ -3634,7 +3657,7 @@ fn wait_metro_responding(ctx: &mut Ctx) -> Result<(), Failure> {
                     ctx.record.run_id
                 ),
             )
-            .with_evidence(vec![super::log_tail(&log, 25)]));
+            .with_log(&log));
         }
         ctx.runner.sleep(Duration::from_secs(2));
     }
@@ -3930,6 +3953,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 .as_deref()
                 .expect("reuse was decided with a scheme");
             let url = devclient::launch_url(scheme, metro_port);
+            ctx.android_launch_url = Some(url.clone());
             let (adb, serial, server_port) =
                 ctx.record.resources.adb_endpoint().expect("allocated");
             android::am_start_deeplink_spec(
@@ -3971,6 +3995,17 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
                 crate::exec::log::read_bundle_outcomes(&metro.log).unwrap_or((0, 0)),
             )
         });
+    } else {
+        ctx.bundle_requests_at_launch = ctx.record.resources.metro.as_ref().and_then(|metro| {
+            android_launch_counts(
+                crate::exec::log::read_bundle_requests(&metro.log),
+                crate::exec::log::read_bundle_outcomes(&metro.log),
+            )
+        });
+        if ctx.bundle_requests_at_launch.is_none() {
+            ctx.notes
+                .push(("bundle_request_count".into(), "unavailable".into()));
+        }
     }
     let launched = run_launch_command(ctx, &launch, deadline, &mut attempts, &mut |ctx| {
         proven = ios_udid
@@ -3991,10 +4026,163 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
     let t = ctx.mark("app_launch", t);
 
     enter_substage(ctx, Some("ready_probes"));
-    wait_ready_until(ctx, deadline, Some(watch))?;
+    wait_ready_until(ctx, deadline, Some(watch), None)?;
     ctx.mark("ready_probes", t);
     enter_substage(ctx, None);
     Ok(())
+}
+
+// Installed-app mode: admit the build already on the simulator and launch it as installed.
+// Returns the sha256 of its main.jsbundle; nothing here installs, removes or reconfigures the app.
+pub(crate) fn launch_installed_app(ctx: &mut Ctx) -> Result<String, Failure> {
+    ensure_running(ctx.runner, "launch")?;
+    let udid = ctx
+        .record
+        .resources
+        .ios_simulator
+        .as_ref()
+        .expect("ios allocated")
+        .udid
+        .clone();
+    let app_id = ctx.record.candidate.app_id.clone();
+    let unknown = || {
+        Failure::new(
+            "launch",
+            FailureCode::AppPresenceUnknown,
+            "a successful structured app inventory could not prove app presence or absence",
+            "restore simulator inventory access, then re-run",
+        )
+    };
+    match ios::probe_app_presence(ctx.runner, &udid, &app_id) {
+        ios::AppPresence::Installed => {}
+        ios::AppPresence::ProvenAbsent => {
+            return Err(Failure::new(
+                "launch",
+                FailureCode::InstalledAppMissing,
+                format!("{app_id} is not installed on simulator {udid}; installed-app mode tests an app that is already installed and never installs one"),
+                "install the build you want to test on this simulator, then re-run; or drop --installed-app to let QaReN build and install its development build",
+            ));
+        }
+        ios::AppPresence::Unknown => return Err(unknown()),
+    }
+    let bundle = installed_bundle_path(ctx.runner, &udid, &app_id).ok_or_else(unknown)?;
+    let Some(js) = embedded_js_bundle(&bundle) else {
+        return Err(Failure::new(
+            "launch",
+            FailureCode::InstalledAppNotStandalone,
+            format!("the installed {app_id} has no embedded JavaScript bundle (main.jsbundle), so it needs Metro: it is a development build"),
+            "drop --installed-app to test this development build with Metro; or install a release build and re-run",
+        ));
+    };
+    let info = ctx.runner.run_private(
+        &CmdSpec::new(
+            "ios-app-info",
+            "plutil",
+            &[
+                "-convert",
+                "json",
+                "-o",
+                "-",
+                &bundle.join("Info.plist").to_string_lossy(),
+            ],
+            10,
+        ),
+        &[],
+    );
+    let info: serde_json::Value = if info.clean() {
+        serde_json::from_str(info.stdout()).unwrap_or_default()
+    } else {
+        serde_json::Value::Null
+    };
+    let field = |key: &str| info[key].as_str().map(str::to_string);
+    let unreadable = |what: &str| {
+        Failure::new(
+            "launch",
+            FailureCode::AppPresenceUnknown,
+            format!("the installed {app_id} could not be read: {what}"),
+            "check that the app is still installed on the simulator, then re-run",
+        )
+    };
+    let (Some(version), Some(build), Some(executable)) = (
+        field("CFBundleShortVersionString"),
+        field("CFBundleVersion"),
+        field("CFBundleExecutable"),
+    ) else {
+        return Err(unreadable(
+            "Info.plist has no version, build or executable name",
+        ));
+    };
+    let js_sha256 = file_sha256(&js).ok_or_else(|| unreadable("main.jsbundle"))?;
+    let executable_sha256 =
+        file_sha256(&bundle.join(&executable)).ok_or_else(|| unreadable("the executable"))?;
+    ctx.notes.extend([
+        ("app_source".to_string(), "installed".to_string()),
+        ("installed_app_version".to_string(), version),
+        ("installed_app_build".to_string(), build),
+        ("installed_app_js_sha256".to_string(), js_sha256.clone()),
+        (
+            "installed_app_executable_sha256".to_string(),
+            executable_sha256,
+        ),
+        (
+            "source_proof".to_string(),
+            "none: the app's JavaScript is not proven to come from this checkout".to_string(),
+        ),
+    ]);
+    let deadline = ctx.runner.monotonic_ms() + ctx.record.scenario.deadlines.build_seconds * 1000;
+    let launch = ios::launch_installed_spec(&udid, &app_id);
+    let mut attempts = 0;
+    let mut proven = false;
+    enter_substage(ctx, Some("app_launch"));
+    let launched = run_launch_command(ctx, &launch, deadline, &mut attempts, &mut |ctx| {
+        proven = ios_app_running(ctx, &udid, &app_id);
+        proven
+    })?;
+    let load = launched.timed_out.then(crate::core::host_load_1m).flatten();
+    if !launched.ok() && !proven {
+        return Err(launch_failure(
+            "installed app launch",
+            &launched,
+            load,
+            attempts,
+            &ctx.record.run_id,
+        ));
+    }
+    enter_substage(ctx, None);
+    Ok(js_sha256)
+}
+
+pub(crate) fn installed_bundle_path(
+    runner: &mut dyn Runner,
+    udid: &str,
+    app_id: &str,
+) -> Option<PathBuf> {
+    let container = runner.run(&ios::app_container_spec(udid, app_id));
+    let path = container.stdout.trim();
+    (container.ok() && !path.is_empty()).then(|| PathBuf::from(path))
+}
+
+pub(crate) fn embedded_js_bundle(bundle: &Path) -> Option<PathBuf> {
+    let js = bundle.join("main.jsbundle");
+    std::fs::symlink_metadata(&js)
+        .is_ok_and(|meta| meta.is_file())
+        .then_some(js)
+}
+
+// The sha256 of the installed app's main.jsbundle now, or None when the app or the file cannot be read.
+pub(crate) fn installed_js_sha256(
+    runner: &mut dyn Runner,
+    udid: &str,
+    app_id: &str,
+) -> Option<String> {
+    let bundle = installed_bundle_path(runner, udid, app_id)?;
+    file_sha256(&bundle.join("main.jsbundle"))
+}
+
+fn file_sha256(path: &Path) -> Option<String> {
+    std::fs::read(path)
+        .ok()
+        .map(|bytes| candidate::sha256_hex(&bytes))
 }
 
 // Pins the owned simulator's locale and keyboard before launch; the readback, not the write, decides.
@@ -4993,7 +5181,7 @@ fn wait_for_local_listener(
                 ),
                 "run qaren cleanup for this run, then retry prepare",
             )
-            .with_evidence(vec![super::log_tail(log, 25)]));
+            .with_log(log));
         }
         if ctx.runner.monotonic_ms() >= deadline {
             return Err(Failure::new(
@@ -5005,7 +5193,7 @@ fn wait_for_local_listener(
                 ),
                 "run qaren cleanup for this run, then retry prepare",
             )
-            .with_evidence(vec![super::log_tail(log, 25)]));
+            .with_log(log));
         }
         ctx.runner.sleep(Duration::from_millis(500));
     }
@@ -5321,7 +5509,7 @@ fn run_finite_build_command(
                 log.display()
             ),
         )
-        .with_evidence(vec![super::log_tail(&log, 25)]);
+        .with_log(&log);
         if let Some(ended_by) = ended_by {
             let window_s = if compile || ctx.build_deadline_ms.is_some() {
                 build_ceiling_seconds(build_limit_seconds(ctx))
@@ -5591,6 +5779,7 @@ fn with_build_window<T>(
         notes: std::mem::take(&mut ctx.notes),
         verb: ctx.verb,
         bundle_requests_at_launch: ctx.bundle_requests_at_launch,
+        android_launch_url: ctx.android_launch_url.take(),
         manifest_warm: ctx.manifest_warm.take(),
         lane_owned: ctx.lane_owned,
         build_deadline_ms: ctx.build_deadline_ms,
@@ -5607,12 +5796,13 @@ fn with_build_window<T>(
     ctx.timings = scoped.timings;
     ctx.notes = scoped.notes;
     ctx.bundle_requests_at_launch = scoped.bundle_requests_at_launch;
+    ctx.android_launch_url = scoped.android_launch_url;
     ctx.manifest_warm = scoped.manifest_warm;
     ctx.lane_owned = scoped.lane_owned;
     ctx.build_deadline_ms = scoped.build_deadline_ms;
     ctx.build_limit = scoped.build_limit;
     ctx.host_wait_ms = scoped.host_wait_ms;
-    // A cut for time keeps its own facts and log lines over the generic budget failure.
+    // A cut for time keeps its own facts and log pointer over the generic budget failure.
     if !matches!(&result, Err(failure) if failure.code == FailureCode::BuildContended || failure.limit.is_some())
     {
         budget?;
@@ -5988,14 +6178,32 @@ pub(crate) fn build_and_ready(ctx: &mut Ctx) -> Result<(), Failure> {
                 ctx.record.run_id
             ),
         )
-        .with_evidence(vec![super::log_tail(&build_log, 25)]));
+        .with_log(&build_log));
     }
     wait_ready(ctx)
 }
 
+// expo run:android builds, installs and starts the app: past its limit the wait goes on while the output count grows.
 pub(crate) fn wait_ready(ctx: &mut Ctx) -> Result<(), Failure> {
-    let deadline = ctx.runner.monotonic_ms() + ctx.record.scenario.deadlines.build_seconds * 1000;
-    wait_ready_until(ctx, deadline, None)
+    let log = ctx.record.resources.metro.as_ref().expect("metro spawned").log.clone();
+    let baseline = ctx.runner.log_lines(&log);
+    let start_ms = ctx.runner.monotonic_ms();
+    let limit_s = ctx.record.scenario.deadlines.build_seconds;
+    let progress = ReadyProgress::new(start_ms, limit_s, baseline);
+    let window_s = progress.window_ms / 1000;
+    wait_ready_until(ctx, progress.hard_ms(), None, Some(progress))?;
+    let waited_ms = ctx.runner.monotonic_ms().saturating_sub(start_ms);
+    ctx.timings.push(("expo_run_android".into(), waited_ms));
+    if waited_ms > limit_s.saturating_mul(1000) {
+        ctx.notes.push((
+            "build_limit".into(),
+            format!(
+                "limit {limit_s} s; readiness was confirmed after {} s; window {window_s} s",
+                waited_ms / 1000
+            ),
+        ));
+    }
+    Ok(())
 }
 
 const READY_TICK: Duration = Duration::from_secs(5);
@@ -6013,6 +6221,151 @@ struct AppWatch {
     downs: u32,
 }
 
+// The time rule of the expo run:android wait; every time is monotonic ms.
+struct ReadyProgress {
+    start_ms: u64,
+    limit_ms: u64,
+    idle_ms: u64,
+    window_ms: u64,
+    last_count: u64,
+    last_growth_ms: u64,
+}
+
+// One turn's observations. probed false: the turn's clock sample, at_ms, was after the window
+// and it issued no probe. probed true: the probes returned pending at at_ms. count is what the
+// count read returned, read_ms the clock after it.
+struct Turn {
+    probed: bool,
+    at_ms: u64,
+    count: Option<u64>,
+    read_ms: u64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    Sleep(u64),
+    Cut {
+        ended_by: LimitEnd,
+        elapsed_ms: u64,
+        age_ms: u64,
+    },
+}
+
+impl ReadyProgress {
+    fn new(start_ms: u64, limit_s: u64, baseline: Option<u64>) -> Self {
+        ReadyProgress {
+            start_ms,
+            limit_ms: limit_s.saturating_mul(1000),
+            idle_ms: build_idle_seconds(limit_s).saturating_mul(1000),
+            window_ms: build_ceiling_seconds(limit_s).saturating_mul(1000),
+            last_count: baseline.unwrap_or(0),
+            last_growth_ms: start_ms,
+        }
+    }
+
+    fn hard_ms(&self) -> u64 {
+        self.start_ms.saturating_add(self.window_ms)
+    }
+
+    // A turn issues probes only when its clock sample is within the window.
+    fn admits(&self, turn_start_ms: u64) -> bool {
+        turn_start_ms <= self.hard_ms()
+    }
+
+    fn decide(&mut self, turn: Turn) -> Step {
+        // Growth is dated at the read's return, the earliest clock reading not before it; a
+        // smaller number is a new baseline, as in the finite build's loop.
+        let count = turn.count.unwrap_or(self.last_count);
+        let grew = count > self.last_count;
+        if grew {
+            self.last_growth_ms = turn.read_ms;
+        }
+        self.last_count = count;
+        let at = turn.at_ms;
+        let limit_at = self.start_ms.saturating_add(self.limit_ms);
+        // The reason is chosen on at; the facts are reported at the read's return.
+        let cut = |ended_by| Step::Cut {
+            ended_by,
+            elapsed_ms: turn.read_ms.saturating_sub(self.start_ms),
+            age_ms: turn.read_ms.saturating_sub(self.last_growth_ms),
+        };
+        if !turn.probed || at >= self.hard_ms() {
+            return cut(LimitEnd::Window);
+        }
+        let idle_due = limit_at.max(self.last_growth_ms.saturating_add(self.idle_ms));
+        if !grew && at >= idle_due {
+            return cut(LimitEnd::NoProgress);
+        }
+        let due = self.hard_ms().min(idle_due);
+        Step::Sleep((READY_TICK.as_millis() as u64).min(due.saturating_sub(turn.read_ms)))
+    }
+}
+
+// Reads the count after a turn's last observation and returns the sleep, or the cut as a failure.
+fn progress_turn(
+    ctx: &mut Ctx,
+    progress: &mut ReadyProgress,
+    probed: bool,
+    at_ms: u64,
+    log: &Path,
+) -> Result<Duration, Failure> {
+    let count = ctx.runner.log_lines(log);
+    let read_ms = ctx.runner.monotonic_ms();
+    match progress.decide(Turn {
+        probed,
+        at_ms,
+        count,
+        read_ms,
+    }) {
+        Step::Sleep(ms) => Ok(Duration::from_millis(ms)),
+        Step::Cut {
+            ended_by,
+            elapsed_ms,
+            age_ms,
+        } => Err(ready_cut(progress, ended_by, elapsed_ms, age_ms, log)),
+    }
+}
+
+fn ready_cut(
+    progress: &ReadyProgress,
+    ended_by: LimitEnd,
+    elapsed_ms: u64,
+    age_ms: u64,
+    log: &Path,
+) -> Failure {
+    let (limit_s, window_s) = (progress.limit_ms / 1000, progress.window_ms / 1000);
+    let (elapsed, age) = (elapsed_ms / 1000, age_ms / 1000);
+    let facts = LimitFacts {
+        phase: "expo_run_android".into(),
+        setting: "deadlines.build_seconds".into(),
+        limit_s,
+        window_s,
+        idle_s: Some(progress.idle_ms / 1000),
+        elapsed_s: elapsed,
+        ended_by,
+        last_progress_age_s: Some(age),
+        next_limit_s: match ended_by {
+            LimitEnd::Window => (window_s < BUILD_CEILING_S).then_some(window_s),
+            LimitEnd::NoProgress | LimitEnd::CommandLimit => Some(limit_s),
+        },
+        learned: false,
+    };
+    let detail = match ended_by {
+        LimitEnd::NoProgress => format!(
+            "QaReN stopped waiting for expo run:android after {elapsed} s. The {limit_s} s limit was reached and the wait observed no increase in the output count for {age} s. QaReN sent no signal to the process; run this run's cleanup to retire its recorded group; see {}",
+            log.display()
+        ),
+        LimitEnd::Window | LimitEnd::CommandLimit => format!(
+            "QaReN stopped waiting for expo run:android after {elapsed} s: the wait reached the end of its window of {window_s} s; the age since the last observed count increase, or since wait entry if none was observed, was {age} s; QaReN sent no signal to the process; run this run's cleanup to retire its recorded group; see {}",
+            log.display()
+        ),
+    };
+    let remedy = facts.remedy();
+    Failure::new("build", FailureCode::ReadyDeadlineExceeded, detail, remedy)
+        .with_log(log)
+        .with_limit(facts)
+}
+
 enum Readiness {
     Ready(Option<u32>),
     // The watched app is alive but Metro is not ready yet.
@@ -6025,6 +6378,7 @@ fn wait_ready_until(
     ctx: &mut Ctx,
     deadline: u64,
     mut watch: Option<AppWatch>,
+    mut progress: Option<ReadyProgress>,
 ) -> Result<(), Failure> {
     let metro_resource = ctx.record.resources.metro.clone().expect("metro spawned");
     let identity = metro_resource.identity.clone().expect("identity captured");
@@ -6051,6 +6405,12 @@ fn wait_ready_until(
             }
         }
         ensure_running(ctx.runner, "build")?;
+        if let Some(progress) = progress.as_mut() {
+            let turn_ms = ctx.runner.monotonic_ms();
+            if !progress.admits(turn_ms) {
+                progress_turn(ctx, progress, false, turn_ms, &metro_resource.log)?;
+            }
+        }
         if probe_pid_identity(ctx.runner, &identity) == PidLiveness::Dead {
             return Err(Failure::new(
                 "build",
@@ -6064,7 +6424,7 @@ fn wait_ready_until(
                     ctx.record.run_id
                 ),
             )
-            .with_evidence(vec![super::log_tail(&metro_resource.log, 25)]));
+            .with_log(&metro_resource.log));
         }
         match ready_probes(ctx, &metro_resource, watch.is_some()) {
             Readiness::Ready(pid) => {
@@ -6123,6 +6483,14 @@ fn wait_ready_until(
             }
             Readiness::Pending => {}
         }
+        if let Some(progress) = progress.as_mut() {
+            let at_ms = ctx.runner.monotonic_ms();
+            let sleep = progress_turn(ctx, progress, true, at_ms, &metro_resource.log)?;
+            if !sleep.is_zero() {
+                ctx.runner.sleep(sleep);
+            }
+            continue;
+        }
         if ctx.runner.monotonic_ms() >= deadline {
             return Err(Failure::new(
                 "build",
@@ -6137,7 +6505,7 @@ fn wait_ready_until(
                     ctx.record.run_id
                 ),
             )
-            .with_evidence(vec![super::log_tail(&metro_resource.log, 25)]));
+            .with_log(&metro_resource.log));
         }
         ctx.runner.sleep(READY_TICK);
     }
@@ -6664,6 +7032,7 @@ fn dry_run_receipt(
                     None,
                     None,
                 ));
+                planned.push(android_request_probe_spec(port));
                 planned.push(metro::manifest_spec(port, "android"));
                 planned.push(android::am_start_deeplink_spec(
                     adb,
@@ -6693,6 +7062,29 @@ fn dry_run_receipt(
     );
     receipt.next_action = "re-run without --dry-run to allocate resources".to_string();
     Ok(receipt)
+}
+
+// Android arms Metro's request count before launch only with this much warm-up left, with a short limit.
+const ANDROID_REQUEST_PROBE_MIN_LEFT_MS: u64 = 15_000;
+const ANDROID_REQUEST_PROBE_SECONDS: u64 = 5;
+
+fn android_request_probe_spec(port: u16) -> CmdSpec {
+    let mut probe = metro::request_probe_spec(port);
+    probe.timeout_seconds = ANDROID_REQUEST_PROBE_SECONDS;
+    probe
+}
+
+// Both counts or none; the core refuses a count above the largest exact JSON integer.
+pub fn android_launch_counts(
+    requests: Option<u64>,
+    outcomes: Option<(u64, u64)>,
+) -> Option<(u64, (u64, u64))> {
+    const MAX_EXACT: u64 = 9_007_199_254_740_991;
+    let (requests, (completed, failed)) = (requests?, outcomes?);
+    [requests, completed, failed]
+        .iter()
+        .all(|&count| count <= MAX_EXACT)
+        .then_some((requests, (completed, failed)))
 }
 
 fn run_launch_command(
@@ -6746,6 +7138,16 @@ fn run_budgeted_attempt(
     deadline: u64,
     attempts: &mut usize,
 ) -> Result<Option<crate::exec::CmdOutput>, Failure> {
+    Ok(run_budgeted_attempt_limited(ctx, spec, deadline, attempts)?.map(|(output, _)| output))
+}
+
+// The same attempt, with the whole-second limit it was dispatched with.
+fn run_budgeted_attempt_limited(
+    ctx: &mut Ctx,
+    spec: &CmdSpec,
+    deadline: u64,
+    attempts: &mut usize,
+) -> Result<Option<(crate::exec::CmdOutput, u64)>, Failure> {
     ensure_running(ctx.runner, "build")?;
     let Some(remaining_ms) = remaining_budget(ctx, deadline)? else {
         return Ok(None);
@@ -6772,7 +7174,7 @@ fn run_budgeted_attempt(
         ),
     ));
     ensure_running(ctx.runner, "build")?;
-    Ok(Some(output))
+    Ok(Some((output, bounded.timeout_seconds)))
 }
 
 fn run_budgeted_private(
@@ -6885,6 +7287,19 @@ fn warm_dev_client_manifest(ctx: &mut Ctx, port: u16, deadline: u64) -> Result<(
                         return Err(warm.refusal());
                     }
                 }
+            }
+        } else if ctx.record.scenario.platform == Platform::Android
+            && warm.deadline_ms.saturating_sub(ctx.runner.monotonic_ms())
+                >= ANDROID_REQUEST_PROBE_MIN_LEFT_MS
+        {
+            if let Some((probe, limit)) = run_budgeted_attempt_limited(
+                ctx,
+                &android_request_probe_spec(port),
+                warm.deadline_ms,
+                &mut 0,
+            )? {
+                warm.request_probe_limit_ms = limit * 1000;
+                warm.request_probe_timed_out = probe.timed_out;
             }
         }
         let manifest = metro::manifest_spec(port, platform_dir(ctx.record.scenario.platform));
@@ -7194,6 +7609,7 @@ mod launch_tests {
                 notes: Vec::new(),
                 verb: "prepare",
                 bundle_requests_at_launch: None,
+                android_launch_url: None,
                 manifest_warm: None,
                 lane_owned: false,
                 build_deadline_ms: None,

@@ -1,7 +1,7 @@
 use super::*;
 use common::host::HostRunner;
 
-fn passing() -> (HostRunner, RunRequest) {
+fn passing() -> (HostRunner, RunRequest, common::TempRepo) {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
@@ -11,17 +11,18 @@ fn passing() -> (HostRunner, RunRequest) {
     mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
     script_core_identity(&mut mock);
     script_teardown(&mut mock);
-    (HostRunner::new(mock), request(&repo, &app, 30))
+    (HostRunner::new(mock), request(&repo, &app, 30), repo)
 }
 
-fn refusing() -> (HostRunner, RunRequest) {
+fn refusing() -> (HostRunner, RunRequest, common::TempRepo) {
     let (repo, app) = app_repo();
     std::fs::write(
         app.join(".qaren/config.yaml"),
         "appId: com.rndevagent.testapp\nmetroPort: 8791\n",
     )
     .unwrap();
-    (HostRunner::new(MockRunner::new()), request(&repo, &app, 30))
+    let req = request(&repo, &app, 30);
+    (HostRunner::new(MockRunner::new()), req, repo)
 }
 
 fn host_json(receipt: &qaren::receipt::Receipt) -> serde_json::Value {
@@ -32,7 +33,7 @@ fn host_json(receipt: &qaren::receipt::Receipt) -> serde_json::Value {
 
 #[test]
 fn f1_passing_check_has_both_samples_and_report_line() {
-    let (mut mock, req) = passing();
+    let (mut mock, req, _repo) = passing();
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     let host = host_json(&receipt);
@@ -54,7 +55,7 @@ fn f1_passing_check_has_both_samples_and_report_line() {
 
 #[test]
 fn f2_refused_check_has_both_samples() {
-    let (mut mock, req) = refusing();
+    let (mut mock, req, _repo) = refusing();
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Refused);
     let host = host_json(&receipt);
@@ -89,7 +90,7 @@ fn f2_refused_check_has_both_samples() {
 #[test]
 fn f3_unreadable_probes_are_absent_and_do_not_change_the_verdict() {
     for timeout in [false, true] {
-        let (mut mock, req) = passing();
+        let (mut mock, req, _repo) = passing();
         mock.malformed = !timeout;
         mock.timeout = timeout;
         let receipt = run(&mut mock, &req);
@@ -121,7 +122,7 @@ fn f3_unreadable_probes_are_absent_and_do_not_change_the_verdict() {
 #[test]
 fn f4_refusal_only_adds_context_when_the_end_host_is_constrained() {
     for (load, constrained) in [(7.99, false), (8.0, true)] {
-        let (mut mock, req) = refusing();
+        let (mut mock, req, _repo) = refusing();
         mock.end_load = load;
         let receipt = run(&mut mock, &req);
         assert_eq!(receipt.result, ReceiptResult::Refused);
@@ -136,7 +137,7 @@ fn f4_refusal_only_adds_context_when_the_end_host_is_constrained() {
             constrained
         );
     }
-    let (mut runner, req) = refusing();
+    let (mut runner, req, _repo) = refusing();
     runner.end_load = 1.0;
     runner.low_end_memory = true;
     let receipt = run(&mut runner, &req);
@@ -150,7 +151,7 @@ fn f4_refusal_only_adds_context_when_the_end_host_is_constrained() {
 
 #[test]
 fn f6_receipt_samples_cannot_hold_paths_or_process_names() {
-    let (mut mock, req) = refusing();
+    let (mut mock, req, _repo) = refusing();
     let receipt = run(&mut mock, &req);
     let host = host_json(&receipt);
     let text = host.to_string();
@@ -181,7 +182,7 @@ fn f6_typed_host_facts_round_trip_when_private_inputs_match_enum_values_or_keys(
         .collect(),
     ));
     qaren::redact::with_input_scope(inputs, || {
-        let (mut runner, req) = refusing();
+        let (mut runner, req, _repo) = refusing();
         let mut receipt = run(&mut runner, &req);
         for pressure in [
             qaren::host_capacity::Pressure::Normal,
@@ -205,7 +206,7 @@ fn f6_typed_host_facts_round_trip_when_private_inputs_match_enum_values_or_keys(
 
 #[test]
 fn f7_samples_bracket_every_command_including_teardown() {
-    let (mut mock, req) = passing();
+    let (mut mock, req, _repo) = passing();
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
     assert!(mock.calls.len() > 4);
@@ -238,7 +239,7 @@ fn helpers() -> String {
 
 #[test]
 fn e4_run_start_helper_stop_records_typed_outcome_without_private_facts() {
-    let (mut mock, req) = passing();
+    let (mut mock, req, _repo) = passing();
     mock.processes = Some(helpers());
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
@@ -281,7 +282,7 @@ fn e4_run_start_helper_stop_records_typed_outcome_without_private_facts() {
         "one initial list, two package reads, a refresh, TERM and the poll"
     );
 
-    let (mut mock, req) = refusing();
+    let (mut mock, req, _repo) = refusing();
     mock.processes = Some(helpers());
     let receipt = run(&mut mock, &req);
     assert_eq!(receipt.result, ReceiptResult::Refused);
@@ -295,7 +296,7 @@ fn e4_run_start_helper_stop_records_typed_outcome_without_private_facts() {
 #[test]
 fn e4_a_clean_or_unreadable_process_list_adds_no_note() {
     for processes in [Some(String::new()), None] {
-        let (mut mock, req) = passing();
+        let (mut mock, req, _repo) = passing();
         mock.processes = processes;
         let receipt = run(&mut mock, &req);
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);

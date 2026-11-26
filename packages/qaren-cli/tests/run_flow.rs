@@ -5,6 +5,11 @@ mod common;
 mod host_memory_wait;
 #[path = "run_flow/host_numbers.rs"]
 mod host_numbers;
+#[path = "run_flow/installed_app.rs"]
+mod installed_app;
+#[path = "run_flow/non_development_notice.rs"]
+mod non_development_notice;
+use common::seed_cached_apk;
 use common::IosBuildRunner as MockRunner;
 
 use qaren::core::Budgets;
@@ -190,7 +195,7 @@ fn free_port() -> CmdOutput {
 }
 
 // A temp app repo: <repo>/test-app is the project root with .qaren/config.yaml and a plan.
-fn app_repo() -> (PathBuf, PathBuf) {
+fn app_repo() -> (common::TempRepo, PathBuf) {
     let repo = common::temp_repo();
     let app = repo.join("test-app");
     std::fs::create_dir_all(app.join(".qaren")).unwrap();
@@ -214,6 +219,7 @@ fn request(repo: &Path, app: &Path, step_seconds: u64) -> RunRequest {
         restart_device: false,
         shutdown_device_on_exit: false,
         fresh_install: false,
+        installed_app: false,
         runtime_dir: PathBuf::from("/runtime"),
         node: Some(PathBuf::from("/usr/local/bin/node")),
         lock_root: repo.join(".locks"),
@@ -490,6 +496,7 @@ fn workspace_cache_persistence_reuses_only_the_same_workspace_and_scheme() {
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         if reuse {
+            script_non_dev_probe(&mut mock);
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
             common::script_xcode(&mut mock);
             script_check_install_and_launch(&mut mock);
@@ -497,6 +504,7 @@ fn workspace_cache_persistence_reuses_only_the_same_workspace_and_scheme() {
         } else if index == 0 {
             script_provision_build(&mut mock, "xcodebuild", common::IOS_NATIVE_FILES);
         } else {
+            script_non_dev_probe(&mut mock);
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
             common::script_xcode(&mut mock);
             script_check_build_with(&mut mock, "xcodebuild", |m| {
@@ -567,7 +575,8 @@ fn workspace_cache_persistence_reuses_only_the_same_workspace_and_scheme() {
 fn a_fresh_clone_reuses_another_clones_build_and_never_overwrites_the_store() {
     use qaren::buildplan::{self, BuildDecision, STORE_RECORD};
     use qaren::exec::Runner;
-    let store = common::temp_repo().join("machine-store");
+    let tmp = common::temp_repo();
+    let store = tmp.join("machine-store");
     let mut record_bytes = Vec::new();
     for (index, case) in ["first", "second", "corrupted"].into_iter().enumerate() {
         let (repo, app) = app_repo();
@@ -584,6 +593,7 @@ fn a_fresh_clone_reuses_another_clones_build_and_never_overwrites_the_store() {
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         if reuse {
+            script_non_dev_probe(&mut mock);
             mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
             common::script_xcode(&mut mock);
             script_check_install_and_launch(&mut mock);
@@ -775,6 +785,7 @@ fn a_clean_ios_build_refuses_before_building_when_its_volume_is_short_of_space()
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     common::script_xcode(&mut mock);
     mock.expect_run(
@@ -848,6 +859,7 @@ fn an_ios_check_refuses_contention_when_its_slot_wait_expires() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     for _ in 0..30 {
@@ -904,6 +916,7 @@ fn a_check_whose_candidate_moves_during_the_build_never_publishes_and_releases_t
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     common::script_finite_ios_build_only(&mut mock, "expo run:ios");
@@ -937,7 +950,7 @@ fn a_check_whose_candidate_moves_during_the_build_never_publishes_and_releases_t
     assert_eq!(mock.remaining(), 0);
 }
 
-// AI-471 B6: a build cut for time reaches the check receipt with its limit and log lines.
+// AI-471 B6: a build cut for time reaches the check receipt with its limit and log pointer.
 #[test]
 fn b6_a_check_whose_build_stands_still_reports_what_ran_out() {
     let (repo, app) = app_repo();
@@ -945,6 +958,7 @@ fn b6_a_check_whose_build_stands_still_reports_what_ran_out() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 5000, "", None);
@@ -967,7 +981,7 @@ fn b6_a_check_whose_build_stands_still_reports_what_ran_out() {
         .detail
         .to_string()
         .starts_with("the native build was stopped after 2400 s"));
-    assert_eq!(failure.evidence.len(), 1);
+    common::canary::assert_pointer_not_evidence(serde_json::to_value(failure).unwrap());
     assert_eq!(
         failure.build_recovery().unwrap().reason,
         qaren::failure::RecoveryReason::BuildTimeLimit
@@ -984,6 +998,7 @@ fn pre_spawn_build_error_retires_pending_before_releasing_ownership() {
     mock.build_spawn_fault = Some(common::BuildSpawnFault::Error);
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
 
@@ -1021,6 +1036,7 @@ fn unproven_metro_after_the_build_refuses_install_and_retains_its_lease() {
         } else {
             common::script_ios_deps(&mut mock);
         }
+        script_non_dev_probe(&mut mock);
         mock.expect_run(
             "ls-files",
             CmdOutput::success(if workspace {
@@ -1088,6 +1104,7 @@ fn unreadable_preinstall_inventory_after_build_refuses_without_installing() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     common::script_finite_ios_build_only(&mut mock, "expo run:ios");
@@ -1126,6 +1143,7 @@ fn a_simulator_shut_down_during_the_build_refuses_device_not_booted_before_insta
     let selected_at = qaren::timefmt::iso8601_utc(mock.now_epoch_ms());
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     common::script_finite_ios_build_only(&mut mock, "expo run:ios");
@@ -1179,6 +1197,7 @@ fn metro_exit_after_install_prevents_launch_and_cleans_up_both_stages() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     common::script_finite_ios_build_only(&mut mock, "expo run:ios");
@@ -1218,6 +1237,7 @@ fn invalid_spawned_build_group_retains_pending_and_both_locks_without_starting()
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 1, "", Some(0));
@@ -1258,6 +1278,7 @@ fn failed_spawn_retirement_save_or_interruption_retains_pending_and_both_locks()
         mock.build_spawn_fault = Some(fault);
         script_preflight(&mut mock, &repo);
         common::script_ios_deps(&mut mock);
+        script_non_dev_probe(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(""));
         script_clean_build_plan(&mut mock);
         let outcome =
@@ -1320,6 +1341,7 @@ fn finite_build_failures_never_install_or_walk_and_unproven_groups_retain_both_l
         } else {
             common::script_ios_deps(&mut mock);
         }
+        script_non_dev_probe(&mut mock);
         mock.expect_run(
             "ls-files",
             CmdOutput::success(if workspace {
@@ -1460,6 +1482,7 @@ fn compiler_cause_and_recovery_survive_clean_and_incomplete_check_teardown() {
         mock.build_log = Some(include_str!("fixtures/ios-toolchain-mismatch.txt").into());
         script_preflight(&mut mock, &repo);
         common::script_ios_deps(&mut mock);
+        script_non_dev_probe(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(""));
         script_clean_build_plan(&mut mock);
         mock.expect_spawn_piped("expo run:ios", 5000, "", Some(65));
@@ -1524,6 +1547,7 @@ fn workspace_changed_by_clean_prebuild_refuses_before_creating_output_or_buildin
         });
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        script_non_dev_probe(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(""));
         script_clean_build_plan(&mut mock);
         mock.expect_spawn_piped("expo prebuild", 5000, "", Some(0));
@@ -1810,7 +1834,7 @@ fn installed_dependencies_can_replace_a_compatible_cli_and_refuse_before_boot_or
     );
     let mut runner = LeaseObservedRunner {
         mock,
-        repo: repo.clone(),
+        repo: repo.to_path_buf(),
         wire: None,
         observed: Vec::new(),
         expect_fresh_install: true,
@@ -1914,6 +1938,7 @@ fn script_check_install_until_metro_owned(mock: &mut qaren::exec::MockRunner) {
 
 // A cold candidate's build, then its Metro wait, whose bind observation the caller scripts.
 fn script_candidate_until_metro_owned(mock: &mut MockRunner, head: &str, status: &str) {
+    script_non_dev_probe(mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(mock);
     common::script_finite_ios_build_only(mock, "expo run:ios");
@@ -1957,7 +1982,36 @@ fn script_provision_build(mock: &mut MockRunner, command: &str, native_files: &s
     script_provision_candidate(mock, command, native_files, &"b".repeat(40), UNTRACKED_PLAN);
 }
 
+// A default iOS check's lookup of an installed build before reset or build; this one finds none.
+fn script_non_dev_probe(mock: &mut MockRunner) {
+    mock.expect_run(
+        "simctl get_app_container",
+        CmdOutput::failed(2, "No such file or directory"),
+    );
+}
+
 fn script_provision_candidate(
+    mock: &mut MockRunner,
+    command: &str,
+    native_files: &str,
+    head: &str,
+    status: &str,
+) {
+    script_non_dev_probe(mock);
+    script_provision_candidate_after_probe(mock, command, native_files, head, status);
+}
+
+fn script_provision_after_probe(mock: &mut MockRunner) {
+    script_provision_candidate_after_probe(
+        mock,
+        "expo run:ios",
+        "",
+        &"b".repeat(40),
+        UNTRACKED_PLAN,
+    );
+}
+
+fn script_provision_candidate_after_probe(
     mock: &mut MockRunner,
     command: &str,
     native_files: &str,
@@ -2284,7 +2338,7 @@ fn script_recipe_walk_after_preflight(
 
 fn run_saved_plan_on_default_branch(
     failure: &str,
-) -> (qaren::receipt::Receipt, PathBuf, &'static str) {
+) -> (qaren::receipt::Receipt, String, &'static str) {
     let (repo, app) = app_repo();
     let book = app.join(".qaren/plans");
     std::fs::create_dir_all(&book).unwrap();
@@ -2303,7 +2357,7 @@ fn run_saved_plan_on_default_branch(
 
     assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
     assert_eq!(mock.remaining(), 0);
-    (receipt, saved, plan)
+    (receipt, std::fs::read_to_string(&saved).unwrap(), plan)
 }
 
 #[test]
@@ -2315,10 +2369,7 @@ fn a_saved_plan_whose_step_fails_on_the_default_branch_is_flagged_for_that_platf
         receipt.recipe.map(|recipe| recipe.outcome),
         Some(qaren::recipes::Outcome::Flagged)
     );
-    assert_eq!(
-        std::fs::read_to_string(&saved).unwrap(),
-        format!("<!-- qaren:broken ios -->\n{plan}")
-    );
+    assert_eq!(saved, format!("<!-- qaren:broken ios -->\n{plan}"));
 }
 
 #[test]
@@ -2335,7 +2386,7 @@ fn a_saved_plan_that_fails_without_a_step_failure_on_the_default_branch_is_left_
             reason: Some("not a definite step failure".into()),
         })
     );
-    assert_eq!(std::fs::read_to_string(&saved).unwrap(), plan);
+    assert_eq!(saved, plan);
 }
 
 #[test]
@@ -2498,14 +2549,10 @@ fn the_receipt_names_written_blocks_and_paths_the_walk_changed_outside_them() {
 fn checks_started_three_milliseconds_apart_claim_separate_runs() {
     let (first_repo, first_app) = app_repo();
     let runs_root = first_repo.join("runs");
+    let fixtures = [(first_repo, first_app), app_repo()];
     let mut receipts = Vec::new();
-    for index in 0..2 {
-        let (repo, app) = if index == 0 {
-            (first_repo.clone(), first_app.clone())
-        } else {
-            app_repo()
-        };
-        let mut req = request(&repo, &app, 30);
+    for (index, (repo, app)) in (0..).zip(&fixtures) {
+        let mut req = request(repo, app, 30);
         req.runs_root = runs_root.clone();
         let mut mock = MockRunner::new();
         mock.sleep(std::time::Duration::from_millis(index * 3));
@@ -2583,6 +2630,7 @@ fn simultaneous_checks_on_distinct_devices_do_not_collide_at_the_same_millisecon
         );
         let barrier = barrier.clone();
         workers.push(std::thread::spawn(move || {
+            let _repo = repo;
             barrier.wait();
             let receipt = run(&mut mock, &req);
             assert_eq!(
@@ -2799,6 +2847,7 @@ fn default_ios_build_narrows_to_arm64_and_routes_xcodebuild_through_the_job_cap(
         .insert("PATH".into(), bin.to_string_lossy().into_owned());
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     mock.expect_run("hw.optional.arm64", CmdOutput::success("1\n"));
@@ -2920,6 +2969,8 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
 
     let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
     assert!(report.starts_with("# QaReN check: PASS"));
+    assert!(!report.contains("Tested the installed app"), "{report}");
+    assert!(!report.contains("Started on the installed app"), "{report}");
     assert!(
         report.contains("- ✓ line 1: 1. Tap \"Tasks\"\n"),
         "{report}"
@@ -2973,6 +3024,9 @@ fn check_runs_the_phases_in_order_and_ends_pass_with_a_report() {
         request_line["payload"]["target"]["deviceName"],
         "qa-company-app"
     );
+    assert!(request_line["payload"]["target"]
+        .get("androidLaunchUrl")
+        .is_none());
     let bundle_requests = &request_line["payload"]["target"]["metroBundleRequests"];
     assert_eq!(bundle_requests["atLaunch"], 0, "{bundle_requests}");
     assert!(bundle_requests["path"]
@@ -3339,6 +3393,7 @@ fn a_cancel_during_the_build_stops_it_with_proof_and_releases_both_locks() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     common::script_ios_deps(&mut mock);
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut mock);
     mock.expect_spawn_piped("expo run:ios", 5000, "", None);
@@ -4028,6 +4083,65 @@ fn a_held_target_failure_keeps_its_plan_edit_ahead_of_the_inspection_steps() {
 }
 
 #[test]
+fn an_uncertain_step_failure_from_the_core_puts_its_explanation_in_front_of_the_next_action() {
+    let cases = [
+        (
+            "keyboard-visible",
+            "The device runner refused the tap because of the on-screen keyboard",
+        ),
+        ("gremlins", ""),
+    ];
+    for (word, words) in cases {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        let result = HELD_FAIL.replace(
+            r#""seen":"no Tasks","kind":"step"}"#,
+            &format!(
+                r#""seen":"ACTION_OUTCOME_UNCERTAIN; last observed on screen: PRIVATE-label","kind":"step","subreason":"{word}"}}"#
+            ),
+        );
+        script_held_result(&mut mock, &repo, &result, 1);
+
+        let (receipt, _) = run_with_events(&mut mock, &request(&repo, &app, 30));
+
+        assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.code, FailureCode::PlanStepFailed);
+        assert_eq!(failure.subreason.as_deref(), Some(word));
+        assert!(failure.repeat.is_none());
+        assert_eq!(failure.recovery.is_some(), !words.is_empty());
+        let next = failure.next_action.as_str();
+        assert!(!next.contains("PRIVATE-label"), "{next}");
+        if words.is_empty() {
+            assert!(
+                next.starts_with("read the report, fix the app or the plan, then re-run"),
+                "{next}"
+            );
+        } else {
+            assert!(
+                next.starts_with(&format!(
+                    "{words}; review any available evidence without repeating the action"
+                )),
+                "{next}"
+            );
+        }
+        let stored = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
+        let kept = stored.failure.unwrap();
+        assert_eq!(kept.subreason.as_deref(), Some(word));
+        // The record keeps the walk failure; only the receipt carries the final guidance.
+        let walk = if words.is_empty() {
+            "read the report, fix the app or the plan, then re-run".to_string()
+        } else {
+            format!("{words}; read the report, fix the app or the plan, then re-run")
+        };
+        assert_eq!(kept.next_action.as_str(), walk);
+        assert!(kept.recovery.is_none());
+        assert!(!kept.next_action.as_str().contains("PRIVATE-label"));
+    }
+}
+
+#[test]
 fn cancellation_after_held_cleanup_releases_resources_and_clears_the_hold() {
     let (repo, app) = app_repo();
     let mut mock = MockRunner::new();
@@ -4331,8 +4445,9 @@ fn an_unresolved_metro_group_retains_the_device_lease_for_cleanup() {
     script_admission(&mut mock);
     common::script_ios_deps(&mut mock);
     script_admission(&mut mock);
+    script_non_dev_probe(&mut mock);
     script_app_presence(&mut mock, false);
-    script_provision_after_deps(&mut mock);
+    script_provision_after_probe(&mut mock);
     script_drift_status(&mut mock);
     script_host_probe(&mut mock, UDID, hosts_absent());
     mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
@@ -4838,6 +4953,15 @@ fn script_android_launch(mock: &mut MockRunner, no_pid_ticks: usize) {
 }
 
 fn script_android_install_launch(mock: &mut MockRunner, no_pid_ticks: usize) {
+    script_android_install_launch_probe(mock, no_pid_ticks, Some(CmdOutput::success("")));
+}
+
+// `probe` answers Metro's request probe before the manifest request; `None` when none is issued.
+fn script_android_install_launch_probe(
+    mock: &mut MockRunner,
+    no_pid_ticks: usize,
+    probe: Option<CmdOutput>,
+) {
     mock.expect_run(
         "install -r -d",
         CmdOutput::success("Performing Streamed Install\nSuccess\n"),
@@ -4860,6 +4984,9 @@ fn script_android_install_launch(mock: &mut MockRunner, no_pid_ticks: usize) {
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    if let Some(probe) = probe {
+        mock.expect_run("qaren-request-probe", probe);
+    }
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("am start", CmdOutput::success("Starting: Intent"));
     for _ in 0..no_pid_ticks {
@@ -4887,9 +5014,13 @@ fn script_android_walk_release(mock: &mut MockRunner, runner_running: bool) {
 
 // The walk, then teardown up to the borrowed-emulator release.
 fn script_android_walk(mock: &mut MockRunner) {
+    script_android_walk_result(mock, &pass_stdout(), 0);
+}
+
+fn script_android_walk_result(mock: &mut MockRunner, stdout: &str, exit: i32) {
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_drift_status(mock);
-    mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
+    mock.expect_spawn_piped("walk.js", 9000, stdout, Some(exit));
     script_core_identity(mock);
     script_drift_status(mock);
     mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
@@ -5406,40 +5537,6 @@ fn android_check_does_not_require_the_shared_configs_ios_workspace() {
 }
 
 // A native cache entry whose APK matches the worktree, so the run decides Reuse.
-fn seed_cached_apk(repo: &Path, app: &Path) -> std::path::PathBuf {
-    use qaren::buildplan::{
-        hash_artifact, save_json, state_path, ArtifactKind, CachedArtifact, NativeCacheState,
-        CACHE_SCHEMA,
-    };
-    let apk = repo.join("cached").join("app-debug.apk");
-    std::fs::create_dir_all(apk.parent().unwrap()).unwrap();
-    std::fs::write(&apk, b"cached apk").unwrap();
-    let mut fp_runner = qaren::exec::MockRunner::new();
-    fp_runner.expect_run("ls-files", CmdOutput::success(""));
-    let fp = qaren::fingerprint::compute(&mut fp_runner, repo, app, "android").unwrap();
-    save_json(
-        &state_path(repo, "android", "com.rndevagent.testapp"),
-        &NativeCacheState {
-            schema: CACHE_SCHEMA.to_string(),
-            fingerprint_parts: fp.parts.clone(),
-            platform: "android".to_string(),
-            app_id: "com.rndevagent.testapp".to_string(),
-            worktree_root: repo.canonicalize().unwrap(),
-            fingerprint: fp.value,
-            built_at: "2026-10-11T00:00:00Z".to_string(),
-            candidate_sha: "b".repeat(40),
-            lockfile_sha256: String::new(),
-            generated_native_dirs: Vec::new(),
-            artifact: Some(CachedArtifact {
-                path: apk.clone(),
-                sha256: hash_artifact(&apk).unwrap(),
-                kind: ArtifactKind::Apk,
-            }),
-        },
-    )
-    .unwrap();
-    apk
-}
 
 #[test]
 fn android_check_reuse_installs_the_cached_apk_by_serial() {
@@ -5517,6 +5614,13 @@ fn android_check_reuse_installs_the_cached_apk_by_serial() {
     assert!(request["payload"]["target"]
         .get("metroBundleRequests")
         .is_none());
+    assert_eq!(
+        receipt
+            .outcomes
+            .get("bundle_request_count")
+            .map(String::as_str),
+        Some("unavailable")
+    );
     let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
     assert_eq!(record.resources.adb_reverse_port, Some(8791));
     let install = record.resources.app_install.as_ref().unwrap();
@@ -7198,7 +7302,7 @@ fn driver_appearing_during_deps_refuses_before_boot_or_reset_and_releases_the_le
         });
         let mut runner = LeaseObservedRunner {
             mock,
-            repo,
+            repo: repo.to_path_buf(),
             wire: None,
             observed: Vec::new(),
             expect_fresh_install: fresh,
@@ -7265,13 +7369,14 @@ fn fresh_install_reset_build_readiness_walk_and_teardown_share_one_durable_lease
     script_admission(&mut mock);
     common::script_ios_deps(&mut mock);
     script_admission(&mut mock);
+    script_non_dev_probe(&mut mock);
     script_app_presence(&mut mock, true);
     mock.expect_run(
         &format!("simctl uninstall {UDID} com.rndevagent.testapp"),
         CmdOutput::success(""),
     );
     script_app_presence(&mut mock, false);
-    script_provision_after_deps(&mut mock);
+    script_provision_after_probe(&mut mock);
     script_drift_status(&mut mock);
     script_host_probe(&mut mock, UDID, hosts_absent());
     mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
@@ -7279,7 +7384,7 @@ fn fresh_install_reset_build_readiness_walk_and_teardown_share_one_durable_lease
     script_teardown(&mut mock);
     let mut runner = LeaseObservedRunner {
         mock,
-        repo: repo.clone(),
+        repo: repo.to_path_buf(),
         wire: None,
         observed: Vec::new(),
         expect_fresh_install: true,
@@ -7393,6 +7498,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
         script_admission(&mut mock);
         common::script_ios_deps(&mut mock);
         script_admission(&mut mock);
+        script_non_dev_probe(&mut mock);
         if installed {
             script_app_presence(&mut mock, true);
             mock.expect_run(
@@ -7460,7 +7566,7 @@ fn fresh_install_resets_or_proves_absence_before_cached_install_under_the_same_l
         script_teardown(&mut mock);
         let mut runner = LeaseObservedRunner {
             mock,
-            repo: repo.clone(),
+            repo: repo.to_path_buf(),
             wire: None,
             observed: Vec::new(),
             expect_fresh_install: true,
@@ -7604,7 +7710,7 @@ fn fresh_install_and_boot_device_require_valid_matching_clear_admission_with_suc
             req.device = Some(UDID.to_string()).filter(|_| boot);
             let mut runner = LeaseObservedRunner {
                 mock,
-                repo,
+                repo: repo.to_path_buf(),
                 wire: None,
                 observed: Vec::new(),
                 expect_fresh_install: fresh,
@@ -7703,6 +7809,7 @@ fn fresh_install_unknown_inventory_never_authorizes_install_or_build() {
             script_admission(&mut mock);
             common::script_ios_deps(&mut mock);
             script_admission(&mut mock);
+            script_non_dev_probe(&mut mock);
             if after_uninstall {
                 script_app_presence(&mut mock, true);
                 mock.expect_run("simctl uninstall", CmdOutput::success(""));
@@ -7747,6 +7854,7 @@ fn fresh_install_requires_uninstall_success_and_proven_absence() {
         script_admission(&mut mock);
         common::script_ios_deps(&mut mock);
         script_admission(&mut mock);
+        script_non_dev_probe(&mut mock);
         script_app_presence(&mut mock, true);
         let ok = output.ok();
         mock.expect_run("simctl uninstall", output);
@@ -7875,7 +7983,7 @@ fn boot_device_failure_or_timeout_stops_before_readback_reset_install_or_walk() 
             mock.expect_run(&format!("simctl bootstatus {UDID} -b"), output);
             let mut runner = LeaseObservedRunner {
                 mock,
-                repo: repo.clone(),
+                repo: repo.to_path_buf(),
                 wire: None,
                 observed: Vec::new(),
                 expect_fresh_install: fresh,
@@ -7971,7 +8079,7 @@ fn boot_device_readback_must_prove_exact_booted_target_and_unchanged_runtime_and
                 }
                 let mut runner = LeaseObservedRunner {
                     mock,
-                    repo: repo.clone(),
+                    repo: repo.to_path_buf(),
                     wire: None,
                     observed: Vec::new(),
                     expect_fresh_install: fresh,
@@ -8171,7 +8279,7 @@ fn a_cold_first_screen_refuses_the_leg_before_row_one_and_is_recorded_once() {
     script_teardown(&mut mock);
     let mut runner = LeaseObservedRunner {
         mock,
-        repo: repo.clone(),
+        repo: repo.to_path_buf(),
         wire: None,
         observed: Vec::new(),
         expect_fresh_install: false,
@@ -8235,6 +8343,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                 "simctl list devices -j",
                 CmdOutput::success(&available_inventory("Booted")),
             );
+            script_non_dev_probe(&mut mock);
             if fresh {
                 script_app_presence(&mut mock, true);
                 mock.expect_run(
@@ -8243,7 +8352,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
                 );
                 script_app_presence(&mut mock, false);
             }
-            script_provision_after_deps(&mut mock);
+            script_provision_after_probe(&mut mock);
             script_drift_status(&mut mock);
             script_host_probe(&mut mock, UDID, hosts_absent());
             mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
@@ -8251,7 +8360,7 @@ fn boot_device_admission_boot_readback_and_walk_share_a_durable_borrowed_lease()
             script_teardown(&mut mock);
             let mut runner = LeaseObservedRunner {
                 mock,
-                repo: repo.clone(),
+                repo: repo.to_path_buf(),
                 wire: None,
                 observed: Vec::new(),
                 expect_fresh_install: fresh,
@@ -8510,6 +8619,7 @@ fn restart_device_shuts_down_boots_reads_back_and_walks_under_a_durable_borrowed
                 "simctl list devices -j",
                 CmdOutput::success(&available_inventory("Booted")),
             );
+            script_non_dev_probe(&mut mock);
             if fresh {
                 script_app_presence(&mut mock, true);
                 mock.expect_run(
@@ -8518,7 +8628,7 @@ fn restart_device_shuts_down_boots_reads_back_and_walks_under_a_durable_borrowed
                 );
                 script_app_presence(&mut mock, false);
             }
-            script_provision_after_deps(&mut mock);
+            script_provision_after_probe(&mut mock);
             script_drift_status(&mut mock);
             script_host_probe(&mut mock, UDID, hosts_absent());
             mock.expect_spawn_piped("walk.js", 9000, &pass_stdout(), Some(0));
@@ -8526,7 +8636,7 @@ fn restart_device_shuts_down_boots_reads_back_and_walks_under_a_durable_borrowed
             script_teardown(&mut mock);
             let mut runner = LeaseObservedRunner {
                 mock,
-                repo: repo.clone(),
+                repo: repo.to_path_buf(),
                 wire: None,
                 observed: Vec::new(),
                 expect_fresh_install: fresh,
@@ -8697,7 +8807,7 @@ fn restart_device_shutdown_or_readback_failure_stops_before_boot_install_or_walk
         }
         let mut runner = LeaseObservedRunner {
             mock,
-            repo: repo.clone(),
+            repo: repo.to_path_buf(),
             wire: None,
             observed: Vec::new(),
             expect_fresh_install: false,
@@ -8927,7 +9037,7 @@ fn shutdown_device_on_exit_arms_after_admission_and_stops_simulator_before_relea
         );
         let mut runner = LeaseObservedRunner {
             mock,
-            repo: repo.clone(),
+            repo: repo.to_path_buf(),
             wire: None,
             observed: Vec::new(),
             expect_fresh_install: false,
@@ -9063,7 +9173,7 @@ fn shutdown_device_on_exit_keeps_simulator_when_cancelled_before_arm_and_stops_i
         }
         let mut runner = LeaseObservedRunner {
             mock,
-            repo: repo.clone(),
+            repo: repo.to_path_buf(),
             wire: None,
             observed: Vec::new(),
             expect_fresh_install: false,
@@ -9683,7 +9793,6 @@ fn pr_without_github_auth_refuses_before_device_or_worktree_admission() {
     assert_eq!(mock.remaining(), 0);
     assert_eq!(mock.calls.len(), 4);
     assert!(!repo.join("runs").exists());
-    std::fs::remove_dir_all(repo).unwrap();
 }
 
 #[test]
@@ -9691,6 +9800,7 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
     for (policy, non_secret, unused) in [
         (None, false, false),
         (None, true, false),
+        (None, true, true),
         (Some("strict"), false, false),
         (Some("strict"), true, false),
         (Some("non-strict"), false, false),
@@ -9698,7 +9808,8 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
         (Some("non-strict"), false, true),
         (Some("non-strict"), true, true),
     ] {
-        let records = policy == Some("non-strict") && non_secret && !unused;
+        // No video key is dev mode, which records like a declared non-strict run.
+        let records = policy != Some("strict") && non_secret && !unused;
         let secret = "synthetic\"canarymaterial\\value";
         let (repo, app) = app_repo();
         let annotation = if non_secret { " (test-pii)" } else { "" };
@@ -9738,7 +9849,14 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
             mock.expect_spawn_failure("recordVideo", "recorder spawn failure");
         }
         script_host_probe(mock, UDID, hosts_absent());
-        mock.expect_spawn_piped("walk.js", 9000, &pr_pass_stdout(), Some(0));
+        // What the core writes for a runtime-input fill on a screen with no protected observation:
+        // strict withheld-fill; non-strict eligible for a TEST-PII input, withheld-secret for a SECRET one.
+        let non_strict = if non_secret { "eligible" } else { "withheld-secret" };
+        let stdout = pr_pass_stdout().replace(
+            r#""recoveries":0,"#,
+            &format!(r#""recoveries":0,"videoPublication":"withheld-fill","nonStrictPublication":"{non_strict}","#),
+        );
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
         script_core_identity(mock);
         script_drift_status(mock);
         mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n")));
@@ -9759,6 +9877,25 @@ fn pr_runtime_input_recording_obeys_video_policy_and_secret_inventory() {
             qaren::redact::with_input_scope(inputs, || run_with_events(&mut runner, &req));
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         assert_eq!(runner.inner.remaining(), 0);
+        // The PR record keeps the recorded word, not the rules, so a later publish sees the declaration.
+        let pr: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(req.runs_root.join(run_id()).join("pr.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(pr["videoPolicy"], policy.unwrap_or("default-non-strict"));
+        // AI-725: public records name no config path.
+        assert!(pr.get("videoPolicySource").is_none(), "{pr}");
+        assert_eq!(pr["videoPublication"], "withheld-fill");
+        assert_eq!(pr["nonStrictPublication"], non_strict);
+        let reason = pr.get("videoWithholdingReason").and_then(|r| r.as_str());
+        let expected = if policy == Some("strict") {
+            Some("the plan has a fill or type step, or a login replay typed into a field")
+        } else if non_secret {
+            None
+        } else {
+            Some("screenshot privacy disallowed capture during the walk")
+        };
+        assert_eq!(reason, expected, "{policy:?} {non_secret} {pr}");
         assert_eq!(
             labels(&runner.inner).iter().any(|l| l.contains("record")),
             records
@@ -9821,6 +9958,71 @@ fn walk_files(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     files
 }
 
+
+// AI-725: a no-input PR run on an ordinary accessibility value; the core writes strict withheld-privacy
+// and non-strict eligible. The PR record keeps both and a withholding reason only under strict rules.
+// The selected config's basename carries a token-shaped canary; the record names no config path.
+#[test]
+fn a_pr_record_keeps_divergent_ordinary_value_verdicts_and_no_config_path() {
+    let canary = "ghp_syntheticCanary0000000000000000000000";
+    for policy in [None, Some("strict"), Some("non-strict")] {
+        let (repo, app) = app_repo();
+        let mut req = pr_request(&repo, &app);
+        let external = repo.join(format!("selected-{canary}.yaml"));
+        std::fs::copy(&req.config_path, &external).unwrap();
+        req.config_path = external;
+        if let Some(policy) = policy {
+            let yaml = std::fs::read_to_string(&req.config_path).unwrap();
+            std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+        }
+        req.runs_root = repo.join(".qaren/runs");
+        let wt = req.runs_root.join(run_id()).join("wt");
+        let mut runner = PrRunner {
+            inner: MockRunner::new(),
+            app: app.clone(),
+            recorder_persisted_before_spawn: None,
+            fail_core_spawn: false,
+            planted_worktree_config: None,
+            worktree_config_planted: false,
+            fail_host_checkpoint: false,
+        };
+        let mock = &mut runner.inner;
+        script_pr_preflight(mock, &repo, &wt);
+        script_pr_provision(mock);
+        script_pr_provenance_recheck(mock);
+        script_drift_status(mock);
+        mock.expect_spawn_failure("recordVideo", "recorder spawn failure");
+        script_host_probe(mock, UDID, hosts_absent());
+        let stdout = pr_pass_stdout().replace(
+            r#""recoveries":0,"#,
+            r#""recoveries":0,"videoPublication":"withheld-privacy","nonStrictPublication":"eligible","#,
+        );
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(0));
+        script_core_identity(mock);
+        script_drift_status(mock);
+        mock.expect_run("git", CmdOutput::success(&format!("{PR_HEAD}\n")));
+        mock.expect_run("git", CmdOutput::success(""));
+        script_pr_teardown_after_drift(mock);
+        mock.expect_run("du -sk", CmdOutput::success("4\n"));
+        mock.expect_run("worktree remove --force", CmdOutput::success(""));
+        mock.expect_run("gh pr view https://github.com/o/r/pull/12", pr_view_json(PR_HEAD));
+        let receipt = run(&mut runner, &req);
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{policy:?} {:?}", receipt.failure);
+        let raw = std::fs::read_to_string(req.runs_root.join(run_id()).join("pr.json")).unwrap();
+        assert!(!raw.contains(canary) && !raw.contains("selected-"), "{policy:?} {raw}");
+        let pr: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert!(pr.get("videoPolicySource").is_none(), "{pr}");
+        assert_eq!(pr["videoPolicy"], policy.unwrap_or("default-non-strict"));
+        assert_eq!(pr["videoPublication"], "withheld-privacy");
+        assert_eq!(pr["nonStrictPublication"], "eligible");
+        assert_eq!(
+            pr.get("videoWithholdingReason").and_then(|r| r.as_str()),
+            (policy == Some("strict")).then_some("screenshot privacy disallowed capture during the walk"),
+            "{policy:?} {pr}"
+        );
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+}
 #[test]
 fn recording_start_failures_remain_failed_through_cleanup_and_the_viewer() {
     for retained in [false, true] {
@@ -10773,6 +10975,7 @@ fn a_cancel_at_each_pre_walk_effect_boundary_runs_nothing_after_it_and_never_res
             "simctl list devices -j",
             CmdOutput::success(&available_inventory("Booted")),
         );
+        script_non_dev_probe(&mut mock);
         script_app_presence(&mut mock, true);
         mock.expect_run(
             &format!("simctl uninstall {UDID} com.rndevagent.testapp"),
@@ -10950,11 +11153,11 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
         let stall = !matches!(diagnostic, "off" | "trim-failed");
 
         let (repo, app) = app_repo();
-        if stall && diagnostic != "withheld" {
-            let config = app.join(".qaren/config.yaml");
-            let contents = std::fs::read_to_string(&config).unwrap();
-            std::fs::write(config, format!("{contents}video: non-strict\n")).unwrap();
-        }
+        // The cases without a stall pinned strict rules through the absent key, which is now dev mode.
+        let policy = if stall && diagnostic != "withheld" { "non-strict" } else { "strict" };
+        let config = app.join(".qaren/config.yaml");
+        let contents = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(config, format!("{contents}video: {policy}\n")).unwrap();
         let wt = repo.join("runs").join(run_id()).join("wt");
         let mut runner = Encoding(
             PrRunner {
@@ -11208,6 +11411,7 @@ fn a_playable_encode_reclaims_the_runs_raw_capture_and_reports_the_bytes() {
                     .unwrap();
             let comment = qaren::report::render_pr_comment(
                 &qaren::report::ReportInput {
+                    installed_app: None,
                     video: Some(&pr.video),
                     run_id: &run_id(),
                     platform: &pr.platform,
@@ -11449,6 +11653,7 @@ fn fingerprint_parts_reach_the_receipt_and_end_event_on_expo_reuse() {
         mock.advance_on = Some(("fingerprint".into(), 17));
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        script_non_dev_probe(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(&files));
         expo(&mut mock);
         for package in ["expo-modules-core", "expo-modules-jsi"] {
@@ -11543,6 +11748,7 @@ fn every_build_decision_reports_fingerprint_completeness_and_reuse_reports_ready
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
         if reuse {
+            script_non_dev_probe(&mut mock);
             mock.expect_run("ls-files", CmdOutput::success(files));
             common::script_xcode(&mut mock);
             script_warm_launch_after_one_metro_retry(&mut mock);
@@ -11717,6 +11923,7 @@ fn a_cancel_during_a_cached_ios_install_names_the_substage() {
         let mut mock = MockRunner::new();
         script_preflight(&mut mock, &repo);
         mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+        script_non_dev_probe(&mut mock);
         mock.expect_run("ls-files", CmdOutput::success(files));
         common::script_xcode(&mut mock);
         common::script_ios_app_verification(&mut mock);
@@ -11805,6 +12012,7 @@ fn check_fails_fast_when_the_launched_ios_app_exits_and_names_the_missing_framew
         .insert("HOME".into(), home.to_string_lossy().into_owned());
     script_preflight(&mut mock, &repo);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(files));
     common::script_xcode(&mut mock);
     common::script_ios_app_verification(&mut mock);
@@ -12356,7 +12564,7 @@ fn android_teardown_retries_a_slow_runner_read_and_releases_the_lease() {
 }
 
 // Recovery contracts exercise check's install, receipt and teardown path through the scripted runner.
-fn android_install_recovery_fixture() -> (RunRequest, MockRunner) {
+fn android_install_recovery_fixture() -> (RunRequest, MockRunner, common::TempRepo) {
     let (repo, app) = app_repo();
     seed_cached_apk(&repo, &app);
     let req = android_request(&repo, &app);
@@ -12365,7 +12573,7 @@ fn android_install_recovery_fixture() -> (RunRequest, MockRunner) {
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
     mock.expect_run("ls-files", CmdOutput::success(""));
     script_lock_read(&mut mock, POWER, WINDOW_POLICY);
-    (req, mock)
+    (req, mock, repo)
 }
 
 fn script_package_manager_recovery(mock: &mut MockRunner) {
@@ -12378,7 +12586,7 @@ fn script_package_manager_recovery(mock: &mut MockRunner) {
 }
 
 fn assert_android_install_recovery_success(first: CmdOutput) {
-    let (req, mut mock) = android_install_recovery_fixture();
+    let (req, mut mock, _repo) = android_install_recovery_fixture();
     mock.expect_run("install -r -d", first);
     script_package_manager_recovery(&mut mock);
     // The lock is read again before the retry; the launch does not read it a third time.
@@ -12417,7 +12625,7 @@ fn android_install_recovery_reads_the_lock_again_before_the_retry() {
     let showing = WINDOW_POLICY.replace("      showing=false", "      showing=true");
     // false: woken, the retry goes on. true: the keyguard stays, refused before the second install.
     for still_locked in [false, true] {
-        let (req, mut mock) = android_install_recovery_fixture();
+        let (req, mut mock, _repo) = android_install_recovery_fixture();
         mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
         script_package_manager_recovery(&mut mock);
         if still_locked {
@@ -12477,7 +12685,7 @@ fn android_install_recovery_i2_and_i3_package_manager_verdicts_are_terminal() {
             "Failure [INSTALL_PARSE_FAILED_NO_CERTIFICATES] private sentinel",
         ),
     ] {
-        let (req, mut mock) = android_install_recovery_fixture();
+        let (req, mut mock, _repo) = android_install_recovery_fixture();
         mock.expect_run("install -r -d", output);
         let receipt = run(&mut mock, &req);
         let failure = receipt.failure.unwrap();
@@ -12498,7 +12706,7 @@ fn android_install_recovery_i2_and_i3_package_manager_verdicts_are_terminal() {
 
 #[test]
 fn android_install_recovery_i4_cuts_a_blocked_probe_at_the_wait_deadline() {
-    let (req, mut mock) = android_install_recovery_fixture();
+    let (req, mut mock, _repo) = android_install_recovery_fixture();
     mock.expect_run("install -r -d", CmdOutput::failed(1, "transport sentinel"));
     // The scripted runner holds each probe until its timeout. The last probe must
     // be cut after 5s, rather than running its normal 30s past the 180s deadline.
@@ -12534,7 +12742,7 @@ fn android_install_recovery_i4_cuts_a_blocked_probe_at_the_wait_deadline() {
 #[test]
 fn android_install_recovery_i5_second_failure_names_both_attempts() {
     for timed_out in [false, true] {
-        let (req, mut mock) = android_install_recovery_fixture();
+        let (req, mut mock, _repo) = android_install_recovery_fixture();
         mock.expect_run("install -r -d", CmdOutput::failed(1, "first sentinel"));
         script_package_manager_recovery(&mut mock);
         script_lock_read(&mut mock, POWER, WINDOW_POLICY);
@@ -12568,7 +12776,7 @@ fn android_install_recovery_i5_second_failure_names_both_attempts() {
 
 #[test]
 fn android_install_recovery_i6_cancellation_during_a_probe_ends_the_run() {
-    let (req, mut mock) = android_install_recovery_fixture();
+    let (req, mut mock, _repo) = android_install_recovery_fixture();
     mock.expect_run("install -r -d", CmdOutput::failed(1, "transport sentinel"));
     mock.timeouts = [("adb-pm-path".into(), 30_000)].into();
     mock.cancel_after = Some(("shell pm path android".into(), "received SIGTERM".into()));
@@ -12590,7 +12798,7 @@ fn android_install_recovery_i6_cancellation_during_a_probe_ends_the_run() {
 
 #[test]
 fn android_install_recovery_requires_three_consecutive_successful_package_lines() {
-    let (req, mut mock) = android_install_recovery_fixture();
+    let (req, mut mock, _repo) = android_install_recovery_fixture();
     mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
     for output in [
         CmdOutput::success("package:/system/framework/framework-res.apk\n"),
@@ -12615,7 +12823,7 @@ fn android_install_recovery_requires_three_consecutive_successful_package_lines(
 #[test]
 fn android_install_recovery_caps_or_skips_the_retry_at_the_entry_window() {
     for first_ms in [16_000, 21_000] {
-        let (req, mut mock) = android_install_recovery_fixture();
+        let (req, mut mock, _repo) = android_install_recovery_fixture();
         let config = std::fs::read_to_string(&req.config_path).unwrap();
         std::fs::write(
             &req.config_path,
@@ -12658,7 +12866,7 @@ fn android_install_recovery_caps_or_skips_the_retry_at_the_entry_window() {
 
 #[test]
 fn android_install_recovery_does_not_probe_after_cancellation_at_the_first_install() {
-    let (req, mut mock) = android_install_recovery_fixture();
+    let (req, mut mock, _repo) = android_install_recovery_fixture();
     mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
     mock.cancel_after = Some(("install -r -d".into(), "received SIGTERM".into()));
     let receipt = run(&mut mock, &req);
@@ -12669,7 +12877,7 @@ fn android_install_recovery_does_not_probe_after_cancellation_at_the_first_insta
 
 #[test]
 fn android_install_recovery_records_success_before_cancellation() {
-    let (req, mut mock) = android_install_recovery_fixture();
+    let (req, mut mock, _repo) = android_install_recovery_fixture();
     mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
     script_package_manager_recovery(&mut mock);
     script_lock_read(&mut mock, POWER, WINDOW_POLICY);
@@ -12798,7 +13006,7 @@ fn android_check_install_over_another_signer_names_fresh_install_and_its_cost() 
     );
     // The other signer answers the first install, or the retry after a lost transport.
     for retried in [false, true] {
-        let (req, mut mock) = android_install_recovery_fixture();
+        let (req, mut mock, _repo) = android_install_recovery_fixture();
         if retried {
             mock.expect_run("install -r -d", CmdOutput::failed(1, "transport failure"));
             script_package_manager_recovery(&mut mock);
@@ -12952,6 +13160,7 @@ fn script_android_pr_ready(mock: &mut MockRunner) {
     mock.expect_run("lsof", CmdOutput::success("6001"));
     mock.expect_run("ps", CmdOutput::success("6000"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
     mock.expect_run("am start", CmdOutput::success("Starting: Intent"));
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
@@ -13249,7 +13458,7 @@ fn script_pr_pass(mock: &mut MockRunner, repo: &Path, wt: &Path) {
     );
 }
 
-// AI-471 B6: a build cut for time reaches the pr receipt with its limit and log lines.
+// AI-471 B6: a build cut for time reaches the pr receipt with its limit and log pointer.
 #[test]
 fn b6_a_pr_run_whose_build_stands_still_reports_what_ran_out() {
     let (repo, app) = app_repo();
@@ -13266,6 +13475,7 @@ fn b6_a_pr_run_whose_build_stands_still_reports_what_ran_out() {
     };
     script_pr_preflight(&mut runner.inner, &repo, &wt);
     common::script_ios_deps(&mut runner.inner);
+    script_non_dev_probe(&mut runner.inner);
     runner.inner.expect_run("ls-files", CmdOutput::success(""));
     script_clean_build_plan(&mut runner.inner);
     runner
@@ -13311,7 +13521,7 @@ fn b6_a_pr_run_whose_build_stands_still_reports_what_ran_out() {
         .detail
         .to_string()
         .starts_with("the native build was stopped after 2400 s"));
-    assert_eq!(failure.evidence.len(), 1);
+    common::canary::assert_pointer_not_evidence(serde_json::to_value(failure).unwrap());
 }
 
 #[test]
@@ -13506,6 +13716,7 @@ fn unsafe_native_root_fails_check_and_releases_the_existing_device_lease() {
     let mut mock = MockRunner::new();
     script_preflight(&mut mock, &repo);
     mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    script_non_dev_probe(&mut mock);
     mock.expect_run("ls-files", CmdOutput::success(common::IOS_NATIVE_FILES));
     common::script_xcode(&mut mock);
     let receipt = run(&mut mock, &req);
@@ -13701,12 +13912,13 @@ fn video_declaration_reaches_the_child_and_durable_run_outputs() {
             script_teardown(&mut mock);
             let receipt = run(&mut mock, &req);
             assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
-            let expected = policy.unwrap_or("undeclared");
+            let expected = policy.unwrap_or("default-non-strict");
             assert_eq!(receipt.outcomes["video_policy"], expected);
             assert_eq!(receipt.outcomes["video_policy_source"], source);
             let request: serde_json::Value =
                 serde_json::from_str(mock.piped_stdin_text(1).trim()).unwrap();
-            assert_eq!(request["payload"]["videoPolicy"], expected);
+            // The core follows the rules: no video key means dev mode, sent as non-strict.
+            assert_eq!(request["payload"]["videoPolicy"], policy.unwrap_or("non-strict"));
             let ledger: serde_json::Value = serde_json::from_slice(
                 &std::fs::read(repo.join("runs").join(run_id()).join("ledger.json")).unwrap(),
             )
@@ -13716,9 +13928,17 @@ fn video_declaration_reaches_the_child_and_durable_run_outputs() {
             let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
             assert!(report.contains("Video policy:"));
             assert!(report.contains(source));
+            assert_eq!(
+                report.contains(&format!(
+                    "Video policy: not declared in {source}, so dev-mode (non-strict) rules apply."
+                )),
+                policy.is_none(),
+                "{report}"
+            );
             let ledger: qaren::core::Ledger = serde_json::from_value(ledger).unwrap();
             let body = qaren::report::render_pr_comment(
                 &qaren::report::ReportInput {
+                    installed_app: None,
                     video: None,
                     run_id: "check-policy",
                     platform: "ios",
@@ -13738,14 +13958,12 @@ fn video_declaration_reaches_the_child_and_durable_run_outputs() {
                 },
                 &qaren::redact::MachineIdentity::default(),
             );
-            assert!(body.contains(source), "{body}");
+            // AI-725: the PR comment names no config path; the local report does.
+            assert!(body.contains("(declared in the selected app config).") || body.contains("not declared in the selected app config"), "{body}");
+            assert!(!body.contains(source), "{body}");
             assert!(!body.contains(&repo.display().to_string()), "{body}");
-            if policy.is_none() {
-                assert!(
-                    body.contains(&format!("declare video: non-strict in {source}.")),
-                    "{body}"
-                );
-            }
+            // Dev mode is already non-strict, so the comment never asks to declare it.
+            assert!(!body.contains("declare video: non-strict"), "{body}");
             assert_eq!(mock.remaining(), 0);
         }
     }
@@ -14184,7 +14402,6 @@ fn pr_dependency_cache_publishes_only_after_pre_walk_candidate_verification() {
                     .position(|l| l == "expo-ios-build-help")
                     .unwrap()
         );
-        std::fs::remove_dir_all(repo).unwrap();
     }
 }
 
@@ -14395,7 +14612,9 @@ fn recorded_check_stdout(admitted: u64) -> String {
     pass_stdout()
         .replace(
             r#""recoveries":0}"#,
-            &format!(r#""recoveries":0,"admittedAtMs":{admitted},"videoPublication":"eligible"}}"#),
+            // The core writes both verdicts for this ordinary completed walk; they differ here, so the receipt's
+            // verdict shows that a run without a video key (dev mode) selects the non-strict one.
+            &format!(r#""recoveries":0,"admittedAtMs":{admitted},"videoPublication":"withheld-privacy","nonStrictPublication":"eligible"}}"#),
         )
         .replace("\"t\":200", "\"t\":33526")
 }
@@ -14467,7 +14686,6 @@ fn a_check_without_record_records_nothing_and_says_so() {
         assert!(!receipt.outcomes.contains_key(key), "{key}");
     }
     assert!(!repo.join("runs").join(run_id()).join("media").exists());
-    std::fs::remove_dir_all(repo).unwrap();
 }
 
 fn recorded_ios_check(
@@ -14476,7 +14694,7 @@ fn recorded_ios_check(
     qaren::receipt::Receipt,
     Vec<serde_json::Value>,
     RecordedCheck,
-    PathBuf,
+    common::TempRepo,
 ) {
     let (repo, app) = app_repo();
     let mut runner = RecordedCheck(MockRunner::new(), false);
@@ -14528,7 +14746,6 @@ fn a_recorded_ios_check_keeps_the_trimmed_copy_local_and_names_it() {
     assert!(run_dir.join("media/video-published.mp4").is_file());
     assert!(run_dir.join("media/video.mp4").is_file());
     assert!(!run_dir.join("pr.json").exists());
-    std::fs::remove_dir_all(repo).unwrap();
 }
 
 // R9: the trim fails after a successful encode.
@@ -14553,7 +14770,6 @@ fn a_recorded_check_whose_trim_fails_names_no_file_and_no_verdict() {
         .join(run_id())
         .join("media/video.mp4")
         .is_file());
-    std::fs::remove_dir_all(repo).unwrap();
 }
 
 // R9: a run cancelled after the recorder started keeps the provisional note and stops the recorder.
@@ -14589,7 +14805,6 @@ fn a_recorded_check_cancelled_after_the_recorder_started_says_the_video_was_not_
         .join(run_id())
         .join("media/raw.mov")
         .is_file());
-    std::fs::remove_dir_all(repo).unwrap();
 }
 
 // R9: a cancel that lands after the walk skips finalization instead of blaming a missing ffmpeg.
@@ -14629,7 +14844,6 @@ fn a_recorded_check_cancelled_after_the_walk_keeps_the_provisional_video_note() 
         .join(run_id())
         .join("media/raw.mov")
         .is_file());
-    std::fs::remove_dir_all(repo).unwrap();
 }
 
 // R5
@@ -14660,7 +14874,6 @@ fn a_recorded_check_whose_recorder_cannot_start_keeps_its_verdict() {
         "rerun with --record; the run's verdict is not affected"
     );
     assert!(!receipt.outcomes.contains_key("video_file"));
-    std::fs::remove_dir_all(repo).unwrap();
 }
 
 // R6
@@ -14716,7 +14929,6 @@ fn a_failed_recorded_ios_check_stops_the_recorder_before_holding() {
     let record = RunRecord::load(&repo.join("runs"), &run_id()).unwrap();
     assert!(record.resources.recorder.is_none());
     assert!(record.resources.lease.is_some());
-    std::fs::remove_dir_all(repo).unwrap();
 }
 
 fn script_preflight_requiring(
@@ -14745,11 +14957,94 @@ fn script_preflight_requiring(
     mock.expect_run("lsof", free_port());
 }
 
+// AI-725: a declared strict run. The first recorded screenshot cause, or the video cause when no screenshot cause was recorded, is generic-value, and the recorded non-strict verdict is eligible. The receipt and report name the next step.
+// `media` is the core result's mediaWithheld object; `non_strict` is its nonStrictPublication, omitted when None.
+fn generic_value_stdout(media: &str, non_strict: Option<&str>) -> String {
+    let non_strict = non_strict
+        .map(|verdict| format!(r#","nonStrictPublication":"{verdict}""#))
+        .unwrap_or_default();
+    pass_stdout().replacen(
+        r#""recoveries":0}"#,
+        &format!(r#""recoveries":0,"videoPublication":"withheld-privacy"{non_strict},"mediaWithheld":{media}}}"#),
+        1,
+    )
+}
+
+#[test]
+fn a_strict_generic_value_withholding_names_its_cause_and_the_next_step() {
+    let next = "Strict media rules first withheld capture at line 2 because an element exposed an accessibility value (generic-value), such as a progress percentage. This run's non-strict video privacy verdict was eligible. If the app shows only test data, remove video: strict from the selected app config or set video: non-strict. Keep video: strict if the app can show real private data.";
+    let canary = "synthetic-canary-7731";
+    let both = r#"{"screenshots":{"reason":"generic-value","kind":"other","line":2,"count":1},"video":{"reason":"generic-value","kind":"other","line":2}}"#;
+    let shots_only = r#"{"screenshots":{"reason":"generic-value","kind":"other","line":2,"count":1}}"#;
+    let secure_first = r#"{"screenshots":{"reason":"secure-field","line":2,"count":1},"video":{"reason":"secure-field","line":2}}"#;
+    // What a non-strict walk can write: a runtime-input screenshot cause at line 0, then a protected video cause.
+    let input_then_secure = r#"{"screenshots":{"reason":"runtime-input","line":0,"count":1},"video":{"reason":"secure-field","line":2}}"#;
+    // (declared policy, mediaWithheld, non-strict verdict, external config named with the canary, hint expected, receipt note)
+    for (policy, media, non_strict, external, hinted, note) in [
+        (Some("strict"), both, Some("eligible"), true, true, "generic-value/other@line 2"),
+        (Some("strict"), shots_only, Some("eligible"), false, true, "generic-value/other@line 2"),
+        (Some("strict"), both, Some("withheld-secret"), false, false, "generic-value/other@line 2"),
+        (Some("strict"), both, None, false, false, "generic-value/other@line 2"),
+        (Some("strict"), secure_first, Some("eligible"), false, false, "secure-field@line 2"),
+        // Dev mode, like non-strict, names the video's protected cause first.
+        (None, input_then_secure, Some("withheld-secret"), false, false, "secure-field@line 2"),
+        // Defensive: a non-strict walk does not write a generic screenshot cause; no hint either way.
+        (None, both, Some("eligible"), false, false, "generic-value/other@line 2"),
+        (Some("non-strict"), both, Some("eligible"), false, false, "generic-value/other@line 2"),
+    ] {
+        let (repo, app) = app_repo();
+        let mut req = request(&repo, &app, 30);
+        if external {
+            let path = repo.join(format!("selected-{canary}.yaml"));
+            std::fs::copy(&req.config_path, &path).unwrap();
+            req.config_path = path;
+        }
+        if let Some(policy) = policy {
+            let yaml = std::fs::read_to_string(&req.config_path).unwrap();
+            std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+        }
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        script_provision(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        mock.expect_spawn_piped("walk.js", 9000, &generic_value_stdout(media, non_strict), Some(0));
+        script_core_identity(&mut mock);
+        script_teardown(&mut mock);
+        let receipt = run(&mut mock, &req);
+        let case = format!("{policy:?} {media} {non_strict:?}");
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{case} {:?}", receipt.failure);
+        let hints: Vec<_> = receipt
+            .hints
+            .iter()
+            .filter(|hint| hint.code == "MEDIA_WITHHELD_GENERIC_VALUE")
+            .collect();
+        assert_eq!(hints.len(), usize::from(hinted), "{case}");
+        assert_eq!(receipt.outcomes["media_withheld"], note, "{case}");
+        let report = std::fs::read_to_string(&receipt.artifacts["report"]).unwrap();
+        let next_lines: Vec<_> = report.lines().filter(|l| l.starts_with("- Next step:")).collect();
+        if hinted {
+            // main.rs prints hint.text to stderr as it is, so the in-memory text is the stderr line.
+            assert_eq!(hints[0].text, format!("▸ media: {next}"));
+            let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+            assert_eq!(json["hints"][0]["text"], format!("▸ media: {next}"));
+            assert_eq!(next_lines, [format!("- Next step: {next}")], "{case} {report}");
+            for text in [hints[0].text.as_str(), json["hints"].to_string().as_str(), next_lines[0]] {
+                assert!(!text.contains(canary) && !text.contains("selected-"), "{case} {text}");
+            }
+        } else {
+            assert!(next_lines.is_empty(), "{case} {report}");
+        }
+        assert_eq!(mock.remaining(), 0, "{case}");
+        std::fs::remove_dir_all(repo).unwrap();
+    }
+}
+
 // R4
 #[test]
 fn a_recorded_check_with_a_test_pii_input_follows_the_declared_video_policy() {
-    for policy in ["strict", "non-strict"] {
-        let records = policy == "non-strict";
+    for policy in ["strict", "non-strict", "absent"] {
+        let records = policy != "strict";
         let (repo, app) = app_repo();
         std::fs::write(
             app.join("plan.md"),
@@ -14757,8 +15052,10 @@ fn a_recorded_check_with_a_test_pii_input_follows_the_declared_video_policy() {
         )
         .unwrap();
         let req = record_request(&repo, &app);
-        let yaml = std::fs::read_to_string(&req.config_path).unwrap();
-        std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+        if policy != "absent" {
+            let yaml = std::fs::read_to_string(&req.config_path).unwrap();
+            std::fs::write(&req.config_path, format!("{yaml}video: {policy}\n")).unwrap();
+        }
         let mut mock = MockRunner::new();
         script_preflight_requiring(&mut mock, &repo, &["NAME"], &["NAME"]);
         script_provision(&mut mock);
@@ -14795,10 +15092,9 @@ fn a_recorded_check_with_a_test_pii_input_follows_the_declared_video_policy() {
             );
             assert_eq!(
                 receipt.outcomes["video_next_step"],
-                "runs with runtime inputs are recorded only when the app config declares video: non-strict and private output mode is off"
+                "Recording a run with runtime inputs requires non-strict rules, a TEST-PII-only inventory, and private output mode off. A standard run uses non-strict rules with no video key or with video: non-strict. Keep real secrets classified as SECRET."
             );
         }
-        std::fs::remove_dir_all(repo).unwrap();
     }
 }
 
@@ -14829,13 +15125,11 @@ fn record_leaves_the_core_request_unchanged() {
     let plain = run(&mut mock, &request(&repo, &app, 30));
     assert_eq!(plain.result, ReceiptResult::Pass, "{:?}", plain.failure);
     let without = normalized(&mock, &repo);
-    std::fs::remove_dir_all(&repo).unwrap();
 
     let (_, _, runner, repo) = recorded_ios_check(CmdOutput::success(""));
     let with = normalized(&runner.0, &repo);
     assert_eq!(with["videoPolicy"], without["videoPolicy"]);
     assert_eq!(with, without);
-    std::fs::remove_dir_all(repo).unwrap();
 }
 
 // R3
@@ -14925,6 +15219,782 @@ fn a_recorded_android_check_records_on_api_34_and_says_why_not_below() {
             );
             assert!(!receipt.outcomes.contains_key("video_file"));
         }
-        std::fs::remove_dir_all(repo).unwrap();
     }
+}
+
+const RUNNER_SEEN: &str = "qa704.seen@example.test";
+const RUNNER_STEP: &str = "**Failing step** 0: RN\\_ANDROID\\_RUNNER\\_DOWN: QaReN reported a build failure for its Android runner. Check that the Android SDK and a JDK are installed on the machine that ran QaReN, then run it again.";
+
+// A refused Android runner build, run through the wire and then published from the ledger `run` wrote.
+fn publish_runner_refusal(
+    inputs: Option<std::sync::Arc<qaren::redact::InputValues>>,
+    step: &str,
+) -> (qaren::receipt::Receipt, PathBuf, common::TempRepo) {
+    let build = format!("Failed to start device runner: qaren-android-runner source build failed (gradlew assembleDebug assembleDebugAndroidTest in /opt/r). Ensure the Android SDK + a JDK are installed and on PATH. Command failed: {RUNNER_SEEN}");
+    let result = serde_json::json!({
+        "verdict": "REFUSED", "code": "RN_ANDROID_RUNNER_DOWN", "message": build
+    });
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_provision(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let stdout = format!("{}\n", envelope(2, "result", &result.to_string()));
+    mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(4));
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+    let req = request(&repo, &app, 30);
+    let receipt = match inputs {
+        Some(inputs) => qaren::redact::with_input_scope(inputs, || run(&mut mock, &req)),
+        None => run(&mut mock, &req),
+    };
+    assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    let terminal = record.terminal.as_ref().unwrap();
+    assert!(!terminal.cancelled);
+    assert!(terminal.final_verification.matched);
+    assert!(terminal.ownership_proven);
+
+    let dir = req.runs_root.join(run_id());
+    let pr = qaren::publish::PrRunRecord {
+        video_policy: Default::default(),
+        video_policy_source: None,
+        non_strict_publication: None,
+        number: 12,
+        url: "https://github.com/o/r/pull/12".into(),
+        head_ref_oid: "b".repeat(40),
+        head_ref_name: "feat/tasks".into(),
+        is_cross_repository: false,
+        repo_root: repo.to_path_buf(),
+        app_rel: "test-app".into(),
+        platform: "ios".into(),
+        app_id: "com.rndevagent.testapp".into(),
+        device: "qaren-check".into(),
+        plan_sha256: "e".repeat(64),
+        video: qaren::record::VideoStatus::Available,
+        video_reason: None,
+        video_interruption: None,
+        video_continuity: Vec::new(),
+        video_publication: qaren::record::VideoPublication::Eligible,
+        video_withholding_reason: None,
+        tested_older_commit: false,
+        blocks: Vec::new(),
+        identity_values: Vec::new(),
+        proof_in_description: false,
+    };
+    std::fs::write(dir.join("pr.json"), serde_json::to_vec(&pr).unwrap()).unwrap();
+    let mut publisher = qaren::exec::MockRunner::new();
+    publisher.expect_run(
+        "gh pr comment 12 -R github.com/o/r",
+        CmdOutput::success("https://github.com/o/r/pull/12#issuecomment-1\n"),
+    );
+    publisher.expect_run(
+        "gh pr view https://github.com/o/r/pull/12",
+        pr_view_json(&"b".repeat(40)),
+    );
+    publisher.expect_run(
+        "gh pr edit 12 -R github.com/o/r --remove-label needs-qa",
+        CmdOutput::success(""),
+    );
+    let published = qaren::publish::publish(
+        &mut publisher,
+        &req.runs_root,
+        &run_id(),
+        &qaren::redact::MachineIdentity::default(),
+    );
+    assert_eq!(
+        published.result,
+        ReceiptResult::Published,
+        "{:?}",
+        published.failure
+    );
+    assert_eq!(publisher.remaining(), 0);
+    let calls = &publisher.calls;
+    let comment_calls = calls
+        .iter()
+        .filter(|call| {
+            call.args
+                .windows(2)
+                .any(|pair| pair[0] == "--body-file" && pair[1] == "comment.md")
+        })
+        .count();
+    assert_eq!(comment_calls, 1);
+    for call in calls {
+        assert!(!call.args.join(" ").contains(RUNNER_SEEN), "{call:?}");
+    }
+    let comment = std::fs::read_to_string(dir.join("comment.md")).unwrap();
+    assert!(comment.lines().any(|line| line == step), "{comment}");
+    assert!(!comment.contains(RUNNER_SEEN), "{comment}");
+    (receipt, dir, repo)
+}
+
+#[test]
+fn a_runner_build_refusal_reaches_the_comment_only_as_its_fixed_summary() {
+    let (receipt, dir, _repo) = publish_runner_refusal(None, RUNNER_STEP);
+    assert!(receipt.failure.unwrap().detail.contains(RUNNER_SEEN));
+    for file in ["ledger.json", "report.md"] {
+        let local = std::fs::read_to_string(dir.join(file)).unwrap();
+        assert!(local.contains(RUNNER_SEEN), "{file}: {local}");
+    }
+}
+
+#[test]
+fn a_masked_runner_code_publishes_the_omission_notice() {
+    let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+        std::ffi::OsString::from("QAREN_INPUT_UNUSED"),
+        std::ffi::OsString::from("RUNNER"),
+    )]));
+    let (_, dir, _repo) = publish_runner_refusal(
+        Some(inputs),
+        "**Failing step** 0: Details omitted from this comment. Ask the run owner to review the failure locally.",
+    );
+    let ledger = std::fs::read_to_string(dir.join("ledger.json")).unwrap();
+    assert!(
+        ledger.contains("RN_ANDROID_[REDACTED_INPUT]_DOWN"),
+        "{ledger}"
+    );
+    assert!(ledger.contains(RUNNER_SEEN), "{ledger}");
+}
+
+// A cached APK, an Android check request, and the preflight through the dependency install.
+fn android_reuse_check() -> (RunRequest, MockRunner, common::TempRepo) {
+    let (repo, app) = app_repo();
+    seed_cached_apk(&repo, &app);
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::success(""));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    (req, mock, repo)
+}
+
+// Metro's count files as the drain writes them: the values before the launch, then raised by it.
+fn seed_android_counts(mock: &mut MockRunner, runs_root: &Path) {
+    let logs = runs_root.join(run_id()).join("logs");
+    mock.observe = Some(Box::new(move |spec| {
+        let (requests, outcomes) = match spec.label.as_str() {
+            "metro-manifest" => ("3\n", "5 7\n"),
+            "adb-am-start" => ("4\n", "6 8\n"),
+            _ => return,
+        };
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::write(logs.join("metro.bundle-requests"), requests).unwrap();
+        std::fs::write(logs.join("metro.bundle-outcomes"), outcomes).unwrap();
+    }));
+}
+
+#[test]
+fn android_check_passes_the_bundle_counts_read_before_the_launch() {
+    let (req, mut mock, _repo) = android_reuse_check();
+    seed_android_counts(&mut mock, &req.runs_root);
+    script_android_launch_walk_teardown(&mut mock);
+
+    let (receipt, _) = run_with_events(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    let request: serde_json::Value = serde_json::from_str(mock.piped_stdin_text(0).trim()).unwrap();
+    let counts = &request["payload"]["target"]["metroBundleRequests"];
+    assert_eq!(counts["atLaunch"], 3, "{counts}");
+    assert_eq!(counts["completedAtLaunch"], 5, "{counts}");
+    assert_eq!(counts["failedAtLaunch"], 7, "{counts}");
+    assert!(counts["path"]
+        .as_str()
+        .unwrap()
+        .ends_with("/logs/metro.bundle-requests"));
+    assert!(counts["outcomesPath"]
+        .as_str()
+        .unwrap()
+        .ends_with("/logs/metro.bundle-outcomes"));
+    assert!(!receipt.outcomes.contains_key("bundle_request_count"));
+}
+
+#[test]
+fn android_check_passes_its_own_launch_url_to_the_core() {
+    let (req, mut mock, _repo) = android_reuse_check();
+    seed_android_counts(&mut mock, &req.runs_root);
+    script_android_launch_walk_teardown(&mut mock);
+
+    let (receipt, _) = run_with_events(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    let request: serde_json::Value = serde_json::from_str(mock.piped_stdin_text(0).trim()).unwrap();
+    assert_eq!(
+        request["payload"]["target"]["androidLaunchUrl"],
+        "rndatest://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8791%2F%3FdisableOnboarding%3D1"
+    );
+}
+
+#[test]
+fn android_request_probe_runs_only_with_fifteen_seconds_of_warm_up_left() {
+    for advance in [15_000, 16_000] {
+        let (req, mut mock, _repo) = android_reuse_check();
+        let config = std::fs::read_to_string(&req.config_path).unwrap();
+        std::fs::write(
+            &req.config_path,
+            format!("{config}\ndeadlines:\n  build_seconds: 30\n"),
+        )
+        .unwrap();
+        mock.advance_on = Some(("install -r -d".into(), advance));
+        script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+        script_android_install_launch_probe(
+            &mut mock,
+            0,
+            (advance == 15_000).then(|| CmdOutput {
+                timed_out: true,
+                duration_ms: 5_000,
+                ..Default::default()
+            }),
+        );
+        script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+        script_android_walk_release(&mut mock, false);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0);
+        let labels = labels(&mock);
+        let probes: Vec<_> = mock
+            .calls
+            .iter()
+            .filter(|c| c.label == "metro-request-probe")
+            .collect();
+        let warmup = &receipt.outcomes["manifest_warmup"];
+        if advance == 15_000 {
+            assert_eq!(probes.len(), 1);
+            assert_eq!(probes[0].timeout_seconds, 5);
+            assert!(
+                warmup.contains("request_probe_timed_out=true; request_probe_limit_ms=5000"),
+                "{warmup}"
+            );
+            assert!(
+                receipt.outcomes["metro-request-probe_attempt_1"].contains("timeout_seconds=5"),
+                "{:?}",
+                receipt.outcomes
+            );
+            assert_subsequence(
+                &labels,
+                &["metro-request-probe", "metro-manifest", "adb-am-start"],
+            );
+        } else {
+            assert!(probes.is_empty());
+            assert!(warmup.contains("request_probe_limit_ms=0"), "{warmup}");
+            assert_subsequence(&labels, &["metro-manifest", "adb-am-start"]);
+        }
+        assert!(!labels
+            .iter()
+            .any(|label| label.contains("watchman") || label.contains("volume")));
+    }
+}
+
+// An Android check whose core refuses at the admission, then the ordinary teardown.
+fn script_android_launch_refused(mock: &mut MockRunner, refusal: &serde_json::Value) {
+    script_android_launch(mock, 0);
+    script_android_app_tick(mock, CmdOutput::success("4242\n"));
+    script_android_walk_result(
+        mock,
+        &(envelope(2, "result", &refusal.to_string()) + "\n"),
+        4,
+    );
+    script_borrowed_release(mock, false);
+}
+
+fn android_refusal_run(
+    facts: &serde_json::Value,
+    private: Option<&str>,
+) -> (qaren::receipt::Receipt, String) {
+    android_refusal_run_as("CDP_NOT_CONNECTED", "admission refused", facts, private)
+}
+
+fn android_refusal_run_as(
+    code: &str,
+    message: &str,
+    facts: &serde_json::Value,
+    private: Option<&str>,
+) -> (qaren::receipt::Receipt, String) {
+    let (req, mut mock, _repo) = android_reuse_check();
+    let refusal = serde_json::json!({
+        "verdict": "REFUSED", "code": code, "message": message,
+        "admission": facts
+    });
+    script_android_launch_refused(&mut mock, &refusal);
+    let mut check = || {
+        let (receipt, _) = run_with_events(&mut mock, &req);
+        let json = receipt.to_json();
+        (receipt, json)
+    };
+    let outcome = match private {
+        Some(value) => {
+            let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+                std::ffi::OsString::from("QAREN_INPUT_STATE"),
+                std::ffi::OsString::from(value),
+            )]));
+            qaren::redact::with_input_scope(inputs, check)
+        }
+        None => check(),
+    };
+    assert_eq!(mock.remaining(), 0);
+    outcome
+}
+
+#[test]
+fn android_admission_refusal_gets_a_typed_recovery_and_ios_keeps_the_generic_step() {
+    let facts = serde_json::json!({
+        "attempt": 5, "lastStarted": "attach", "lastCompleted": "retry_wait",
+        "inner": "target_list_empty", "relaunches": 0, "relaunchFailed": false,
+        "liveness": "dead", "elapsedMs": 137500, "remainingMs": 1061500, "budgetMs": 1199000
+    });
+
+    let (receipt, _) = android_refusal_run(&facts, None);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.phase, "attach");
+    assert_eq!(failure.next_action.as_str(), "inspect_app_crash");
+    let serialized = serde_json::to_value(&receipt).unwrap();
+    let recovery = &serialized["failure"]["recovery"];
+    assert_eq!(recovery["cause"], "app_process_dead");
+    assert_eq!(recovery["action"], "inspect_app_crash");
+    assert_eq!(recovery["admission"], facts);
+    assert_eq!(recovery["ladder"].as_array().unwrap().len(), 5);
+    assert_eq!(serialized["failure"]["next_action"], "inspect_app_crash");
+    assert_eq!(serialized["next_action"], "inspect_app_crash");
+
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_provision(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let refusal = serde_json::json!({
+        "verdict": "REFUSED", "code": "CDP_NOT_CONNECTED", "message": "admission refused",
+        "admission": facts
+    });
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &(envelope(2, "result", &refusal.to_string()) + "\n"),
+        Some(4),
+    );
+    script_core_identity(&mut mock);
+    script_teardown(&mut mock);
+    let req = request(&repo, &app, 30);
+    let (receipt, _) = run_with_events(&mut mock, &req);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.phase, "prove");
+    assert_eq!(
+        failure.next_action.as_str(),
+        "resolve the refusal, then re-run"
+    );
+    let serialized = serde_json::to_value(&receipt).unwrap();
+    assert!(serialized["failure"]
+        .get("recovery")
+        .is_none_or(serde_json::Value::is_null));
+    let ledger: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(req.runs_root.join(run_id()).join("ledger.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(ledger["admission"], facts);
+}
+
+#[test]
+fn android_admission_recovery_stays_private_inside_an_input_scope() {
+    let facts = serde_json::json!({
+        "attempt": 5, "lastStarted": "attach", "lastCompleted": "retry_wait",
+        "inner": "target_readiness_timeout", "relaunches": 0, "relaunchFailed": false,
+        "liveness": "alive", "bundleRequest": "not_received",
+        "elapsedMs": 123500, "remainingMs": 1075500, "budgetMs": 1199000
+    });
+    let (receipt, json) = android_refusal_run(&facts, Some("alive"));
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert!(!json.contains("alive"), "{json}");
+    assert!(json.contains("bundle_not_requested"), "{json}");
+    assert!(json.contains("retry_launch_once"), "{json}");
+}
+
+// AI-703: an uncertain step's final next action and recovery, end to end through `run`, per final state.
+mod uncertain_ladder {
+    use super::*;
+
+    const KEYBOARD: &str = "The device runner refused the tap because of the on-screen keyboard";
+    const DISPATCH: &str = "QaReN could not confirm the outcome of the action";
+    const STOP: &str = " If you cannot establish whether the action took effect, leave the outcome unresolved and stop.";
+    const REVIEW: &str = "review any available evidence without repeating the action, starting with this run's report.";
+    const GENERIC: &str = "read the report, fix the app or the plan, then re-run";
+    // Any text the core may put in the suggestion field; the owner never copies it.
+    const LABEL: &str = "tap PRIVATE-label again";
+
+    fn result(word: &str, suggestion: Option<&str>) -> String {
+        let extra = suggestion
+            .map(|s| format!(r#","suggestion":"{s}""#))
+            .unwrap_or_default();
+        HELD_FAIL.replace(
+            r#""seen":"no Tasks","kind":"step"}"#,
+            &format!(
+                r#""seen":"ACTION_OUTCOME_UNCERTAIN; last observed on screen: PRIVATE-label","kind":"step","subreason":"{word}"{extra}}}"#
+            ),
+        )
+    }
+
+    fn held_review() -> String {
+        format!(" This run recorded metro, simulator, device_lease for inspection; check qaren status {} for their current status.", run_id())
+    }
+
+    // The owed cleanup after the review; `held` adds the user's OK, `effects` the sentences for what this run recorded.
+    fn cleanup(held: bool, effects: &str) -> String {
+        let ok = if held { ", and only with the user's OK to end the hold and the inspection it keeps open" } else { "" };
+        format!(" After reviewing the evidence{ok}, run qaren cleanup {} --json. It attempts to release this run's recorded resources.{effects} Check the cleanup receipt for the result.", run_id())
+    }
+
+    // The literal recovery: `owed` names the run when it still owes its own cleanup.
+    fn recovery(owed: Option<&str>) -> serde_json::Value {
+        let last = if owed.is_some() {
+            "this failure reason alone does not select cleanup and a fresh qaren prepare; the cleanup this run owes is a separate obligation, named in next_action"
+        } else {
+            "this failure reason alone does not select cleanup and a fresh qaren prepare; this run's teardown was clean"
+        };
+        let rungs = [
+            "a retry is not selected: a new qaren check or qaren pr starts the plan from its first step and can repeat an action that already took effect",
+            "this failure reason alone does not select a restart of the app, Metro or the runner",
+            "this failure reason alone does not select a device restart",
+            "this failure reason alone does not select a native rebuild",
+            last,
+        ];
+        let ladder: Vec<serde_json::Value> = rungs
+            .iter()
+            .enumerate()
+            .map(|(i, text)| {
+                serde_json::json!({"rung": i + 1, "applicable": false, "destroys_state": false,
+                    "requires_user_ok": false, "instruction": text})
+            })
+            .collect();
+        let mut value = serde_json::json!({
+            "reason": "action_outcome_uncertain",
+            "next_rung": null,
+            "action": "check_action_effect",
+            "automatic": false,
+            "destroys_state": false,
+            "requires_user_ok": false,
+            "own_cleanup_required": owed.is_some(),
+            "ladder": ladder,
+        });
+        if let Some(id) = owed {
+            value["own_run_id"] = id.into();
+        }
+        value
+    }
+
+    fn assert_recovery(receipt: &qaren::receipt::Receipt, expected: &serde_json::Value) {
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(&serde_json::to_value(&receipt.recovery).unwrap(), expected);
+        assert_eq!(&serde_json::to_value(&failure.recovery).unwrap(), expected);
+        assert_eq!(receipt.next_action, failure.next_action.as_str());
+        // What stdout prints: the serialized receipt carries the same values.
+        let printed: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+        assert_eq!(&printed["recovery"], expected);
+        assert_eq!(&printed["failure"]["recovery"], expected);
+        assert_eq!(printed["next_action"], receipt.next_action.as_str());
+        assert_eq!(printed["failure"]["next_action"], receipt.next_action.as_str());
+    }
+
+    // The run record keeps the walk failure: no new recovery value is stored, so older CLIs read it.
+    fn assert_record_untouched(repo: &Path, words: &str, tail: &str) {
+        let kept = RunRecord::load(&repo.join("runs"), &run_id())
+            .unwrap()
+            .failure
+            .unwrap();
+        assert_eq!(kept.next_action.as_str(), format!("{words}; {tail}"));
+        assert!(kept.recovery.is_none());
+    }
+
+    #[test]
+    fn c_a_clean_teardown_reviews_and_owes_nothing() {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_admitted_result(&mut mock, &repo, &result("dispatch-unconfirmed", None), 1);
+        script_teardown(&mut mock);
+        let mut req = request(&repo, &app, 30);
+        req.hold = Some(false);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+        assert!(receipt.held.is_none());
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.subreason.as_deref(), Some("dispatch-unconfirmed"));
+        assert_eq!(failure.next_action.as_str(), format!("{DISPATCH}; {REVIEW}{STOP}"));
+        assert_recovery(&receipt, &recovery(None));
+        assert_record_untouched(&repo, DISPATCH, GENERIC);
+    }
+
+    #[test]
+    fn c_a_ledger_suggestion_stays_evidence_and_is_not_copied() {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_admitted_result(
+            &mut mock,
+            &repo,
+            &result("dispatch-unconfirmed", Some(LABEL)),
+            1,
+        );
+        script_teardown(&mut mock);
+        let mut req = request(&repo, &app, 30);
+        req.hold = Some(false);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.suggestion.as_deref(), Some(LABEL));
+        assert_eq!(failure.next_action.as_str(), format!("{DISPATCH}; {REVIEW}{STOP}"));
+        assert_recovery(&receipt, &recovery(None));
+    }
+
+    #[test]
+    fn h_a_held_run_reviews_then_owes_its_cleanup() {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_held_result(&mut mock, &repo, &result("keyboard-visible", None), 1);
+
+        let receipt = run(&mut mock, &request(&repo, &app, 30));
+
+        assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+        assert!(receipt.held.is_some());
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(
+            failure.next_action.as_str(),
+            format!("{KEYBOARD}; {REVIEW}{}{}{STOP}", held_review(), cleanup(true, " It may end the hold."))
+        );
+        assert_recovery(&receipt, &recovery(Some(&run_id())));
+        assert_record_untouched(&repo, KEYBOARD, GENERIC);
+    }
+
+    #[test]
+    fn h_a_held_run_with_a_pending_exit_stop_reviews_then_owes_its_cleanup() {
+        let (repo, app) = app_repo();
+        let _data = sim_log_store_fixture(&repo);
+        let mut mock = MockRunner::new();
+        script_preflight_inventory(
+            &mut mock,
+            &repo,
+            "simctl list devices -j",
+            &available_inventory("Booted"),
+        );
+        script_admission(&mut mock);
+        common::script_ios_deps(&mut mock);
+        script_admission(&mut mock);
+        script_provision_after_deps(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let stdout = format!(
+            "{}\n{}\n",
+            envelope(2, "admitted", "{}"),
+            envelope(3, "result", &result("dispatch-unconfirmed", None))
+        );
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(1));
+        script_core_identity(&mut mock);
+        script_drift_status(&mut mock);
+        mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+        mock.expect_run("git", CmdOutput::success(UNTRACKED_PLAN));
+        mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let mut req = request(&repo, &app, 30);
+        req.device = Some(UDID.into());
+        req.shutdown_device_on_exit = true;
+        req.hold = Some(true);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+        assert!(receipt.cleanup["simulator"].starts_with("held:"));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(
+            failure.next_action.as_str(),
+            format!(
+                "{DISPATCH}; {REVIEW}{}{}{STOP}",
+                held_review(),
+                cleanup(true, " It may end the hold. It may shut the simulator down and remove its log store, as --shutdown-device-on-exit asked.")
+            )
+        );
+        assert_recovery(&receipt, &recovery(Some(&run_id())));
+    }
+
+    #[test]
+    fn u_an_unclean_unheld_run_reviews_then_owes_its_cleanup() {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        script_admission(&mut mock);
+        common::script_ios_deps(&mut mock);
+        script_admission(&mut mock);
+        script_non_dev_probe(&mut mock);
+        script_app_presence(&mut mock, false);
+        script_provision_after_probe(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let stdout = format!(
+            "{}\n{}\n",
+            envelope(2, "admitted", "{}"),
+            envelope(3, "result", &result("dispatch-unconfirmed", None))
+        );
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(1));
+        script_core_identity(&mut mock);
+        script_drift_status(&mut mock);
+        mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+        mock.expect_run(
+            "git",
+            CmdOutput::success("?? test-app/.qaren/config.yaml\0?? test-app/plan.md\0"),
+        );
+        // The Metro group survives TERM and KILL, so the lease stays with the run.
+        mock.expect_run("ps -A", CmdOutput::success("1 1 S\n6000 6000 S\n"));
+        mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+        mock.expect_run("ps", CmdOutput::success("S\n"));
+        mock.expect_run("lsof", CmdOutput::success("6001\n"));
+        mock.expect_run("ps", CmdOutput::success("6000\n"));
+        mock.expect_run("lstart=", CmdOutput::success(LSTART));
+        mock.expect_run("stat=", CmdOutput::success("S"));
+        mock.expect_run("/bin/kill", CmdOutput::success(""));
+        mock.expect_run("lstart=", CmdOutput::success(LSTART));
+        mock.expect_run("stat=", CmdOutput::success("S"));
+        mock.expect_run("/bin/kill", CmdOutput::success(""));
+        mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
+        mock.expect_run("ps", CmdOutput::success("S\n"));
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let mut req = request(&repo, &app, 30);
+        req.fresh_install = true;
+        req.hold = Some(false);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
+        assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
+        assert!(receipt.held.is_none());
+        assert!(receipt.cleanup["metro"].starts_with("unresolved"));
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(
+            failure.next_action.as_str(),
+            format!("{DISPATCH}; {REVIEW}{}{STOP}", cleanup(false, ""))
+        );
+        assert_recovery(&receipt, &recovery(Some(&run_id())));
+        assert_record_untouched(&repo, DISPATCH, GENERIC);
+    }
+}
+
+#[test]
+fn android_restart_refusals_get_their_own_receipts() {
+    for (code, started, relaunches, failed, blocked, liveness, request, cause, action) in [
+        (
+            "CDP_NOT_CONNECTED",
+            "attach",
+            1,
+            false,
+            None,
+            "dead",
+            None,
+            "app_process_dead_after_restart",
+            "inspect_app_crash",
+        ),
+        (
+            "CDP_NOT_CONNECTED",
+            "relaunch",
+            1,
+            true,
+            None,
+            "dead",
+            Some("not_received"),
+            "app_restart_failed",
+            "check_device_connection",
+        ),
+        (
+            "BUSY_FOREIGN_FLOW",
+            "relaunch",
+            0,
+            false,
+            Some("driver_busy"),
+            "alive",
+            Some("not_received"),
+            "app_restart_blocked_by_driver",
+            "wait_for_other_driver",
+        ),
+        (
+            "CDP_NOT_CONNECTED",
+            "relaunch",
+            0,
+            false,
+            Some("device_unreadable"),
+            "probe_failed",
+            None,
+            "app_restart_blocked_unreadable",
+            "check_device_connection",
+        ),
+    ] {
+        let mut facts = serde_json::json!({
+            "attempt": 6, "lastStarted": started, "lastCompleted": "retry_wait",
+            "inner": "target_readiness_timeout", "relaunches": relaunches, "relaunchFailed": failed,
+            "liveness": liveness, "elapsedMs": 120000, "remainingMs": 1079000, "budgetMs": 1199000
+        });
+        if let Some(word) = blocked {
+            facts["relaunchBlocked"] = word.into();
+        }
+        if let Some(word) = request {
+            facts["bundleRequest"] = word.into();
+        }
+        let (receipt, _) = android_refusal_run_as(code, "admission refused", &facts, None);
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        let serialized = serde_json::to_value(&receipt).unwrap();
+        let recovery = &serialized["failure"]["recovery"];
+        let expected = qaren::failure::AdmissionCause::from_facts(
+            &serde_json::from_value(facts.clone()).unwrap(),
+            true,
+        )
+        .unwrap();
+        assert_eq!(recovery["cause"], cause, "{facts}");
+        assert_eq!(recovery["action"], action, "{facts}");
+        assert_eq!(recovery["instruction"], expected.action().2, "{facts}");
+        assert_eq!(recovery["admission"], facts);
+        let rungs: Vec<u64> = recovery["ladder"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|rung| rung["rung"].as_u64().unwrap())
+            .collect();
+        assert_eq!(rungs, [1, 2, 3, 4, 5], "{recovery}");
+        assert_eq!(serialized["failure"]["phase"], "attach");
+        assert_eq!(serialized["next_action"], action);
+    }
+    // A strict input: the core withholds its text; the receipt keeps the restart's cause and no input value.
+    let facts = serde_json::json!({
+        "attempt": 6, "lastStarted": "relaunch", "lastCompleted": "retry_wait",
+        "inner": "target_readiness_timeout", "relaunches": 1, "relaunchFailed": true,
+        "liveness": "dead", "bundleRequest": "not_received",
+        "elapsedMs": 32000, "remainingMs": 207000, "budgetMs": 239000
+    });
+    let (receipt, json) = android_refusal_run_as(
+        "CDP_NOT_CONNECTED",
+        "[private output withheld]",
+        &facts,
+        Some("t3canary"),
+    );
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert!(!json.contains("t3canary"), "{json}");
+    assert!(json.contains("app_restart_failed"), "{json}");
+    let facts = serde_json::json!({
+        "attempt": 6, "lastStarted": "attach", "lastCompleted": "retry_wait",
+        "inner": "target_readiness_timeout", "relaunches": 1, "relaunchFailed": false,
+        "liveness": "alive", "bundleRequest": "not_received",
+        "elapsedMs": 181500, "remainingMs": 1017500, "budgetMs": 1199000
+    });
+    let (receipt, json) = android_refusal_run(&facts, Some("alive"));
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert!(!json.contains("alive"), "{json}");
+    assert!(
+        json.contains("bundle_not_requested_after_restart"),
+        "{json}"
+    );
+    assert!(json.contains("check_metro_reachable"), "{json}");
 }

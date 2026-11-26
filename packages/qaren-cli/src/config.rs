@@ -14,7 +14,7 @@ pub const DEFAULT_METRO_PORT: u16 = 8791;
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct CheckConfig {
     pub app_id: String,
-    #[serde(default, deserialize_with = "declared_video_policy")]
+    #[serde(default = "d_video", deserialize_with = "declared_video_policy")]
     pub video: crate::record::VideoPolicy,
     #[serde(default = "d_package_manager")]
     pub package_manager: String,
@@ -112,6 +112,11 @@ pub struct AndroidConfig {
 
 fn d_package_manager() -> String {
     "pnpm".to_string()
+}
+
+// No `video` key: dev mode is the default and privacy (strict) is opt-in.
+fn d_video() -> crate::record::VideoPolicy {
+    crate::record::VideoPolicy::DefaultNonStrict
 }
 
 fn d_metro_port() -> u16 {

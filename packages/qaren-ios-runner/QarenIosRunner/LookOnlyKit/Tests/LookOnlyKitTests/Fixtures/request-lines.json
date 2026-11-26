@@ -1,0 +1,840 @@
+{
+ "capability": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+ "limit": 4096,
+ "cases": [
+  {
+   "name": "health",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "health"
+     }
+    }
+   ]
+  },
+  {
+   "name": "bind",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"bind\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"bundleId\":\"com.example.app\",\"processId\":612}\n"
+      }
+     ],
+     "expect": {
+      "kind": "bind",
+      "session": "run-1:0123456789abcdef",
+      "bundleId": "com.example.app",
+      "processId": 612
+     }
+    }
+   ]
+  },
+  {
+   "name": "observe-keys-in-another-order",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"seq\":7,\"session\":\"run-1:0123456789abcdef\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"verb\":\"observe\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "observe",
+      "session": "run-1:0123456789abcdef",
+      "seq": 7
+     }
+    }
+   ]
+  },
+  {
+   "name": "shutdown-white-space-and-what-a-string-may-hold",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": " {\t\"verb\" : \"shutdown\" ,\t\"capability\" : \"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\" , \"session\" : \"run-1:0123456789abcdef\" } \r\n"
+      }
+     ],
+     "expect": {
+      "kind": "shutdown",
+      "session": "run-1:0123456789abcdef"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "{\"verb\":\"shutdown\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"a,b:{c} d\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "shutdown",
+      "session": "a,b:{c} d"
+     }
+    }
+   ]
+  },
+  {
+   "name": "no-line-feed-yet",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}"
+      }
+     ],
+     "expect": {
+      "kind": "incomplete"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [],
+     "expect": {
+      "kind": "incomplete"
+     }
+    }
+   ]
+  },
+  {
+   "name": "line-feed-is-byte-4096",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}"
+      },
+      {
+       "repeat": " ",
+       "count": 4019
+      },
+      {
+       "text": "\n"
+      }
+     ],
+     "expect": {
+      "kind": "health"
+     }
+    }
+   ]
+  },
+  {
+   "name": "line-feed-would-be-byte-4097",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}"
+      },
+      {
+       "repeat": " ",
+       "count": 4020
+      },
+      {
+       "text": "\n"
+      }
+     ],
+     "expect": {
+      "kind": "overLimit"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}"
+      },
+      {
+       "repeat": " ",
+       "count": 4020
+      },
+      {
+       "text": "\n"
+      }
+     ],
+     "expect": {
+      "kind": "overLimit"
+     },
+     "take": 4096
+    },
+    {
+     "id": "c",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}"
+      },
+      {
+       "repeat": " ",
+       "count": 4020
+      },
+      {
+       "text": "\n"
+      }
+     ],
+     "expect": {
+      "kind": "incomplete"
+     },
+     "take": 4095
+    }
+   ]
+  },
+  {
+   "name": "bytes-after-the-line-feed",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n{\"verb\":\"shutdown\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\"}\n}}}"
+      }
+     ],
+     "expect": {
+      "kind": "health"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      },
+      {
+       "repeat": " ",
+       "count": 5000
+      }
+     ],
+     "expect": {
+      "kind": "health"
+     }
+    }
+   ]
+  },
+  {
+   "name": "empty-line",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    }
+   ]
+  },
+  {
+   "name": "not-an-object",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "[\"verb\",\"health\",\"capability\",\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"]\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    }
+   ]
+  },
+  {
+   "name": "a-value-that-is-an-object-or-a-list",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"x\":{}}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"x\":[]}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    }
+   ]
+  },
+  {
+   "name": "backslash-in-a-string",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capab\\u0069lity\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"x\":\"a\\\"b\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    }
+   ]
+  },
+  {
+   "name": "byte-outside-printable-ascii-in-a-string",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"x\":\""
+      },
+      {
+       "hex": "c3a9"
+      },
+      {
+       "text": "\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"x\":\""
+      },
+      {
+       "hex": "00"
+      },
+      {
+       "text": "\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    },
+    {
+     "id": "c",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"x\":\"a\tb\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    }
+   ]
+  },
+  {
+   "name": "line-in-utf-16",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "utf16le": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    }
+   ]
+  },
+  {
+   "name": "text-around-the-object",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}x\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "x{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    }
+   ]
+  },
+  {
+   "name": "capability-missing-or-not-a-string",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":1111111111111111111111111111111111111111111}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    },
+    {
+     "id": "c",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":null}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    }
+   ]
+  },
+  {
+   "name": "capability-wrong",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkx\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    },
+    {
+     "id": "c",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    },
+    {
+     "id": "d",
+     "parts": [
+      {
+       "text": "{\"verb\":\"tap\",\"capability\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    }
+   ]
+  },
+  {
+   "name": "capability-twice",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"capability\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    },
+    {
+     "id": "c",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    }
+   ]
+  },
+  {
+   "name": "another-key-twice",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     }
+    }
+   ]
+  },
+  {
+   "name": "expected-capability-empty",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "unauthorized"
+     },
+     "capability": ""
+    }
+   ]
+  },
+  {
+   "name": "verb-unknown-missing-or-not-a-string",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"tap\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "{\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "c",
+     "parts": [
+      {
+       "text": "{\"verb\":1,\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "d",
+     "parts": [
+      {
+       "text": "{\"command\":\"tap\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    }
+   ]
+  },
+  {
+   "name": "keys-not-exactly-the-verbs",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"observe\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"seq\":1,\"scope\":\"x\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "{\"verb\":\"observe\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "c",
+     "parts": [
+      {
+       "text": "{\"verb\":\"health\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "d",
+     "parts": [
+      {
+       "text": "{\"verb\":\"bind\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"processId\":612}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    }
+   ]
+  },
+  {
+   "name": "a-value-of-the-wrong-kind",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"shutdown\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":1}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "{\"verb\":\"bind\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"bundleId\":null,\"processId\":612}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "c",
+     "parts": [
+      {
+       "text": "{\"verb\":\"bind\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"bundleId\":\"com.example.app\",\"processId\":\"612\"}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    }
+   ]
+  },
+  {
+   "name": "how-a-whole-number-is-written",
+   "inputs": [
+    {
+     "id": "a",
+     "parts": [
+      {
+       "text": "{\"verb\":\"observe\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"seq\":1.0}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "b",
+     "parts": [
+      {
+       "text": "{\"verb\":\"observe\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"seq\":1e0}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "c",
+     "parts": [
+      {
+       "text": "{\"verb\":\"observe\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"seq\":true}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "d",
+     "parts": [
+      {
+       "text": "{\"verb\":\"observe\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"seq\":0}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "e",
+     "parts": [
+      {
+       "text": "{\"verb\":\"observe\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"seq\":01}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "f",
+     "parts": [
+      {
+       "text": "{\"verb\":\"observe\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"seq\":-1}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "g",
+     "parts": [
+      {
+       "text": "{\"verb\":\"observe\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"seq\":+1}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "h",
+     "parts": [
+      {
+       "text": "{\"verb\":\"observe\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"seq\":2147483648}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "i",
+     "parts": [
+      {
+       "text": "{\"verb\":\"observe\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"seq\":12345678901}\n"
+      }
+     ],
+     "expect": {
+      "kind": "badRequest"
+     }
+    },
+    {
+     "id": "j",
+     "parts": [
+      {
+       "text": "{\"verb\":\"observe\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"seq\":2147483647}\n"
+      }
+     ],
+     "expect": {
+      "kind": "observe",
+      "session": "run-1:0123456789abcdef",
+      "seq": 2147483647
+     }
+    },
+    {
+     "id": "k",
+     "parts": [
+      {
+       "text": "{\"verb\":\"observe\",\"capability\":\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\",\"session\":\"run-1:0123456789abcdef\",\"seq\":1}\n"
+      }
+     ],
+     "expect": {
+      "kind": "observe",
+      "session": "run-1:0123456789abcdef",
+      "seq": 1
+     }
+    }
+   ]
+  }
+ ]
+}

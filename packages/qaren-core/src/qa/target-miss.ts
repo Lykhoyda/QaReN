@@ -293,12 +293,16 @@ export function missSuggestion(
           ? 'disabled'
           : matches.every((e) => !e.hittable)
             ? 'not hittable'
-            : undefined;
+            : kind === 'fill' && matches.every((e) => e.kind !== 'input')
+              ? 'not a text field'
+              : undefined;
       return state === 'disabled'
         ? `on the last observation the target of ${step} was on screen and disabled; consider adding, before ${step}, the step that enables it`
         : state === 'not hittable'
           ? `on the last observation the target of ${step} was on screen and not hittable; consider adding, before ${step}, the step that uncovers it, or check the screen's orientation and frame if it is a rotated modal`
-          : `on the last observation the target of ${step} was on screen but could not take this step; compare its role and state in failure.screen with the step`;
+          : state === 'not a text field'
+            ? `on the last observation the target of ${step} was on screen but was not a text field; quote the testID of the text field itself, or move this testID onto the field in the app`
+            : `on the last observation the target of ${step} was on screen but could not take this step; compare its role and state in failure.screen with the step`;
     }
     case 'absent': {
       // A text hidden on a screen behind this one names no button; the plain advice fits it better.
@@ -324,6 +328,21 @@ export function missSuggestion(
       return 'the last capture was incomplete; one re-run is reasonable, then report';
     }
   }
+}
+
+const HIDDEN_ADVICE_OPENING = 'Android reports the target of line ';
+
+// The next step after a Wait's failure whose reported read (failure.screen's) shows the target hidden in place, in
+// fixed, value-free words: never the id, a label or a count.
+export function hiddenInPlaceSuggestion(kind: 'input' | 'other', line: number): string {
+  return kind === 'input'
+    ? `${HIDDEN_ADVICE_OPENING}${line} as an input that is not visible to the user (hidden in place); a Wait counts only what the user can see. Wait for the testID of a visible part of the field, such as its wrapper or a digit box. If the input needs focus before Fill and the app provides a control that focuses it, Tap that control first.`
+    : `${HIDDEN_ADVICE_OPENING}${line} as not visible to the user (hidden in place); a Wait counts only what the user can see. Wait for the testID of a visible control instead.`;
+}
+
+// Whether a failure's advice is that fixed hidden-in-place edit (carried through a nested login replay).
+export function isHiddenInPlaceSuggestion(suggestion: string | undefined): boolean {
+  return suggestion !== undefined && suggestion.startsWith(HIDDEN_ADVICE_OPENING);
 }
 
 // The first step after launch polled out its allowance; `quoted` is the plan's own literal, already redacted.

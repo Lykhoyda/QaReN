@@ -27,6 +27,13 @@ export function androidStartGate({
     new TargetReadinessTimeoutError("Timed out waiting for the app's first screen");
   return {
     state: (): StartState => current,
+    // A new start: hold it again until its own first views.
+    restart(): void {
+      current = 'undecided';
+      nextRead = 0;
+      lastSeen = undefined;
+      askedAgain = false;
+    },
     note(): string {
       switch (current) {
         case 'undecided':

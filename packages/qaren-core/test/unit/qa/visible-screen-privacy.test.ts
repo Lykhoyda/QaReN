@@ -277,6 +277,72 @@ test('a readable secure value and its echo are masked in every output', async ()
   assert.equal(all.includes(secret), false, all);
 });
 
+test('a secure field keeps the same protection under every video policy', async (t) => {
+  const echo = (text: string) => ({ ref: '@echo', type: 'StaticText', label: `Fixture ${text}` });
+  const cases = [
+    {
+      name: 'type-only iOS',
+      carrier: 'Kz',
+      nodes: [
+        { ref: '@pw', identifier: 'password', type: 'SecureTextField', value: 'Kz' },
+        echo('Kz'),
+      ],
+    },
+    {
+      name: 'flag-only Android',
+      carrier: 'Jx',
+      nodes: [
+        {
+          ref: '@pw',
+          identifier: 'password',
+          type: 'android.widget.EditText',
+          secure: true,
+          label: 'Jx',
+        },
+        echo('Jx'),
+      ],
+    },
+    { name: 'echo-only control', carrier: undefined, nodes: [echo('Jx')] },
+  ];
+  const separator = '; last observed on screen: ';
+  for (const policy of ['strict', 'non-strict', 'undeclared'] as const)
+    for (const { name, carrier, nodes } of cases)
+      await t.test(`${policy}, ${name}`, async () => {
+        const { f, judge, shots } = deps([{ nodes, presence: true }]);
+        f.deps.videoPolicy = policy;
+        f.deps.privacy = new ObservedPrivacy();
+        const field = (await f.deps.captureScreen()).elements.find((e) => e.ref === '@pw');
+        const result = await runPlan(parsePlan('✓ The fixture is ready').blocks!, f.deps);
+        assert.equal(result.verdict, 'FAIL');
+        assert.equal(judge.requests.length, 1);
+        const prompts = JSON.stringify(judge.requests);
+        const [, appended, extra] = result.failure!.seen.split(separator);
+        assert.equal(extra, undefined, result.failure!.seen);
+        const paths = [result.failure!.screenshot, result.steps[0].screenshot];
+        const cause = carrier ? { reason: 'secure-field', line: 1 } : undefined;
+        assert.equal(shots(), carrier ? 0 : 1);
+        assert.equal(result.steps[0].screenshotWithheld, carrier ? 'secure-field' : undefined);
+        assert.equal(result.videoPublication, carrier ? 'withheld-privacy' : 'eligible');
+        assert.equal(result.nonStrictPublication, carrier ? 'withheld-secret' : 'eligible');
+        assert.deepEqual(result.mediaWithheld?.video, cause);
+        if (!carrier) {
+          assert.equal(field, undefined);
+          assert.ok(paths.every(Boolean), String(paths));
+          assert.match(prompts, /Fixture Jx/);
+          assert.match(appended, /Fixture Jx/);
+          return;
+        }
+        assert.deepEqual(paths, [undefined, undefined]);
+        assert.equal(field?.secure, true);
+        assert.equal(Object.hasOwn(field!, 'value'), false);
+        assert.equal(f.deps.privacy.redact(`Fixture ${carrier}`), 'Fixture •••');
+        assert.match(prompts, /Fixture \[QAREN_VALUE_\d+\]/);
+        const all = outputs(result, judge, f.rows);
+        assert.equal(all.includes(carrier), false, all);
+        assert.equal(appended, '[screen text withheld: a secure field is on screen]');
+      });
+});
+
 test('a literal check refuses when the native tree is not proven complete', async () => {
   for (const [broken, cause] of [
     [{ snapshotVerdict: undefined }, 'unattested'],
@@ -297,7 +363,7 @@ test('a literal check refuses when the native tree is not proven complete', asyn
     const result = await runPlan(parsePlan('✓ "Welcome"').blocks!, f.deps);
     assert.equal(result.verdict, 'REFUSED', cause);
     assert.equal('code' in result && result.code, 'NATIVE_SNAPSHOT_INCOMPLETE');
-    assert.match(result.failure!.seen, new RegExp(`causes=${cause}\\)`));
+    assert.match(result.failure!.seen, new RegExp(`causes=read=ordinary,${cause}\\)`));
   }
 });
 

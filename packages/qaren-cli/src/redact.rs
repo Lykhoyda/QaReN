@@ -131,7 +131,7 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
         .pointer("/outcomes/video_policy")
         .and_then(serde_json::Value::as_str)
     {
-        if ["strict", "non-strict", "undeclared"].contains(&note) {
+        if ["strict", "non-strict", "default-non-strict", "undeclared"].contains(&note) {
             media.push(("/outcomes/video_policy".into(), note.into()));
         }
     }
@@ -197,23 +197,84 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
             }
         }
     }
-    fn inputs(value: &mut serde_json::Value, path: &str, media: &[(String, serde_json::Value)]) {
+    // A ledger row's identity and press evidence, exempt from input redaction but not token masking.
+    fn step_member_apart(key: &str, value: &serde_json::Value) -> bool {
+        match key {
+            "operationId" | "line" => value.is_u64(),
+            "pressOutcomeUnknown" => value
+                .as_u64()
+                .is_some_and(|count| (1..=u64::from(u32::MAX)).contains(&count)),
+            "inconclusivePresses" => crate::core::inconclusive_counts(value.clone()).is_some(),
+            _ => false,
+        }
+    }
+    // The receipt summary's press evidence lists, handled the same way.
+    fn summary_member_apart(key: &str, value: &serde_json::Value) -> bool {
+        match key {
+            "inconclusive_presses" => {
+                serde_json::from_value::<Vec<crate::report::InconclusivePresses>>(value.clone())
+                    .is_ok()
+            }
+            "press_outcome_unknown" => {
+                serde_json::from_value::<Vec<crate::report::PressOutcomeUnknown>>(value.clone())
+                    .is_ok()
+            }
+            _ => false,
+        }
+    }
+    fn root_name_kept(key: &str, value: &serde_json::Value) -> bool {
+        match key {
+            "steps" => value.as_array().is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row.as_object().is_some_and(|row| {
+                        row.iter().any(|(key, value)| step_member_apart(key, value))
+                    })
+                })
+            }),
+            "ledger" => value.as_object().is_some_and(|summary| {
+                summary
+                    .iter()
+                    .any(|(key, value)| summary_member_apart(key, value))
+            }),
+            _ => false,
+        }
+    }
+    // `token_only` marks a validated evidence subtree: token masking without input redaction.
+    fn inputs(
+        value: &mut serde_json::Value,
+        path: &str,
+        media: &[(String, serde_json::Value)],
+        token_only: bool,
+    ) {
         if let Some((_, closed)) = media.iter().find(|(pointer, _)| pointer == path) {
             *value = closed.clone();
             return;
         }
         match value {
+            serde_json::Value::String(s) if token_only => *s = redact_github_tokens(s),
             serde_json::Value::String(s) => *s = redact_github_tokens(&redact_inputs(s)),
             serde_json::Value::Array(items) => {
                 for (index, item) in items.iter_mut().enumerate() {
-                    inputs(item, &format!("{path}/{index}"), media);
+                    inputs(item, &format!("{path}/{index}"), media, token_only);
                 }
             }
             serde_json::Value::Object(map) => {
+                let row = path.strip_prefix("/steps/").is_some_and(|index| {
+                    !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit())
+                });
+                let summary = path == "/ledger";
                 *map = std::mem::take(map)
                     .into_iter()
                     .map(|(key, mut value)| {
                         let child = format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"));
+                        if token_only
+                            || (row && step_member_apart(&key, &value))
+                            || (summary && summary_member_apart(&key, &value))
+                        {
+                            inputs(&mut value, &child, media, true);
+                            return (redact_github_tokens(&key), value);
+                        }
+                        let kept = path.is_empty() && root_name_kept(&key, &value);
                         let closed = media.iter().any(|(pointer, _)| {
                             pointer == &child || pointer.starts_with(&format!("{child}/"))
                         });
@@ -236,11 +297,13 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
                             ]
                             .contains(&key.as_str())
                         {
-                            inputs(&mut value, &child, media);
+                            inputs(&mut value, &child, media, false);
                         }
                         (
                             if closed {
                                 key
+                            } else if kept {
+                                redact_github_tokens(&key)
                             } else {
                                 redact_github_tokens(&redact_inputs(&key))
                             },
@@ -252,7 +315,7 @@ pub fn durable_json<T: serde::Serialize>(value: &T) -> serde_json::Result<String
             _ => {}
         }
     }
-    inputs(&mut projected, "", &media);
+    inputs(&mut projected, "", &media, false);
     let value = &projected;
     let text = serde_json::to_string_pretty(value)?;
     if !names_private_key(&text) {

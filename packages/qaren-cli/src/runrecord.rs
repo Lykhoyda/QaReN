@@ -924,7 +924,7 @@ impl RunRecord {
                 "pass a run id that exists under .qaren/runs/",
             )
         })?;
-        let record: RunRecord = serde_json::from_str(&raw).map_err(|e| {
+        let mut record: RunRecord = serde_json::from_str(&raw).map_err(|e| {
             Failure::new(
                 "load",
                 FailureCode::RunRecordInvalid,
@@ -974,6 +974,14 @@ impl RunRecord {
                 ),
                 "the record is inconsistent; resolve ownership manually before touching resources",
             ));
+        }
+        // Only a fresh-install admission note is evidence; an older record's stored log tail is never shown again.
+        if let Some(failure) = record
+            .failure
+            .as_mut()
+            .filter(|failure| failure.phase != "fresh_install")
+        {
+            failure.evidence.clear();
         }
         Ok(record)
     }

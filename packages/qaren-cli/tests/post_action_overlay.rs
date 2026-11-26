@@ -80,6 +80,7 @@ fn every_report_verdict_discloses_development_overlay_warnings() {
     assert_eq!(report::dev_overlay_verdict("fail", 1), "fail");
     let observed = ledger(warning());
     let input = ReportInput {
+        installed_app: None,
         video: None,
         run_id: "check-test",
         platform: "ios",

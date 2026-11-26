@@ -38,7 +38,8 @@ pub struct PrRunRecord {
     pub video_publication: VideoPublication,
     #[serde(default)]
     pub video_policy: record::VideoPolicy,
-    #[serde(default)]
+    // New PR records omit it (public records name no config path); older records are still read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub video_policy_source: Option<String>,
     #[serde(default, deserialize_with = "non_strict_publication")]
     pub non_strict_publication: Option<record::NonStrictPublication>,
@@ -198,14 +199,14 @@ struct Comments {
 fn find_own_comment(
     runner: &mut dyn Runner,
     pr: &PrInfo,
-    marker: &str,
+    markers: &[&str],
     actor: &str,
     cwd: &Path,
 ) -> Result<Option<String>, Failure> {
     Ok(list_comments(runner, pr, cwd)?
         .into_iter()
         .find(|c| {
-            c.body.lines().next() == Some(marker)
+            c.body.lines().next().is_some_and(|first| markers.contains(&first))
                 && c.author.as_ref().is_some_and(|a| a.login == actor)
         })
         .map(|c| c.url))
@@ -332,17 +333,28 @@ fn post_once(
     let prefix = marker
         .strip_suffix(" -->")
         .ok_or_else(|| failure("report has an invalid marker", "re-run qaren publish"))?;
-    let marker = format!(
-        "{prefix} report={} -->",
-        crate::candidate::sha256_hex(content.as_bytes())
-    );
+    let mark = |content: &str| {
+        format!("{prefix} report={} -->", crate::candidate::sha256_hex(content.as_bytes()))
+    };
+    let marker = mark(content);
     let body = format!("{marker}\n{content}");
     if attempted {
         if actor.is_none() {
             *actor = Some(authenticated_login(runner, run_dir)?);
         }
+        // A lost response may have posted the QA comment written last time, which can render differently after
+        // an upgrade; accept its marker too when it names this run and matches that body's own digest. A
+        // saved-block comment must match the body generated from the blocks admitted now, so it never falls back.
+        let earlier = (body_file == COMMENT_BODY)
+            .then(|| std::fs::read_to_string(run_dir.join(body_file)).ok())
+            .flatten();
+        let earlier = earlier.as_deref().and_then(|old| {
+            let (old_marker, old_content) = old.split_once('\n')?;
+            (old_marker == mark(old_content)).then_some(old_marker)
+        });
+        let markers = [marker.as_str(), earlier.unwrap_or(&marker)];
         if let Some(url) =
-            find_own_comment(runner, pr, &marker, actor.as_deref().unwrap(), run_dir)?
+            find_own_comment(runner, pr, &markers, actor.as_deref().unwrap(), run_dir)?
         {
             return Ok(url);
         }
@@ -830,7 +842,7 @@ pub fn publish(
             if let Ok(ledger) = publish_ledger(&run_dir, &pr) {
                 let video = effective_video(&pr, false);
                 if let Some(line) =
-                    report::video_outcome_line(&ledger, &pr.video_publication, Some(&video))
+                    report::public_video_outcome_line(&ledger, &pr.video_publication, &video)
                 {
                     receipt.outcomes.insert("video_summary".into(), line);
                 }
@@ -919,6 +931,7 @@ fn describe(
     let video = effective_video(pr, publication.video_attached);
     let section = report::render_pr_description(
         &ReportInput {
+            installed_app: None,
             video: Some(&video),
             run_id,
             platform: &pr.platform,
@@ -1062,6 +1075,7 @@ fn publish_inner(
                 let ledger = publish_ledger(&run_dir, &pr)?;
                 Ok(report::render_pr_comment(
                     &ReportInput {
+                        installed_app: None,
                         video: Some(&video),
                         run_id,
                         platform: &pr.platform,

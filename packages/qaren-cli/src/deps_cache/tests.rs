@@ -57,6 +57,7 @@ impl Fixture {
             notes: vec![],
             verb: "pr",
             bundle_requests_at_launch: None,
+            android_launch_url: None,
             manifest_warm: None,
             lane_owned: false,
             build_deadline_ms: None,

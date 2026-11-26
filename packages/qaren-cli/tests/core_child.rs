@@ -499,6 +499,24 @@ fn fresh_admission_closed_summary_survives_runtime_input_word_collisions() {
             admission_failure_summary(&restored)["terminalReason"],
             "executable_identity_unproven"
         );
+        let repo = common::temp_repo();
+        let mut record = common::base_record(
+            &repo,
+            &common::ios_scenario_yaml(8791),
+            "admitrun",
+            qaren::runrecord::Phase::Failed,
+        );
+        record.failure = Some(failure.clone());
+        record.save(&repo).unwrap();
+        let loaded = qaren::runrecord::RunRecord::load(&repo, "admitrun")
+            .unwrap()
+            .failure
+            .unwrap();
+        assert_eq!(loaded.phase, "fresh_install");
+        assert_eq!(
+            admission_failure_summary(&loaded)["terminalReason"],
+            "executable_identity_unproven"
+        );
         mock.expect_run(
             "fresh-install-preflight.js",
             admission_output("clear", "scan_failed"),
@@ -547,7 +565,7 @@ fn fresh_admission_projection_never_exempts_unvalidated_note_payloads() {
             let mut value = serde_json::to_value(&failure).unwrap();
             value["evidence"] = serde_json::json!([note]);
             failure = serde_json::from_value(value).unwrap();
-            assert!(!failure.evidence[0].contains("private-admission-canary"));
+            assert!(failure.evidence.is_empty(), "{:?}", failure.evidence);
         }
         let note = serde_json::json!({"probe":"fresh-install-admission","initialReason":"clear","terminalReason":"clear","attempts":3,"elapsedMs":0,"deadlineExceeded":false}).to_string();
         let output = qaren::redact::durable_json(
@@ -575,6 +593,7 @@ fn request() -> CoreRequest {
         lease: format!("{RUN}:abcdef0123456789abcdef0123456789"),
         login_block: None,
         login_marker: None,
+        app_source: None,
         target: CoreTarget {
             device_id: "AAAA-1111".to_string(),
             device_name: "qaren-check".to_string(),
@@ -584,6 +603,7 @@ fn request() -> CoreRequest {
             metro_bundle_requests: None,
             manifest_warm: None,
             warm_lane: false,
+            android_launch_url: None,
         },
     }
 }
@@ -1607,6 +1627,7 @@ fn react_coverage_loss_survives_the_child_receipt_and_report() {
             ])
         );
         let rendered = report::render(&ReportInput {
+            installed_app: None,
             video: None,
             run_id: RUN,
             platform: "ios",
@@ -1659,6 +1680,7 @@ fn same_line_loss_and_reconnect_survive_the_child_receipt_and_report() {
         serde_json::json!([{"line": 22, "coverage": "lost"}])
     );
     let report = report::render(&ReportInput {
+        installed_app: None,
         video: None,
         run_id: RUN,
         platform: "ios",

@@ -16,7 +16,7 @@ fn runner() -> RealRunner {
     RealRunner::with_log_executable(env!("CARGO_BIN_EXE_qaren").into())
 }
 
-fn walking_record() -> (PathBuf, RunRecord) {
+fn walking_record() -> (common::TempRepo, RunRecord) {
     let repo = common::temp_repo();
     let record = common::base_record(
         &repo,

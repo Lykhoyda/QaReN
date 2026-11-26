@@ -476,7 +476,7 @@ fn workspace_dry_run_reports_xcode_only_when_the_bound_cache_cannot_be_reused() 
                     fingerprint_parts: Default::default(),
                     platform: "ios".into(),
                     app_id: "com.rndevagent.testapp".into(),
-                    worktree_root: repo.clone(),
+                    worktree_root: repo.to_path_buf(),
                     fingerprint: plan.fingerprint,
                     built_at: "2026-08-13T00:00:00Z".into(),
                     candidate_sha: "b".repeat(40),
@@ -538,7 +538,7 @@ fn assert_ios_prepare_reuses_cached_client(workspace: bool) {
         fingerprint_parts: Default::default(),
         platform: "ios".to_string(),
         app_id: "com.rndevagent.testapp".to_string(),
-        worktree_root: repo.clone(),
+        worktree_root: repo.to_path_buf(),
         fingerprint: fp.value.clone(),
         built_at: "2026-08-13T00:00:00Z".to_string(),
         candidate_sha: "a".repeat(40),
@@ -728,7 +728,7 @@ fn tampered_stored_artifact_is_refused_for_reuse_and_left_in_place() {
         fingerprint_parts: Default::default(),
         platform: "ios".to_string(),
         app_id: "com.rndevagent.testapp".to_string(),
-        worktree_root: repo.clone(),
+        worktree_root: repo.to_path_buf(),
         fingerprint: fp.value.clone(),
         built_at: "2026-08-13T00:00:00Z".to_string(),
         candidate_sha: "a".repeat(40),
@@ -1049,7 +1049,7 @@ fn require_prewarm_with_matching_record_installs_offline() {
     let scenario_path = write_scenario(&repo, &require_prewarm_yaml(8791));
     let record = qaren::buildplan::DepsPrewarm {
         schema: PREWARM_SCHEMA.to_string(),
-        worktree_root: repo.clone(),
+        worktree_root: repo.to_path_buf(),
         project_root: repo.join("test-app"),
         lockfile_sha256: qaren::candidate::sha256_hex(b"lockfileVersion: 9\n"),
         at: "2026-08-13T00:00:00Z".to_string(),
@@ -1130,7 +1130,7 @@ fn require_prewarm_still_installs_offline_with_a_populated_dependency_cache() {
     let scenario_path = write_scenario(&repo, &require_prewarm_yaml(8791));
     let record = qaren::buildplan::DepsPrewarm {
         schema: PREWARM_SCHEMA.to_string(),
-        worktree_root: repo.clone(),
+        worktree_root: repo.to_path_buf(),
         project_root: repo.join("test-app"),
         lockfile_sha256: qaren::candidate::sha256_hex(b"lockfileVersion: 9\n"),
         at: "2026-08-13T00:00:00Z".to_string(),
@@ -1568,7 +1568,7 @@ fn android_reuse_path_records_install_provenance_after_a_successful_adb_install(
         fingerprint_parts: Default::default(),
         platform: "android".to_string(),
         app_id: "com.rndevagent.testapp".to_string(),
-        worktree_root: repo.clone(),
+        worktree_root: repo.to_path_buf(),
         fingerprint: fp.value.clone(),
         built_at: "2026-08-13T00:00:00Z".to_string(),
         candidate_sha: "a".repeat(40),
@@ -1672,6 +1672,7 @@ fn android_reuse_path_records_install_provenance_after_a_successful_adb_install(
     mock.expect_run("lsof", CmdOutput::success("6001\n"));
     mock.expect_run("ps", CmdOutput::success("6000\n"));
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
+    mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run(
         "expo-platform",
         CmdOutput {

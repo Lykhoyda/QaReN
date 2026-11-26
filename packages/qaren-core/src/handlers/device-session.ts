@@ -3,6 +3,7 @@ import {
   execFile as execFileCb,
   interruptible,
   cancellationSignal,
+  sleep,
   withCancellation,
 } from '../domain/cancellation.js';
 import { QaDispatchError, type QaDispatchContext } from '../domain/qa-dispatch.js';
@@ -68,6 +69,7 @@ interface SnapshotArgs {
   qaTiming?: TimingContext;
   qaContext?: QaDispatchContext;
   qaReadOnly?: boolean;
+  leakRecovery?: false;
   action: SnapshotAction;
   appId?: string;
   /** Exact authority-bound iOS UDID or Android serial. */
@@ -150,6 +152,69 @@ async function defaultAndroidProbe(bundleId: string, deviceId?: string): Promise
   } catch (error) {
     if (isAbort(error)) throw error;
     return false;
+  }
+}
+
+export type AndroidPidofRead = {
+  code: unknown;
+  stdout: string;
+  stderr: string;
+  killed?: boolean;
+};
+
+// "Not running" is only a clean exit with nothing on either stream; anything else unexpected is a fault.
+export function androidPidofAnswer({
+  code,
+  stdout,
+  stderr,
+  killed,
+}: AndroidPidofRead): 'running' | 'none' | 'fault' {
+  if (killed) return 'fault';
+  if (
+    code === 0 &&
+    stdout.split(/\s+/).some((token) => /^\d+$/.test(token) && Number(token) <= 4_294_967_295)
+  )
+    return 'running';
+  if ((code === 0 || code === 1) && !stdout.trim() && !stderr.trim()) return 'none';
+  return 'fault';
+}
+
+async function adbPidof(args: string[]): Promise<AndroidPidofRead> {
+  try {
+    const { stdout, stderr } = await execFile('adb', args, { timeout: 5000, encoding: 'utf8' });
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    const failed = error as { code?: unknown; stdout?: string; stderr?: string; killed?: unknown };
+    return {
+      code: failed.code,
+      stdout: failed.stdout ?? '',
+      stderr: failed.stderr ?? '',
+      killed: failed.killed === true,
+    };
+  }
+}
+
+// Unlike the liveness probe above, a failed read rejects, and "not running" needs two empty reads a second apart.
+export async function androidAppProcess(
+  appId: string,
+  serial: string,
+  run: (args: string[]) => Promise<AndroidPidofRead> = adbPidof,
+): Promise<boolean> {
+  if (
+    typeof appId !== 'string' ||
+    !/^[A-Za-z0-9._]+$/.test(appId) ||
+    typeof serial !== 'string' ||
+    !serial
+  )
+    throw new Error('the app process read needs an exact app id and adb serial');
+  const args = [...resolveAndroidLifecycleTarget(serial), 'shell', 'pidof', appId];
+  for (let read = 1; ; read++) {
+    const answer = androidPidofAnswer(await run(args));
+    if (answer === 'running') return true;
+    if (answer === 'fault') throw new Error("the app's process could not be read");
+    if (read === 2) return false;
+    await sleep(1000);
   }
 }
 
@@ -648,6 +713,12 @@ export function createDeviceSnapshotHandler(
     if (!result.isError && nodes && isAgentDeviceRunnerSentinel(nodes)) {
       if (args.qaContext) args.qaContext.invalidate();
       if (args.qaReadOnly) throw new QaDispatchError('ACTION_CONTEXT_CHANGED');
+      if (args.leakRecovery === false)
+        return failResult("the runner's own app is in front; no recovery attempted", {
+          code: 'RUNNER_LEAK',
+          recoveryReason: 'not-attempted',
+          mutation: 'none',
+        });
       const session = getActiveSession();
       if (args.platformPresence === true && presencePlatform(session?.platform)) {
         return failResult(

@@ -29,9 +29,10 @@ Take these fields from that run's receipt (the JSON `qaren check` or `qaren pr` 
 - `failure.code`
 - `failure.next_action`
 
-Include the report at the receipt's `artifacts.report` path when present. It is value-free by design: plan lines come
-from the walk's privacy-projected rows, not the raw plan file. If it shows a value the
+Include the report at the receipt's `artifacts.report` path when present. Its plan lines come from the walk's privacy-projected rows, not the raw plan file; a failure line can carry tool output, so read it before including it. If it shows a value the
 user typed, stop and report that as a privacy bug rather than filing the draft.
+
+Never read, quote or attach anything under the run's `logs/` folder.
 
 Never include, unless the user explicitly asks for it:
 

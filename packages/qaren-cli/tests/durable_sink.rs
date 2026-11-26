@@ -46,7 +46,8 @@ fn run_json_and_receipts_withhold_key_strings_a_writer_did_not_redact() {
     for durable in [recorded, receipt.to_json()] {
         assert!(!durable.contains(BODY), "{durable}");
         assert!(durable.contains(PRIVATE_KEY_WITHHELD), "{durable}");
-        assert!(durable.contains("\"clean\""), "{durable}");
+        let value: serde_json::Value = serde_json::from_str(&durable).unwrap();
+        assert!(value.pointer("/failure/evidence").is_none(), "{durable}");
     }
     let reloaded = RunRecord::load(&dir, "sinkrun").unwrap();
     assert_eq!(reloaded.failure.unwrap().detail, PRIVATE_KEY_WITHHELD);
@@ -145,7 +146,6 @@ fn output_fields_mask_on_load_and_keep_the_json_string_contract() {
     let value: serde_json::Value = serde_json::from_str(&durable).unwrap();
     for pointer in [
         "/failure/detail",
-        "/failure/evidence/0",
         "/failure/next_action",
         "/prepare/command",
         "/history/0/note",
@@ -161,6 +161,7 @@ fn output_fields_mask_on_load_and_keep_the_json_string_contract() {
             Some(PRIVATE_KEY_WITHHELD)
         );
     }
+    assert!(value.pointer("/failure/evidence").is_none(), "{durable}");
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -405,6 +406,7 @@ fn evidence_documents_and_reports_still_withhold_opaque_output() {
     let report = qaren::report::write(
         &dir,
         &qaren::report::ReportInput {
+            installed_app: None,
             video: None,
             run_id: "evidence",
             platform: "ios",
@@ -415,6 +417,57 @@ fn evidence_documents_and_reports_still_withhold_opaque_output() {
     )
     .unwrap();
     assert!(!std::fs::read_to_string(report).unwrap().contains(BODY));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_log_pointer_masks_a_declared_value_in_its_path_and_survives_status() {
+    use qaren::redact::{with_input_scope, InputValues};
+    use std::ffi::OsString;
+    use std::sync::Arc;
+    const DECLARED: &str = "zq79declared";
+    let dir = common::temp_repo();
+    let logs = dir.join(format!("prefix-{DECLARED}-suffix"));
+    std::fs::create_dir_all(&logs).unwrap();
+    let log = logs.join("metro.log");
+    std::fs::write(&log, "metro output\n").unwrap();
+    let bytes = std::fs::metadata(&log).unwrap().len();
+    with_input_scope(
+        Arc::new(InputValues::from_entries([(
+            OsString::from("QAREN_INPUT_PASSWORD"),
+            OsString::from(DECLARED),
+        )])),
+        || {
+            let mut record = common::base_record(
+                &dir,
+                &common::ios_scenario_yaml(8793),
+                "pointer",
+                Phase::Failed,
+            );
+            record.failure = Some(
+                Failure::new(
+                    "build",
+                    qaren::failure::FailureCode::BuildFailed,
+                    "metro exited",
+                    "inspect the log",
+                )
+                .with_log(&log),
+            );
+            record.save(&dir).unwrap();
+        },
+    );
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(RunRecord::path(&dir, "pointer")).unwrap())
+            .unwrap();
+    let masked = format!("{}/prefix-[REDACTED_INPUT]-suffix/metro.log", dir.display());
+    assert_eq!(saved["failure"]["log"]["file"], masked);
+    assert_eq!(saved["failure"]["log"]["bytes"], bytes);
+    let mut mock = qaren::exec::MockRunner::new();
+    let receipt = qaren::commands::status::status(&mut mock, &dir, "pointer");
+    assert_eq!(receipt.run_id, "pointer");
+    assert_eq!(receipt.result, ReceiptResult::Failed);
+    let shown: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+    assert_eq!(shown["failure"]["log"], saved["failure"]["log"]);
     std::fs::remove_dir_all(dir).unwrap();
 }
 
@@ -531,4 +584,196 @@ fn video_reason_codes_are_preserved_only_after_closed_validation() {
         );
     }
     assert!(serde_json::from_str::<qaren::record::VideoReason>("\"future-reason\"").is_err());
+}
+
+use common::press_guard::{
+    expected as press_guard_expected, ledger as press_guard_ledger, summary_lists, Lists,
+};
+
+fn reread_ledger(stored: &str) -> serde_json::Result<(qaren::core::Ledger, Lists)> {
+    let loaded: qaren::core::Ledger = serde_json::from_str(stored)?;
+    let lists = summary_lists(qaren::report::summarize(&loaded));
+    Ok((loaded, lists))
+}
+
+fn ids_and_lines(ledger: &qaren::core::Ledger) -> (Vec<u64>, Vec<u64>) {
+    (
+        ledger.steps.iter().map(|row| row.operation_id).collect(),
+        ledger.steps.iter().map(|row| row.line).collect(),
+    )
+}
+
+fn press_guard_receipt(ledger: &qaren::core::Ledger) -> Receipt {
+    let mut receipt = Receipt::new(
+        "check",
+        "press-guard",
+        ReceiptResult::Fail,
+        "verify",
+        String::new(),
+    );
+    receipt.ledger = Some(qaren::report::summarize(ledger));
+    receipt
+}
+
+#[test]
+fn press_guard_evidence_keeps_its_identity_under_input_collisions() {
+    use qaren::redact::with_input_scope;
+    let expected_ids = (vec![7, 7, 9, 10, 11, 0], vec![1, 1, 1, 2, 3, 7]);
+    let scope = |input| common::press_guard::input_scope(Some(input));
+    for input in [
+        "operationId",
+        "line",
+        "ambiguous",
+        "deadline",
+        "inconclusivePresses",
+        "pressOutcomeUnknown",
+        "steps",
+    ] {
+        with_input_scope(scope(input), || {
+            let ledger = press_guard_ledger(Some(&format!("note {input}")));
+            let stored = qaren::redact::durable_json(&ledger).unwrap();
+            let (loaded, lists) = reread_ledger(&stored).unwrap_or_else(|e| panic!("{input}: {e}"));
+            assert_eq!(lists, press_guard_expected(), "{input}");
+            assert_eq!(ids_and_lines(&loaded), expected_ids, "{input}");
+            assert_eq!(
+                loaded.steps[3].reason.as_deref(),
+                Some("note [REDACTED_INPUT]"),
+                "{input}"
+            );
+        });
+    }
+    with_input_scope(scope("attempt"), || {
+        let stored = qaren::redact::durable_json(&press_guard_ledger(None)).unwrap();
+        assert!(reread_ledger(&stored).is_err());
+    });
+    for input in [
+        "inconclusive_presses",
+        "press_outcome_unknown",
+        "operation_id",
+        "counts",
+        "count",
+        "line",
+        "ambiguous",
+        "ledger",
+    ] {
+        with_input_scope(scope(input), || {
+            let stored = press_guard_receipt(&press_guard_ledger(None)).to_json();
+            let loaded: Receipt =
+                serde_json::from_str(&stored).unwrap_or_else(|e| panic!("{input}: {e}"));
+            let summary = loaded
+                .ledger
+                .unwrap_or_else(|| panic!("{input}: no summary"));
+            assert_eq!(summary_lists(summary), press_guard_expected(), "{input}");
+        });
+    }
+}
+
+const TOKEN_CHILD: &str = "QAREN_TEST_PRESS_GUARD_TOKEN";
+
+// Token masking reads the process environment, so each token runs in its own child process.
+#[test]
+fn press_guard_evidence_is_not_exempt_from_token_masking() {
+    if let Ok(token) = std::env::var(TOKEN_CHILD) {
+        press_guard_token_case(&token);
+        return;
+    }
+    for token in ["ambiguous", "operationId", "line", "steps", "ledger"] {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "press_guard_evidence_is_not_exempt_from_token_masking",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env_remove("GITHUB_TOKEN")
+            .env("GH_TOKEN", token)
+            .env(TOKEN_CHILD, token)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("test result: ok. 1 passed"),
+            "{token}: {stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+fn press_guard_token_case(token: &str) {
+    const MASK: &str = "[REDACTED_SECRET]";
+    let ledger = press_guard_ledger(None);
+    let stored = qaren::redact::durable_json(&ledger).unwrap();
+    let written: serde_json::Value = serde_json::from_str(&stored).unwrap();
+    let rows = |written: &serde_json::Value| written["steps"].as_array().cloned();
+    match token {
+        "ambiguous" => {
+            let rows = rows(&written).unwrap();
+            let counts = |index: usize| &rows[index]["inconclusivePresses"];
+            assert_eq!(counts(1), &serde_json::json!({ MASK: 1 }));
+            assert_eq!(counts(0), &serde_json::json!({"deadline":1}));
+            assert_eq!(counts(2), &serde_json::json!({"deadline":2}));
+            let (loaded, lists) = reread_ledger(&stored).unwrap();
+            assert_eq!(loaded.steps[1].inconclusive_presses, None);
+            assert_eq!(
+                lists,
+                common::press_guard::lists(
+                    serde_json::json!([
+                        {"operation_id":7,"line":1,"counts":{"deadline":1}},
+                        {"operation_id":9,"line":1,"counts":{"deadline":2}},
+                        {"line":7,"counts":{"absent":1}},
+                    ]),
+                    serde_json::json!([{"operation_id":10,"line":2,"count":1}]),
+                )
+            );
+            assert_eq!(
+                ids_and_lines(&loaded),
+                (vec![7, 7, 9, 10, 11, 0], vec![1, 1, 1, 2, 3, 7])
+            );
+        }
+        "operationId" => {
+            let rows = rows(&written).unwrap();
+            for (row, id) in rows.iter().zip([7, 7, 9, 10, 11]) {
+                assert_eq!(row[MASK], serde_json::json!(id));
+                assert!(row.get("operationId").is_none());
+            }
+            assert!(rows[5].get(MASK).is_none());
+            let (loaded, lists) = reread_ledger(&stored).unwrap();
+            assert_eq!(ids_and_lines(&loaded), (vec![0; 6], vec![1, 1, 1, 2, 3, 7]));
+            assert_eq!(
+                lists,
+                common::press_guard::lists(
+                    serde_json::json!([
+                        {"line":1,"counts":{"deadline":1}},
+                        {"line":1,"counts":{"ambiguous":1}},
+                        {"line":1,"counts":{"deadline":2}},
+                        {"line":7,"counts":{"absent":1}},
+                    ]),
+                    serde_json::json!([{"line":2,"count":1}]),
+                )
+            );
+        }
+        "line" => {
+            let rows = rows(&written).unwrap();
+            for (row, line) in rows.iter().zip([1, 1, 1, 2, 3, 7]) {
+                assert_eq!(row[MASK], serde_json::json!(line));
+                assert!(row.get("line").is_none());
+            }
+            assert!(reread_ledger(&stored).is_err());
+        }
+        "steps" => {
+            assert!(written.get("steps").is_none());
+            assert_eq!(written[MASK].as_array().map(Vec::len), Some(6));
+            assert!(reread_ledger(&stored).is_err());
+        }
+        "ledger" => {
+            let stored = press_guard_receipt(&ledger).to_json();
+            let written: serde_json::Value = serde_json::from_str(&stored).unwrap();
+            assert!(written.get("ledger").is_none());
+            assert!(written[MASK]["inconclusive_presses"].is_array());
+            assert!(written[MASK]["press_outcome_unknown"].is_array());
+            let loaded: Receipt = serde_json::from_str(&stored).unwrap();
+            assert!(loaded.ledger.is_none());
+        }
+        other => panic!("unexpected token case {other}"),
+    }
 }

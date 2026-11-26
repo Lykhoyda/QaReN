@@ -1,4 +1,13 @@
-import { HIT_PROBE_RESULTS, type HitProbeResult, type HitProbeIdentity } from '../qa/live-hit.js';
+import {
+  HIT_PROBE_RESULTS,
+  CLIENT_UNAVAILABLE,
+  expiredHitProbeReason,
+  hitProbeErrorReason,
+  RUNNER_LIVE_CHECK_REASONS,
+  type HitProbeResult,
+  type HitProbeIdentity,
+  type HitProbeRead,
+} from '../qa/live-hit.js';
 import {
   cleanProvenanceReadDiagnostic,
   labelProvenanceFromWire,
@@ -1120,7 +1129,7 @@ export async function stopFastRunner(deviceId?: string, signal?: AbortSignal): P
 }
 
 // Mirrors RN_FAST_RUNNER_APP_BUNDLE_ID in QarenIosRunner.xcodeproj.
-const RUNNER_HOST_BUNDLE_ID = 'dev.lykhoyda.rndevagent.fastrunner';
+export const RUNNER_HOST_BUNDLE_ID = 'dev.lykhoyda.rndevagent.fastrunner';
 
 // The UI-test host app outlives its xcodebuild parent; the next admission would read it as a foreign driver.
 export async function terminateRunnerHost(deviceId?: string): Promise<void> {
@@ -1132,7 +1141,7 @@ export async function terminateRunnerHost(deviceId?: string): Promise<void> {
   });
 }
 
-const RUNNER_TEST_BUNDLE_ID = `${RUNNER_HOST_BUNDLE_ID}.uitests.xctrunner`;
+export const RUNNER_TEST_BUNDLE_ID = `${RUNNER_HOST_BUNDLE_ID}.uitests.xctrunner`;
 const runnerDataContainers = new Map<string, string>();
 
 export async function captureRunnerScreenshot(
@@ -1260,8 +1269,15 @@ export async function fastSwipe(
     );
     if (qaContext && !resp.ok && resp.error?.code === 'RUNNER_TIMEOUT') {
       await containRunnerTimeout('drag', resp.error.message ?? 'RUNNER_TIMEOUT', authority);
-      qaContext.refuse('ACTION_OUTCOME_UNCERTAIN');
+      qaContext.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
     }
+    if (
+      qaContext &&
+      !resp.ok &&
+      resp.error?.code === 'APP_ALERT_INTERRUPTION' &&
+      resp.error.mutation === 'none'
+    )
+      qaContext.refuse('ACTION_OUTCOME_UNCERTAIN', 'alert-blocked');
     return resp as unknown as FastRunnerResponse;
   } catch (error) {
     throwIfCancelled();
@@ -1270,7 +1286,7 @@ export async function fastSwipe(
       const message = error instanceof Error ? error.message : String(error);
       if (message.startsWith('RUNNER_TIMEOUT'))
         await containRunnerTimeout('drag', message, authority);
-      qaContext.refuse('ACTION_OUTCOME_UNCERTAIN');
+      qaContext.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed');
     }
     throw error;
   }
@@ -2066,7 +2082,7 @@ async function postCommandWithRecovery(
   qaContext?: QaDispatchContext,
   qaTiming?: TimingContext,
   focusedProof?: () => Promise<boolean>,
-  qaRecovery?: { probeState?: ProbeState },
+  qaRecovery?: { probeState?: ProbeState; sendUnresolved?: true },
 ): Promise<{ resp: RunnerResponse; recovery?: TransportRecovery }> {
   if (runnerPoisoned && body.command !== 'status') {
     throw new Error(
@@ -2082,6 +2098,7 @@ async function postCommandWithRecovery(
   const commandId = generateCommandId();
   lastRunnerCommand = typeof body.command === 'string' ? body.command : String(body.command);
   const timeoutMs = commandTimeoutMs(body.command);
+  const authorizedBefore = qaContext?.authorizations ?? 0;
   try {
     return {
       resp: await sendCommandOnce(
@@ -2100,6 +2117,14 @@ async function postCommandWithRecovery(
     if (!isAmbiguousTransportFailure(message)) throw err;
     const probe = await probeCommandStatus(state.port, commandId, qaTiming);
     if (qaRecovery) qaRecovery.probeState = probe?.state;
+    // An authorised tap with no usable reply whose journal could not say whether it ran.
+    if (
+      qaRecovery &&
+      body.command === 'tap' &&
+      (qaContext?.authorizations ?? 0) > authorizedBefore &&
+      (!probe || probe.state === 'unknown')
+    )
+      qaRecovery.sendUnresolved = true;
     const decision = decideRecovery(probe, body.command);
     if (decision.action === 'return-recovered') {
       return {
@@ -2794,7 +2819,10 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
 
   if (args.command === 'hitProbe') {
     const observedRunner = runnerState;
-    if (!observedRunner) return okResult({ hitProbe: 'unavailable' });
+    // The client's own refusals carry their word in meta, which a runner reply never fills.
+    const local = (word: (typeof CLIENT_UNAVAILABLE)[number]) =>
+      okResult({ hitProbe: 'unavailable' }, { meta: { hitProbeUnavailable: word } });
+    if (!observedRunner) return local('runner-refused');
     try {
       args.qaContext?.check();
       const reply = await sendCommandOnce(
@@ -2804,13 +2832,13 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
         args.qaContext,
         args.qaTiming,
       );
-      if (!reply.ok || runnerState !== observedRunner || args.qaContext?.expired)
-        return okResult({ hitProbe: 'unavailable' });
+      if (!reply.ok || runnerState !== observedRunner) return local('runner-refused');
+      if (args.qaContext?.expired) return local(expiredHitProbeReason(args.qaContext));
       return okResult(reply.data ?? { hitProbe: 'unavailable' });
     } catch (error) {
       throwIfCancelled();
       if (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED') throw error;
-      return okResult({ hitProbe: 'unavailable' });
+      return local(hitProbeErrorReason(error));
     }
   }
 
@@ -2974,7 +3002,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
 
   let resp: RunnerResponse;
   let recovery: TransportRecovery | undefined;
-  const qaRecovery: { probeState?: ProbeState } = {};
+  const qaRecovery: { probeState?: ProbeState; sendUnresolved?: true } = {};
   const diagnoseRefusal = <T>(
     stage: 'dispatch-error' | 'native-response',
     operation: () => T,
@@ -2996,6 +3024,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
             ...(nativeCode ? { nativeCode } : {}),
             probeState: qaRecovery.probeState,
             recovery: recovery?.outcome,
+            sendUnresolved: qaRecovery.sendUnresolved,
           }),
           operation,
         )
@@ -3071,19 +3100,21 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
         : containRunnerTimeout(args.command, m, commandAuthorityBefore));
       diagnoseRefusal(
         'dispatch-error',
-        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'),
+        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed'),
         'RUNNER_TIMEOUT',
       );
       return result;
     }
-    diagnoseRefusal('dispatch-error', () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'));
+    diagnoseRefusal('dispatch-error', () =>
+      args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed'),
+    );
     throw err;
   }
   if (!presenceRequested && !resp.ok && resp.error?.code === 'KEYBOARD_RELAYOUT_REQUIRED') {
     keyboardEvent('relayout');
     diagnoseRefusal(
       'native-response',
-      () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'),
+      () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'keyboard-visible'),
       'KEYBOARD_RELAYOUT_REQUIRED',
     );
     const relayoutFailure = await measureTiming(
@@ -3166,7 +3197,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
         : containRunnerTimeout(args.command, message, commandAuthorityBefore));
       diagnoseRefusal(
         'native-response',
-        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'),
+        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed'),
         'RUNNER_TIMEOUT',
       );
       return result;
@@ -3179,7 +3210,7 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
       const result = await containTypeTimeout(args, commandAuthorityBefore);
       diagnoseRefusal(
         'native-response',
-        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN'),
+        () => args.qaContext?.refuse('ACTION_OUTCOME_UNCERTAIN', 'dispatch-unconfirmed'),
         'RUNNER_TIMEOUT',
       );
       return result;
@@ -3350,20 +3381,31 @@ export async function readIOSHitProbe(
   qaContext: QaDispatchContext,
   identity: HitProbeIdentity,
 ): Promise<HitProbeResult> {
+  return (await readIOSHitProbeWithReason(ref, bundleId, generation, qaContext, identity)).result;
+}
+
+// The same read, with the fixed word that says why an unavailable read gave no answer.
+export async function readIOSHitProbeWithReason(
+  ref: string,
+  bundleId: string,
+  generation: number,
+  qaContext: QaDispatchContext,
+  identity: HitProbeIdentity,
+): Promise<HitProbeRead> {
   const target = getFreshRefTarget(ref);
+  if (!target || target.snapshotGeneration !== generation)
+    return { result: 'unavailable', reason: 'stale-ref' };
   if (
-    !target ||
-    target.snapshotGeneration !== generation ||
     (identity.identifier
       ? target.snapshotIdentifier !== identity.identifier
       : target.snapshotLabel !== identity.label) ||
     (['x', 'y', 'width', 'height'] as const).some(
       (key) => target.rect[key] !== identity.rect[key],
     ) ||
-    (!target.snapshotIdentifier && !target.snapshotLabel) ||
-    qaContext.expired
+    (!target.snapshotIdentifier && !target.snapshotLabel)
   )
-    return 'unavailable';
+    return { result: 'unavailable', reason: 'identity-changed' };
+  if (qaContext.expired) return { result: 'unavailable', reason: expiredHitProbeReason(qaContext) };
   try {
     const response = await runIOS({
       command: 'hitProbe',
@@ -3377,23 +3419,46 @@ export async function readIOSHitProbe(
       snapshotIdentifier: target.snapshotIdentifier,
       snapshotLabel: target.snapshotLabel,
     });
-    if (
-      response.isError ||
-      qaContext.expired ||
-      JSON.stringify(getFreshRefTarget(ref)) !== JSON.stringify(target)
-    )
-      return 'unavailable';
-    const data = (
-      JSON.parse(response.content[0]?.text ?? '{}') as {
-        data?: { hitProbe?: unknown; snapshotGeneration?: unknown };
-      }
-    ).data;
-    if (data?.snapshotGeneration !== generation) return 'unavailable';
-    return HIT_PROBE_RESULTS.find((result) => result === data?.hitProbe) ?? 'unavailable';
+    if (response.isError) return { result: 'unavailable', reason: 'runner-refused' };
+    if (qaContext.expired)
+      return { result: 'unavailable', reason: expiredHitProbeReason(qaContext) };
+    // Name what changed during the read: the ref is gone, its generation moved, or its identity or frame did.
+    const after = getFreshRefTarget(ref);
+    if (JSON.stringify(after) !== JSON.stringify(target))
+      return {
+        result: 'unavailable',
+        reason: !after
+          ? 'stale-ref'
+          : after.snapshotGeneration !== target.snapshotGeneration
+            ? 'generation-changed'
+            : 'identity-changed',
+      };
+    const { data, meta } = JSON.parse(response.content[0]?.text ?? '{}') as {
+      data?: { hitProbe?: unknown; snapshotGeneration?: unknown; liveCheckReason?: unknown };
+      meta?: { hitProbeUnavailable?: unknown };
+    };
+    const local = CLIENT_UNAVAILABLE.find((word) => word === meta?.hitProbeUnavailable);
+    if (local) return { result: 'unavailable', reason: local };
+    // A runner reply speaks for this read only at this generation, and only in the runner's own words;
+    // a reply without a numeric generation shows no mismatch, so it explains nothing.
+    if (typeof data?.snapshotGeneration !== 'number')
+      return { result: 'unavailable', reason: 'unreported' };
+    if (data.snapshotGeneration !== generation)
+      return { result: 'unavailable', reason: 'generation-changed' };
+    const result = HIT_PROBE_RESULTS.find((listed) => listed === data?.hitProbe);
+    if (result !== undefined && result !== 'unavailable') return { result };
+    // A runner word explains only an exact `unavailable`; a missing or unknown result explains nothing.
+    return {
+      result: 'unavailable',
+      reason:
+        (result === 'unavailable' &&
+          RUNNER_LIVE_CHECK_REASONS.find((word) => word === data?.liveCheckReason)) ||
+        'unreported',
+    };
   } catch (error) {
     if (isAbort(error) || (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED'))
       throw error;
-    return 'unavailable';
+    return { result: 'unavailable', reason: hitProbeErrorReason(error) };
   }
 }
 

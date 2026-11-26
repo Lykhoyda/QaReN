@@ -59,6 +59,8 @@ export interface PlanDiagnostic {
   nextAction: string;
 }
 
+const NEEDS_MODEL = 'this line needs the model, and installed-app mode runs quoted lines only';
+
 const PLAN_REPAIRS: Record<string, string> = {
   'another block is already named': 'give each block a distinct heading',
   'distinct block titles produce the same action ID':
@@ -93,6 +95,8 @@ const PLAN_REPAIRS: Record<string, string> = {
     'use Type "text" into "field"',
   'scroll fallback needs an explicit until target or a bare direction':
     'use Scroll down, Scroll up, or Scroll down until "target"',
+  [NEEDS_MODEL]:
+    'quote the target (its testID or exact label) or make the ✓ line a quoted literal; or run without --installed-app',
 };
 
 const knownProblem = (reason: string): string | undefined =>
@@ -328,7 +332,7 @@ export function collectInputInventory(markdown: string): {
   nonSecretInputs: string[];
   refused: RefusedLine[];
 } {
-  const items: (Step | Check)[] = [];
+  const items: Item[] = [];
   const pending: RefusedLine[] = [];
   const parsed = scanPlan(markdown, new Map(), pending, undefined, items, true);
   return {
@@ -350,21 +354,26 @@ export function collectInputInventory(markdown: string): {
   };
 }
 
-export function planNeedsJev(markdown: string): boolean {
+// Every line the model would have to read: lines the grammar does not know, unquoted targets, non-literal checks.
+export function planJevLines(markdown: string): RefusedLine[] {
   const pending: RefusedLine[] = [];
-  const items: (Step | Check)[] = [];
+  const items: Item[] = [];
   scanPlan(markdown, new Map(), pending, undefined, items);
-  return (
-    pending.length > 0 ||
-    items.some((item) => {
-      if (item.kind === 'check') return !item.literal;
-      if (item.kind === 'press' || item.kind === 'fill' || item.kind === 'wait')
-        return item.target.quoted === undefined;
-      if (item.kind === 'scroll')
-        return item.until !== undefined && item.until.quoted === undefined;
-      return false;
-    })
-  );
+  const needsModel = (item: Item): boolean => {
+    if (item.kind === 'check') return !item.literal;
+    if (item.kind === 'press' || item.kind === 'fill' || item.kind === 'wait')
+      return item.target.quoted === undefined;
+    if (item.kind === 'scroll') return item.until !== undefined && item.until.quoted === undefined;
+    return false;
+  };
+  return [
+    ...pending.map(({ line, text }) => ({ line, text, reason: NEEDS_MODEL })),
+    ...items.filter(needsModel).map(({ line, raw }) => ({ line, text: raw, reason: NEEDS_MODEL })),
+  ].sort((a, b) => a.line - b.line);
+}
+
+export function planNeedsJev(markdown: string): boolean {
+  return planJevLines(markdown).length > 0;
 }
 
 function projectRefusals(
@@ -400,7 +409,7 @@ function scanPlan(
   resolved: ReadonlyMap<number, Step | Check>,
   pending?: RefusedLine[],
   fillValues?: string[],
-  encountered?: (Step | Check)[],
+  encountered?: Item[],
   inventory = false,
 ): ParsedPlan {
   const visible = visibleLines(markdown.split(/\r?\n/));

@@ -272,7 +272,8 @@ fn deadline_parse_refusals_stay_generic() {
         "deadlines:\n  buildSeconds: 5400\n",
         "deadlineBudget: mistaken-value\n",
     ];
-    let repo = common::temp_repo().join("deadline-5400");
+    let tmp = common::temp_repo();
+    let repo = tmp.join("deadline-5400");
     std::fs::create_dir_all(&repo).unwrap();
     let config_path = repo.join("config.yaml");
     for block in blocks {
@@ -375,7 +376,7 @@ fn video_policy_is_explicit_and_invalid_values_refuse_without_echoing_them() {
     let repo = common::temp_repo();
     let path = repo.join("config.yaml");
     for (suffix, expected) in [
-        ("", VideoPolicy::Undeclared),
+        ("", VideoPolicy::DefaultNonStrict),
         ("video: strict\n", VideoPolicy::Strict),
         ("video: non-strict\n", VideoPolicy::NonStrict),
     ] {
@@ -384,6 +385,7 @@ fn video_policy_is_explicit_and_invalid_values_refuse_without_echoing_them() {
     }
     for value in [
         "undeclared",
+        "default-non-strict",
         "unknown",
         "private-canary",
         "null",

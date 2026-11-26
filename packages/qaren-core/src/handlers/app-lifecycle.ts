@@ -1,4 +1,5 @@
-import { execFile as execFileCb } from '../domain/cancellation.js';
+import { execFile as execFileCb, isAbort } from '../domain/cancellation.js';
+import { classifyExecError } from '../domain/maestro-step-parser.js';
 import { promisify } from 'node:util';
 
 // Safe by construction: argv arrays only, never shell strings.
@@ -100,6 +101,59 @@ export async function terminateApp(
         encoding: 'utf8',
       },
     );
+  }
+}
+
+// The CLI's dev-client deep link for this run's Metro (cli/adapters/devclient.rs:14-21), and nothing else.
+export function isAndroidDevClientLaunchUrl(url: unknown, metroPort: number): url is string {
+  if (typeof url !== 'string') return false;
+  const scheme = url.slice(0, Math.max(0, url.indexOf('://')));
+  return (
+    /^[A-Za-z][A-Za-z0-9+.-]{0,127}$/.test(scheme) &&
+    url ===
+      `${scheme}://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A${metroPort}%2F%3FdisableOnboarding%3D1`
+  );
+}
+
+// The CLI's own Android launch (cli/adapters/android.rs:866-895); the app id and serial are checked before any command.
+export function buildAndroidDevClientStartArgv(
+  appId: string,
+  serial: string,
+  url: string,
+): string[] {
+  if (!/^[A-Za-z0-9._]+$/.test(appId))
+    throw new Error('the dev-client start needs an exact Android app id');
+  return [
+    ...resolveAndroidLifecycleTarget(serial),
+    'shell',
+    'am',
+    'start',
+    '-a',
+    'android.intent.action.VIEW',
+    '--ez',
+    'EXDevMenuDisableAutoLaunch',
+    'true',
+    '-d',
+    url,
+    appId,
+  ];
+}
+
+// Sent once: a command that outlives its limit is reported as timed out and never sent again.
+export async function startAndroidDevClient(
+  appId: string,
+  serial: string,
+  url: string,
+): Promise<'sent' | 'timed_out'> {
+  const argv = buildAndroidDevClientStartArgv(appId, serial, url);
+  try {
+    await execFile('adb', argv, { timeout: DEV_CLIENT_LAUNCH_TIMEOUT_MS, encoding: 'utf8' });
+    return 'sent';
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    // A deadline, not an output overflow, which also kills the child.
+    if (classifyExecError(error).timedOut) return 'timed_out';
+    throw error;
   }
 }
 

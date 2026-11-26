@@ -62,7 +62,7 @@ class QarenIosRunnerTests: XCTestCase {
 #endif
   let maxRequestBytes = 2 * 1024 * 1024
   let maxSnapshotElements = 600
-  let fastSnapshotLimit = 300
+  let fastSnapshotLimit = 600
   let mainThreadExecutionTimeout: TimeInterval = 30
   let appExistenceTimeout: TimeInterval = 30
   let retryCooldown: TimeInterval = 0.2

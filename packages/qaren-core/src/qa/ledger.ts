@@ -5,7 +5,7 @@ import type {
   GroundProof,
   ScrollBandReceipt,
 } from './resolve.js';
-import type { OverlayHitReceipt } from './live-hit.js';
+import type { LiveCheckReason, OverlayHitReceipt } from './live-hit.js';
 import type { PressEvidence } from './selection-press.js';
 import type { MediaLatch, WithholdCause } from './privacy.js';
 import type { Item } from './plan.js';
@@ -90,6 +90,10 @@ export interface LedgerRow {
   candidateExclusions?: CandidateExclusion[];
   // What covered the target's centre before the tap.
   coveredBy?: CoveredBy;
+  // iOS taps of this row sent after their live check gave no answer, counted per reason.
+  inconclusivePresses?: Partial<Record<LiveCheckReason, number>>;
+  // Authorised taps of this row whose reply was lost and whose journal answered unknown or was unreadable.
+  pressOutcomeUnknown?: number;
 }
 
 export interface InterruptionReceipt {
@@ -129,10 +133,15 @@ export interface LedgerFailure {
   screenshot?: string;
   // Set only when a plan step's own judgment failed; no other failure may mark a saved plan broken.
   kind?: 'step';
-  // Target-class failures only: the last observed screen, one suggested plan edit and the miss reason.
+  // The last observed screen, one suggested plan edit and the miss reason of a target-class failure;
+  // subreason is also the reason of a step that ended ACTION_OUTCOME_UNCERTAIN.
   screen?: ScreenNow;
   suggestion?: string;
-  subreason?: TargetMissDiagnostic['reason'] | 'ambiguous' | 'previous-plan-press';
+  subreason?:
+    | TargetMissDiagnostic['reason']
+    | 'ambiguous'
+    | 'previous-plan-press'
+    | UncertainReason;
   // Why a scroll step failed; set only by the walker, never read from reason prose.
   cause?:
     | 'scroll_dispatch_failed'
@@ -320,4 +329,5 @@ export function screenshotName(index: number, line: number): string {
 }
 import type { JevCall } from './questions.js';
 import type { ScreenNow, TargetMissDiagnostic } from './target-miss.js';
+import type { UncertainReason } from '../domain/qa-dispatch.js';
 import { summarizeSpeed, type LedgerSpeed, type RowTiming } from './row-timing.js';

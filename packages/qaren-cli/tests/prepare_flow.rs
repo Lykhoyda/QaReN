@@ -277,6 +277,25 @@ fn ios_prepare_happy_path_produces_ready_receipt_and_record() {
     );
 }
 
+const RAW_LOGS: &str = "process logs in this run's logs folder may contain private app or tool output, such as the app's own console lines in the Metro log; keep the run folder on this machine";
+
+#[test]
+fn ios_prepare_receipt_discloses_what_the_run_logs_folder_may_hold() {
+    let repo = common::temp_repo();
+    let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
+    let mut mock = MockRunner::new();
+    script_ios_prepare(&mut mock, &repo, CmdOutput::success(""));
+    let receipt = prepare(&mut mock, &prepare_args(&scenario_path, false, None));
+    assert_eq!(receipt.result, ReceiptResult::Ready, "{}", receipt.to_json());
+    assert!(receipt.artifacts["run_dir"].join("logs").is_dir());
+    assert_eq!(
+        receipt.outcomes.get("raw_logs").map(String::as_str),
+        Some(RAW_LOGS)
+    );
+    let json: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+    assert_eq!(json["outcomes"]["raw_logs"], RAW_LOGS);
+}
+
 #[test]
 fn ios_prepare_proceeds_after_two_launch_timeouts_with_each_attempt_in_the_receipt() {
     let repo = common::temp_repo();
@@ -2102,6 +2121,7 @@ fn ios_metro_that_exits_while_pending_fails_as_metro_exited() {
     let repo = common::temp_repo();
     let scenario = write_scenario(&repo, &ios_scenario_yaml(8791));
     let mut mock = MockRunner::new();
+    mock.metro_log = Some(format!("{}\n", common::canary::line()));
     script_ios_prepare_until_metro_owned(&mut mock, &repo, |_| {});
     common::script_metro_bind_not_ready(&mut mock);
     mock.expect_run("ps", CmdOutput::failed(1, ""));
@@ -2113,6 +2133,13 @@ fn ios_metro_that_exits_while_pending_fails_as_metro_exited() {
     assert_eq!(failure.code, FailureCode::BuildFailed);
     assert!(failure.detail.to_string().starts_with("metro exited"));
     assert_eq!(receipt.metro_bind, None);
+    let runs = scenario.parent().unwrap();
+    common::canary::assert_log_pointer(
+        &receipt.to_json(),
+        &std::fs::read(RunRecord::path(runs, &receipt.run_id)).unwrap(),
+        &RunRecord::run_dir(runs, &receipt.run_id).join("logs/metro.log"),
+        &[],
+    );
     assert_eq!(wait_turns(&mock), 1);
     assert_eq!(mock.remaining(), 0);
 }
@@ -4141,12 +4168,13 @@ fn android_prepare_fails_fast_when_the_tunnel_dies_before_listening() {
             "started slot=1 serial=emulator-5554 adb_port=5555 lease={expected_holder}\n"
         )),
     );
-    mock.expect_spawn(
+    mock.inner.expect_spawn_with_log(
         "ssh",
         Spawned {
             pid: 7000,
             pgid: 7000,
         },
+        &format!("{}\n", common::canary::line()),
     );
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
     mock.expect_run("ps", CmdOutput::success("ssh -N\n"));
@@ -4171,9 +4199,12 @@ fn android_prepare_fails_fast_when_the_tunnel_dies_before_listening() {
         "a dead tunnel must be reported as such, not as a deadline: {}",
         failure.detail
     );
-    assert!(
-        !failure.evidence.is_empty(),
-        "the tunnel log tail must be attached as evidence"
+    let runs = scenario_path.parent().unwrap();
+    common::canary::assert_log_pointer(
+        &receipt.to_json(),
+        &std::fs::read(RunRecord::path(runs, &receipt.run_id)).unwrap(),
+        &RunRecord::run_dir(runs, &receipt.run_id).join("logs/tunnel.log"),
+        &[],
     );
     assert_eq!(
         mock.remaining(),
@@ -4390,7 +4421,7 @@ fn farm_lease_is_recorded_before_start_command() {
 
     let mut probing = RecordProbeRunner {
         inner: mock,
-        repo: repo.clone(),
+        repo: repo.to_path_buf(),
         run_id: run_id.clone(),
         probe_label: "farm-start".to_string(),
         observed: None,
@@ -4448,7 +4479,7 @@ fn simulator_allocation_is_recorded_before_create() {
 
     let mut probing = RecordProbeRunner {
         inner: mock,
-        repo: repo.clone(),
+        repo: repo.to_path_buf(),
         run_id: run_id.clone(),
         probe_label: "simctl-create".to_string(),
         observed: None,
@@ -4880,7 +4911,7 @@ fn ios_reuse_dry_run_lists_each_launch_step_once_in_execution_order() {
         fingerprint_parts: Default::default(),
         platform: "ios".to_string(),
         app_id: scenario.candidate.app_id.clone(),
-        worktree_root: repo.clone(),
+        worktree_root: repo.to_path_buf(),
         fingerprint: fp.value,
         built_at: "2026-10-05T00:00:00Z".to_string(),
         candidate_sha: "b".repeat(40),
@@ -5010,7 +5041,7 @@ fn dry_run_plans_generated_native_regeneration_before_every_build_route() {
                     fingerprint_parts: Default::default(),
                     platform: platform.to_string(),
                     app_id: scenario.candidate.app_id.clone(),
-                    worktree_root: repo.clone(),
+                    worktree_root: repo.to_path_buf(),
                     fingerprint: if incomplete {
                         fp.value
                     } else {
@@ -5234,7 +5265,7 @@ fn build_budget_expiry_after_build_releases_lock_without_publication() {
 }
 
 #[test]
-fn build_process_death_fails_with_log_evidence() {
+fn build_process_death_fails_with_a_log_pointer_and_no_log_lines() {
     let repo = common::temp_repo();
     let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
 
@@ -5248,7 +5279,10 @@ fn build_process_death_fails_with_log_evidence() {
     common::script_xcode(&mut mock);
     mock.expect_run("simctl create", CmdOutput::success(&format!("{UDID}\n")));
     mock.expect_run("simctl bootstatus", CmdOutput::success(""));
-    mock.build_log = Some("CommandError: xcodebuild exited with error code 65\n".into());
+    mock.build_log = Some(format!(
+        "CommandError: xcodebuild exited with error code 65\n{}\n",
+        common::canary::line()
+    ));
     mock.expect_spawn_piped("expo run:ios", 5000, "", Some(65));
     mock.expect_run("ps", CmdOutput::success(LSTART));
     mock.expect_run("ps", CmdOutput::success("qaren-build"));
@@ -5263,13 +5297,11 @@ fn build_process_death_fails_with_log_evidence() {
         failure.next_action.contains("cleanup"),
         "cleanup must be the next action"
     );
-    assert!(
-        failure
-            .evidence
-            .iter()
-            .any(|e| e.contains("xcodebuild exited with error code 65")),
-        "the receipt must carry build log evidence: {:?}",
-        failure.evidence
+    common::canary::assert_log_pointer(
+        &receipt.to_json(),
+        &std::fs::read(RunRecord::path(&repo, &receipt.run_id)).unwrap(),
+        &RunRecord::run_dir(&repo, &receipt.run_id).join("logs/expo-run-ios.log"),
+        &["error code 65"],
     );
     assert_eq!(mock.remaining(), 0, "the liveness probe must have run");
     let record = RunRecord::load(&repo, &receipt.run_id).unwrap();
@@ -5466,7 +5498,7 @@ fn recording_a_build_retires_run_output_and_publishes_to_the_machine_store_witho
 
     let mut probing = RecordProbeRunner {
         inner: mock,
-        repo: repo.clone(),
+        repo: repo.to_path_buf(),
         run_id: format!(
             "ios-simulator-{}",
             qaren::timefmt::compact_utc(1_770_000_000_000)
@@ -5589,7 +5621,7 @@ fn recording_a_build_retains_source_on_cache_or_evidence_publication_failure() {
         }
         let mut probing = RecordProbeRunner {
             inner: mock,
-            repo: repo.clone(),
+            repo: repo.to_path_buf(),
             run_id: format!(
                 "ios-simulator-{}",
                 qaren::timefmt::compact_utc(1_770_000_000_000)
@@ -5695,7 +5727,7 @@ fn recording_a_build_does_not_retire_symlinked_paths() {
         common::script_xcode(&mut mock);
         let mut probing = RecordProbeRunner {
             inner: mock,
-            repo: repo.clone(),
+            repo: repo.to_path_buf(),
             run_id: format!(
                 "ios-simulator-{}",
                 qaren::timefmt::compact_utc(1_770_000_000_000)
@@ -5779,7 +5811,7 @@ fn unproven_or_unpersisted_build_group_absence_retains_run_output() {
         );
         let mut probing = RecordProbeRunner {
             inner: mock,
-            repo: repo.clone(),
+            repo: repo.to_path_buf(),
             run_id: format!(
                 "ios-simulator-{}",
                 qaren::timefmt::compact_utc(1_770_000_000_000)
@@ -6033,7 +6065,7 @@ fn recording_a_build_cancelled_mid_copy_preserves_previous_cache() {
     common::script_xcode(&mut mock);
     let mut probing = RecordProbeRunner {
         inner: mock,
-        repo: repo.clone(),
+        repo: repo.to_path_buf(),
         run_id: run_id.clone(),
         probe_label: "git-head#2".into(),
         observed: None,
@@ -7920,7 +7952,7 @@ fn pool_recount_under_the_creation_lock_falls_back_when_a_parallel_prepare_fille
     common::script_xcode(&mut mock);
     mock.expect_run("simctl list devices -j", member_inventory("Booted"));
     mock.expect_run("simctl create", CmdOutput::failed(1, "boom"));
-    let parallel = repo.clone();
+    let parallel = repo.to_path_buf();
     let mut enrolled = false;
     mock.observe = Some(Box::new(move |spec| {
         if !enrolled && spec.label == "lsof-port" {
@@ -9058,7 +9090,7 @@ fn an_unresolved_build_lock_release_stops_before_install_and_keeps_the_lock() {
     let unreadable = lock.clone();
     let mut probing = RecordProbeRunner {
         inner: mock,
-        repo: repo.clone(),
+        repo: repo.to_path_buf(),
         run_id: format!(
             "ios-simulator-{}",
             qaren::timefmt::compact_utc(1_770_000_000_000)
@@ -9375,6 +9407,18 @@ fn ios_metro_preserves_effective_pnpm_options_or_inherited_fallback() {
         for key in ["NODE_OPTIONS", "npm_config_node_options"] {
             assert!(metro.env.contains(&(key.into(), expected.clone())));
         }
+        // The macOS smoke (tests/metro_bind_smoke.rs) builds its start from these inputs: this is the run's own call.
+        assert_eq!(
+            metro,
+            &qaren::adapters::metro::start_spec(
+                &repo.join("test-app"),
+                8791,
+                qaren::adapters::metro::Listen::Loopback,
+                false,
+                Some(&preload),
+                Some(base),
+            )
+        );
         assert_eq!(receipt.outcomes.contains_key("pnpm_node_options"), fallback);
         assert!(!receipt.to_json().contains("private-config-error"));
         assert_eq!(mock.remaining(), 0);
@@ -9450,7 +9494,7 @@ fn script_ios_ready_with_build(
 fn timed_out_ios_build(
     build_seconds: Option<u64>,
     counts: std::collections::VecDeque<Option<u64>>,
-) -> (qaren::receipt::Receipt, std::path::PathBuf) {
+) -> qaren::receipt::Receipt {
     timed_out_ios_build_seeded(build_seconds, counts, |_| {})
 }
 
@@ -9459,7 +9503,7 @@ fn timed_out_ios_build_seeded(
     build_seconds: Option<u64>,
     counts: std::collections::VecDeque<Option<u64>>,
     seed: impl FnOnce(&std::path::Path),
-) -> (qaren::receipt::Receipt, std::path::PathBuf) {
+) -> qaren::receipt::Receipt {
     let repo = common::temp_repo();
     seed(&repo);
     let deadlines = build_seconds
@@ -9490,7 +9534,7 @@ fn timed_out_ios_build_seeded(
     assert!(record.resources.build_process().is_none(), "build stopped");
     assert!(record.resources.build_lock.is_none());
     assert!(!args.lock_root.join("native-build-ios").exists());
-    (receipt, repo)
+    receipt
 }
 
 fn limit_of(receipt: &qaren::receipt::Receipt) -> &qaren::failure::LimitFacts {
@@ -9565,7 +9609,7 @@ fn b2_waiting_for_the_lock_is_not_build_time() {
 
 #[test]
 fn b3_b6_b7_a_build_that_stands_still_is_cut_and_says_what_ran_out() {
-    let (receipt, _repo) = timed_out_ios_build(None, growing(2000));
+    let receipt = timed_out_ios_build(None, growing(2000));
     let limit = limit_of(&receipt);
     assert_eq!(limit.phase, "native_build");
     assert_eq!(limit.setting, "deadlines.build_seconds");
@@ -9574,12 +9618,12 @@ fn b3_b6_b7_a_build_that_stands_still_is_cut_and_says_what_ran_out() {
     assert_eq!((limit.window_s, limit.idle_s), (7200, Some(600)));
     assert_eq!(limit.last_progress_age_s, Some(600));
     assert_eq!(limit.next_limit_s, Some(2400));
-    // B6: the cut's own detail and log lines reach the receipt; the window check does not replace it.
+    // B6: the cut's own detail and log pointer reach the receipt; the window check does not replace it.
     let failure = receipt.failure.as_ref().unwrap();
     assert!(failure.detail.to_string().starts_with(
         "the native build was stopped after 2600 s: it had produced no output for 600 s, past its limit of 2400 s; see "
     ), "{failure:?}");
-    assert_eq!(failure.evidence.len(), 1);
+    common::canary::assert_pointer_not_evidence(serde_json::to_value(failure).unwrap());
     // B7: re-run after the run's own cleanup; the cleanup comes first.
     let recovery = failure.build_recovery().unwrap();
     assert_eq!(
@@ -9611,12 +9655,12 @@ fn b3_b6_b7_a_build_that_stands_still_is_cut_and_says_what_ran_out() {
 #[test]
 fn b3_the_idle_window_floor_at_small_limits() {
     // 400 s: the last line at 300 s is 100 s old at the limit; cut 300 s after it.
-    let (receipt, _repo) = timed_out_ios_build(Some(400), growing(300));
+    let receipt = timed_out_ios_build(Some(400), growing(300));
     let limit = limit_of(&receipt);
     assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
     assert_eq!((limit.elapsed_s, limit.idle_s), (600, Some(300)));
     // 100 s: the window (300 s) ends before the idle window can run out after the limit.
-    let (receipt, _repo) = timed_out_ios_build(Some(100), growing(90));
+    let receipt = timed_out_ios_build(Some(100), growing(90));
     let limit = limit_of(&receipt);
     assert_eq!(limit.ended_by, qaren::failure::LimitEnd::Window);
     assert_eq!((limit.elapsed_s, limit.window_s), (300, 300));
@@ -9630,7 +9674,7 @@ fn b4_a_build_with_no_progress_is_cut_at_its_limit_exactly() {
         std::iter::repeat_n(Some(7), 2500).collect(),
         std::collections::VecDeque::new(),
     ] {
-        let (receipt, _repo) = timed_out_ios_build(None, counts);
+        let receipt = timed_out_ios_build(None, counts);
         let limit = limit_of(&receipt);
         assert_eq!(limit.ended_by, qaren::failure::LimitEnd::NoProgress);
         assert_eq!(
@@ -9642,7 +9686,7 @@ fn b4_a_build_with_no_progress_is_cut_at_its_limit_exactly() {
 
 #[test]
 fn b5_a_build_that_always_writes_ends_with_its_window() {
-    let (receipt, _repo) = timed_out_ios_build(None, growing(7300));
+    let receipt = timed_out_ios_build(None, growing(7300));
     let limit = limit_of(&receipt);
     assert_eq!(limit.ended_by, qaren::failure::LimitEnd::Window);
     assert_eq!((limit.elapsed_s, limit.window_s), (7200, 7200));
@@ -9655,7 +9699,7 @@ fn b5_a_build_that_always_writes_ends_with_its_window() {
     assert!(failure
         .next_action
         .contains("build the app with the project's own tools"));
-    let (receipt, _repo) = timed_out_ios_build(Some(600), growing(1900));
+    let receipt = timed_out_ios_build(Some(600), growing(1900));
     let limit = limit_of(&receipt);
     assert_eq!(
         (limit.ended_by, limit.elapsed_s),
@@ -9710,7 +9754,7 @@ fn l1_l3_a_passing_build_is_recorded_and_the_next_run_uses_the_learned_limit() {
     assert_eq!(receipt.outcomes["build_next_limit"], "4500 s");
     // Second run on the same machine: a build that stands still is cut at the learned 4500 s.
     let recorded = std::fs::read(timings_file(&first)).unwrap();
-    let (receipt, _repo) = timed_out_ios_build_seeded(None, Default::default(), |root| {
+    let receipt = timed_out_ios_build_seeded(None, Default::default(), |root| {
         std::fs::create_dir_all(timings_file(root).parent().unwrap()).unwrap();
         std::fs::write(timings_file(root), &recorded).unwrap();
     });
@@ -9728,7 +9772,7 @@ fn l1_l3_a_passing_build_is_recorded_and_the_next_run_uses_the_learned_limit() {
 #[test]
 fn l4_a_cut_with_a_learned_limit_names_the_next_limit_by_its_end() {
     // Learned 6000 s: the window is the 7200 s maximum, so no setting helps.
-    let (receipt, _repo) =
+    let receipt =
         timed_out_ios_build_seeded(None, growing(7300), |root| seed_timings(root, &[4000]));
     let limit = limit_of(&receipt);
     assert_eq!(
@@ -9738,7 +9782,7 @@ fn l4_a_cut_with_a_learned_limit_names_the_next_limit_by_its_end() {
     assert!(limit.learned);
     assert_eq!(limit.next_limit_s, None);
     // Learned 1200 s over a configured 600 s: the window just used (3600 s) is the next limit.
-    let (receipt, _repo) =
+    let receipt =
         timed_out_ios_build_seeded(Some(600), growing(3700), |root| seed_timings(root, &[800]));
     let limit = limit_of(&receipt);
     assert_eq!(
@@ -9751,7 +9795,7 @@ fn l4_a_cut_with_a_learned_limit_names_the_next_limit_by_its_end() {
 
 #[test]
 fn l5_a_corrupt_record_leaves_the_configured_limit_and_a_note() {
-    let (receipt, _repo) = timed_out_ios_build_seeded(None, Default::default(), |root| {
+    let receipt = timed_out_ios_build_seeded(None, Default::default(), |root| {
         std::fs::create_dir_all(timings_file(root).parent().unwrap()).unwrap();
         std::fs::write(timings_file(root), "{half").unwrap();
     });
@@ -9787,4 +9831,55 @@ fn l6_a_learned_limit_leaves_the_lock_wait_on_the_configured_limit() {
         .next_action
         .to_string()
         .contains("waited 150 s of the budget"));
+}
+
+#[test]
+fn android_reuse_dry_run_plans_the_request_probe_before_the_manifest() {
+    use qaren::adapters::metro;
+    use qaren::buildplan::BuildDecision;
+
+    let repo = common::temp_repo();
+    let yaml = common::android_scenario_yaml(8792).replace(
+        "  revision: HEAD\n",
+        "  revision: HEAD\n  dev_client_scheme: rndatest\n",
+    );
+    let scenario_path = write_scenario(&repo, &yaml);
+    let sdk = android_sdk(&repo);
+    common::seed_cached_apk(&repo, &repo.join("test-app"));
+
+    let mut mock = MockRunner::new();
+    script_validation(&mut mock, &repo, ANDROID_TOOLS);
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    let receipt = prepare(
+        &mut mock,
+        &prepare_args(
+            &scenario_path,
+            true,
+            Some(sdk.to_string_lossy().into_owned()),
+        ),
+    );
+    assert_eq!(
+        receipt.result,
+        ReceiptResult::Planned,
+        "{:?}",
+        receipt.failure
+    );
+    assert_eq!(
+        receipt.build.as_ref().unwrap().decision,
+        BuildDecision::Reuse
+    );
+    assert_eq!(mock.remaining(), 0);
+    let manifest = metro::manifest_spec(8792, "android").rendered();
+    let at = receipt
+        .planned_commands
+        .iter()
+        .position(|command| *command == manifest)
+        .unwrap_or_else(|| panic!("no manifest request in {:?}", receipt.planned_commands));
+    assert!(at > 0);
+    assert_eq!(
+        receipt.planned_commands[at - 1],
+        metro::request_probe_spec(8792).rendered()
+    );
 }

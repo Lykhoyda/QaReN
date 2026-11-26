@@ -271,3 +271,15 @@ test('diagnostics validate a runtime refusal code without altering the thrown er
   assert.equal(context.refusalDiagnostic?.refusal, null);
   assert.ok(!JSON.stringify(context.refusalDiagnostic).includes('PRIVATE-'));
 });
+
+test('an unusable clock after an authorization is a context that could not be validated', async () => {
+  const dispatch: Record<string, unknown> = await import('../../../dist/domain/qa-dispatch.js');
+  let now = 0;
+  const context = new QaDispatchContext(10, () => now);
+  context.authorize();
+  now = NaN;
+  assert.throws(() => context.check(), /ACTION_CONTEXT_CHANGED/);
+  const reasonOf = dispatch.uncertainReasonOf as ((first: unknown) => string) | undefined;
+  assert.equal(typeof reasonOf, 'function');
+  assert.equal(reasonOf!(context.refusal), 'context-unverified');
+});

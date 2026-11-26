@@ -34,6 +34,7 @@ import {
   touchOwnerAt,
   type TouchGap,
   reactEntryHostsOf,
+  reportedNotVisibleToUser,
   reactOnlyFactsOf,
   scrollContainerType,
   semanticActionView,
@@ -1784,6 +1785,31 @@ export function presenceMiss(
     return why && `the element carrying the identifier "${quoted}" ${why}: ${list(ids)}`;
   }
   return `no captured element carries the identifier "${quoted}"`;
+}
+
+// Android: the one native identity carrying a quoted id that this read reports as not visible to the user while
+// its frame overlaps a known clipping viewport with its centre inside it (hidden in place, as a code field's
+// transparent input behind its digit boxes). Only those facts: no full containment, no keyboard clearance.
+// Read only to diagnose a Wait's failure; a Wait still never counts it present.
+export function hiddenInPlaceElement(target: Target, screen: Screen): Element | undefined {
+  const quoted = target.quoted;
+  if (quoted === undefined || target.exact === 'text') return undefined;
+  const ids = idIdentities(quoted, screen);
+  const only = ids.length === 1 ? ids[0].element : undefined;
+  if (!only || only.ref.startsWith('react:') || !reportedNotVisibleToUser(only)) return undefined;
+  const frame = elementFrame(only);
+  const viewport = elementViewport(only);
+  if (!frame || !viewport || !(frame.width > 0 && frame.height > 0)) return undefined;
+  // A centre inside the half-open viewport needs a positive-size viewport, and a positive-size frame whose
+  // centre is inside it overlaps it.
+  const x = frame.x + frame.width / 2;
+  const y = frame.y + frame.height / 2;
+  const centred =
+    x >= viewport.x &&
+    x < viewport.x + viewport.width &&
+    y >= viewport.y &&
+    y < viewport.y + viewport.height;
+  return centred ? only : undefined;
 }
 
 // The one identity carrying a quoted id when it is React-only; a native carrier drops its twin first.

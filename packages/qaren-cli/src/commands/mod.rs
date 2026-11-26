@@ -30,28 +30,6 @@ pub fn repo_root_of_cwd(runner: &mut dyn Runner) -> Result<PathBuf, Failure> {
     Ok(PathBuf::from(output.stdout.trim()))
 }
 
-pub fn log_tail(path: &Path, lines: usize) -> String {
-    use std::io::{Read, Seek, SeekFrom};
-    const TAIL_BYTES: u64 = 65_536;
-    let read = || -> std::io::Result<String> {
-        let mut file = std::fs::File::open(path)?;
-        let len = file.metadata()?.len();
-        let start = len.saturating_sub(TAIL_BYTES);
-        file.seek(SeekFrom::Start(start))?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)?;
-        Ok(String::from_utf8_lossy(&buf).into_owned())
-    };
-    match read() {
-        Ok(content) => {
-            let all: Vec<&str> = content.lines().collect();
-            let start = all.len().saturating_sub(lines);
-            all[start..].join("\n")
-        }
-        Err(e) => format!("(log unreadable: {e})"),
-    }
-}
-
 pub fn scenario_identity(record: &RunRecord) -> ScenarioIdentity {
     ScenarioIdentity {
         name: record.scenario.name.clone(),
@@ -178,8 +156,15 @@ pub(crate) fn finish_host(
     receipt.commands_executed = runner.commands_executed();
 }
 
+const RAW_LOGS_NOTICE: &str = "process logs in this run's logs folder may contain private app or tool output, such as the app's own console lines in the Metro log; keep the run folder on this machine";
+
 pub fn attach_artifacts(receipt: &mut Receipt, runs_root: &Path, record: &RunRecord) {
     let run_dir = RunRecord::run_dir(runs_root, &record.run_id);
+    if run_dir.join("logs").is_dir() {
+        receipt
+            .outcomes
+            .insert("raw_logs".to_string(), RAW_LOGS_NOTICE.to_string());
+    }
     receipt
         .artifacts
         .insert("run_dir".to_string(), run_dir.clone());

@@ -308,6 +308,71 @@ test('a recovery-only runtime input withholds video even when the plan never fil
   assert.doesNotMatch(JSON.stringify(result), /recovery-only-canary/);
 });
 
+test('a release app reads development-looking surfaces as the app, and still counts a real loss', async () => {
+  const release = (observations: ReturnType<typeof okResult>[]) => {
+    const snapshots = postAdmissionSnapshots(async () => observations.shift()!, 'com.test', {
+      releaseApp: true,
+    });
+    return snapshots;
+  };
+  const launcher = [
+    okResult({
+      appProcessIdentifier: 41,
+      nodes: [{ type: 'StaticText', label: 'Development servers' }],
+    }),
+    okResult(
+      { appProcessIdentifier: 41, nodes: [] },
+      { meta: { foregroundSurface: 'first_run_tutorial' } },
+    ),
+  ];
+  for (const shown of launcher) {
+    const snapshots = release([appSnapshot(), shown]);
+    await snapshots.snapshot({});
+    snapshots.admit();
+    await snapshots.snapshot({});
+    assert.deepEqual(
+      snapshots
+        .events()
+        .filter((e) => e.signal === 'dev-client-picker' || e.signal === 'first-run-tutorial'),
+      [],
+    );
+    assert.equal(snapshots.interrupted(), false);
+  }
+  for (const [loss, signal] of [
+    [[failResult('app stopped', { reason: 'app-not-running' })], 'app-not-running'],
+    [[runnerRecovery(), appSnapshot(77)], 'runner-recovery'],
+  ] as const) {
+    const snapshots = release([appSnapshot(), ...loss]);
+    await snapshots.snapshot({});
+    snapshots.admit();
+    for (let i = 0; i < loss.length; i++) await snapshots.snapshot({});
+    assert.ok(
+      snapshots.events().some((e) => e.signal === signal && e.counted),
+      signal,
+    );
+    assert.equal(snapshots.interrupted(), true, signal);
+  }
+  for (const label of [
+    'dev_client_picker',
+    'first_run_tutorial',
+    'expo_dev_menu',
+    'react_native_dev_menu',
+  ]) {
+    const snapshots = release([
+      appSnapshot(),
+      runnerRecovery(),
+      okResult({ appProcessIdentifier: 41, nodes: [] }, { meta: { foregroundSurface: label } }),
+    ]);
+    await snapshots.snapshot({});
+    snapshots.admit();
+    await snapshots.snapshot({});
+    await snapshots.snapshot({});
+    const recovery = snapshots.events().find((e) => e.signal === 'runner-recovery');
+    assert.equal(recovery?.counted, false, label);
+    assert.equal(snapshots.interrupted(), false, label);
+  }
+});
+
 test('post-admission startup observations remain in the ledger after normal walker captures', async () => {
   const app = okResult(
     { appProcessIdentifier: 41, nodes: [] },

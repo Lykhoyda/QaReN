@@ -19,8 +19,9 @@ it writes a short plan of what to check, and QaReN runs that plan in the real ap
 - **Evidence you can open.** Each run keeps a step-by-step ledger and a readable report.
   A pull request run adds a screen recording when one can be captured and can post the
   result as a comment.
-- **It tests what you changed.** QaReN builds your working tree or a pull request's head,
-  and a change to the code during the walk can never pass.
+- **It tests what you changed.** By default, QaReN builds your working tree or a pull request's
+  head, and a change to the code during the walk can never pass. To check the build already on
+  an iOS simulator, see [Test an installed release build](packages/qaren-cli/README.md#test-an-installed-release-build).
 - **Faster on every run.** Eligible passing blocks are saved and replayed next time by
   the exact elements they used.
 
@@ -30,9 +31,10 @@ agent. Follow updates on [X](https://x.com/qaren_agent).
 ## How it works
 
 Under the hood, QaReN is the `qaren` command-line tool and a plugin that teaches Claude
-Code, Codex and Cursor to drive it. `qaren check` borrows a device, builds and
-installs the app from your working tree, starts Metro, walks a plan on the device, writes
-evidence at the artifact paths in its receipt and cleans up owned resources. Failed iOS checks
+Code, Codex and Cursor to drive it. `qaren check` borrows a device, walks a plan on the device,
+writes evidence at the artifact paths in its receipt and cleans up owned resources. Unless
+`--installed-app` is passed, it first builds and installs the app from your working tree and
+starts Metro. Failed iOS checks
 can keep the reached state for inspection; see the [iOS cleanup contract](packages/qaren-cli/README.md#ios-admission-and-cleanup).
 `qaren pr` tests a pull request's head with normal teardown and tries to record the screen; `qaren publish`
 comments the result on the pull request and can push saved blocks to its branch. Eligible
@@ -188,6 +190,7 @@ rejection is not guaranteed.
 
 ```sh
 qaren check --plan-file plan.md --json      # check the working tree
+qaren check --installed-app --plan-file plan.md --json   # test the build already installed
 qaren watch --latest                        # follow a run from a second terminal
 qaren pr <number|url> --plan-file plan.md --json
 qaren publish <run-id> --json

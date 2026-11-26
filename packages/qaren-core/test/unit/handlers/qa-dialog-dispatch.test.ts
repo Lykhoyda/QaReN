@@ -44,6 +44,9 @@ function dialog() {
   });
 }
 
+const reasonOf = (context: QaDispatchContext) =>
+  (context.refusal as { uncertainReason?: string } | undefined)?.uncertainReason;
+
 test('QA dialog does not probe another label after an erroring press', async () => {
   dialog();
   let presses = 0;
@@ -59,6 +62,7 @@ test('QA dialog does not probe another label after an erroring press', async () 
   );
   assert.equal(presses, 1);
   assert.equal(context.authorizations, 1);
+  assert.equal(reasonOf(context), 'dispatch-unconfirmed');
 });
 
 test('QA dialog notices a guard swallowed into a successful result', async () => {
@@ -503,4 +507,30 @@ test('an Android plugin call outside a session keeps the Maestro dialog path', a
   assert.equal(env.data.tapped, true);
   assert.deepEqual(maestro, ['tapOn']);
   assert.match(env.data.selector, /Don't allow/);
+});
+
+test('S7 a Maestro run whose managed spawn rejects is dispatch-unconfirmed', async () => {
+  const context = new QaDispatchContext(10, () => 1);
+  await assert.rejects(
+    runMaestroInline(
+      '- tapOn: Continue',
+      { platform: 'ios', appId: 'qa.app', qaContext: context },
+      {
+        chooseDispatch: () => ({
+          runner: 'maestro',
+          binPath: '/fake/maestro',
+          buildArgs: () => [],
+        }),
+        resolveEngineStatus: async () =>
+          buildReplayEngineStatus('pinned-ok', MAESTRO_RUNNER_PIN.version, false),
+        spawnManaged: (_bin, _args, options) => {
+          options.beforeSpawn?.();
+          throw new Error('PRIVATE-spawn');
+        },
+      },
+    ),
+    /ACTION_OUTCOME_UNCERTAIN/,
+  );
+  assert.equal(context.authorizations, 1);
+  assert.equal(reasonOf(context), 'dispatch-unconfirmed');
 });
