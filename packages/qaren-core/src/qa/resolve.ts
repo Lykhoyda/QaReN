@@ -1790,7 +1790,7 @@ export function presenceMiss(
 // Android: the one native identity carrying a quoted id that this read reports as not visible to the user while
 // its frame overlaps a known clipping viewport with its centre inside it (hidden in place, as a code field's
 // transparent input behind its digit boxes). Only those facts: no full containment, no keyboard clearance.
-// Read only to diagnose a Wait's failure; a Wait still never counts it present.
+// Read only to diagnose a Wait's failure; whether a Wait counts it present is hiddenInputPresence's.
 export function hiddenInPlaceElement(target: Target, screen: Screen): Element | undefined {
   const quoted = target.quoted;
   if (quoted === undefined || target.exact === 'text') return undefined;
@@ -1810,6 +1810,48 @@ export function hiddenInPlaceElement(target: Target, screen: Screen): Element | 
     y >= viewport.y &&
     y < viewport.y + viewport.height;
   return centred ? only : undefined;
+}
+
+// What a native element hidden in place lacks on a read to count as present for a presence Wait, in the
+// order it is checked. These replace a visible id's "not offscreen"; the identity rule and the centre test
+// are a visible id's own (idSeen).
+export type HiddenInputGap = 'not-input' | 'disabled' | 'capture' | 'viewport' | 'covered';
+
+// The first condition the element lacks on this read, or undefined when it has them all.
+export function hiddenInputGap(
+  element: Element,
+  screen: Screen,
+  hits?: OverlayHits,
+): HiddenInputGap | undefined {
+  if (element.nativeKind !== 'input') return 'not-input';
+  // Enabled as failure.screen reports it (target-miss.ts), from Android's enabled fact and any React host
+  // the join attached: a React fact can only refuse here, never admit.
+  if (semanticDisabled(element)) return 'disabled';
+  if (
+    screen.front !== 'app' ||
+    (screen.captureCoverage?.native ?? screen.coverage?.native) !== 'complete'
+  )
+    return 'capture';
+  // A known clip: without one, hiddenInView's viewport test and the centre test's are both empty.
+  if (!elementViewport(element)) return 'viewport';
+  // A visible id's own centre test, whose viewport branch puts the centre inside that clip.
+  if (presenceCovered(element, screen, hits)) return 'covered';
+  return undefined;
+}
+
+// Android: a presence Wait's id rule (idSeen) with "not offscreen" replaced by the hidden-in-place facts.
+// The one identity carrying the quoted id, counted as idSeen counts it, is a native node that Android reports
+// not visible to the user while its frame is in view and clear of the keyboard (hiddenInView), and it lacks
+// no condition of hiddenInputGap. False when that identity is not hidden in place, so every other target
+// keeps its evidence. Nothing here reads which React input owns the node: the claim is only that a native
+// text input carrying this id is present.
+export function hiddenInputPresence(target: Target, screen: Screen, hits?: OverlayHits): boolean {
+  const quoted = target.quoted;
+  if (quoted === undefined || target.exact === 'text') return false;
+  const ids = idIdentities(quoted, screen);
+  const element = ids.length === 1 ? ids[0].element : undefined;
+  if (!element?.hiddenInView || element.ref.startsWith('react:')) return false;
+  return hiddenInputGap(element, screen, hits) === undefined;
 }
 
 // The one identity carrying a quoted id when it is React-only; a native carrier drops its twin first.

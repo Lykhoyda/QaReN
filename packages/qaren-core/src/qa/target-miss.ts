@@ -1,7 +1,7 @@
 import type { Step, Target } from './plan.js';
 import { semanticDisabled, type Element, type Kind, type Screen } from './screen.js';
 import { ObservedPrivacy, MASK } from './privacy.js';
-import { scrollUntilBand } from './resolve.js';
+import { scrollUntilBand, type HiddenInputGap } from './resolve.js';
 import { FIXED_CONTROL_WORDS } from './recover.js';
 import { isRecord } from './questions.js';
 import { named } from './identity.js';
@@ -332,12 +332,40 @@ export function missSuggestion(
 
 const HIDDEN_ADVICE_OPENING = 'Android reports the target of line ';
 
+// What the hidden-in-place advice names: a block's starts on: line ('block-start'), the condition the read
+// failure.screen shows lacks ('not-input' and the read's gaps), a saved presence-form line quoting a label rather
+// than the stored testID ('stored-label'), a Wait not written in a presence form ('form'), or none the read shows
+// ('unmet').
+export type HiddenInPlaceNeed = HiddenInputGap | 'block-start' | 'stored-label' | 'form' | 'unmet';
+
+const VISIBLE_PART =
+  'wait for the testID of a visible part of the field, such as its wrapper or a digit box';
+
 // The next step after a Wait's failure whose reported read (failure.screen's) shows the target hidden in place, in
 // fixed, value-free words: never the id, a label or a count.
-export function hiddenInPlaceSuggestion(kind: 'input' | 'other', line: number): string {
-  return kind === 'input'
-    ? `${HIDDEN_ADVICE_OPENING}${line} as an input that is not visible to the user (hidden in place); a Wait counts only what the user can see. Wait for the testID of a visible part of the field, such as its wrapper or a digit box. If the input needs focus before Fill and the app provides a control that focuses it, Tap that control first.`
-    : `${HIDDEN_ADVICE_OPENING}${line} as not visible to the user (hidden in place); a Wait counts only what the user can see. Wait for the testID of a visible control instead.`;
+export function hiddenInPlaceSuggestion(need: HiddenInPlaceNeed, line: number): string {
+  const input = `${HIDDEN_ADVICE_OPENING}${line} as an input that is not visible to the user (hidden in place)`;
+  switch (need) {
+    case 'block-start':
+      return `${HIDDEN_ADVICE_OPENING}${line} as not visible to the user (hidden in place); a block's starts on: line counts only what the user can see. Use the testID of a visible control of that screen in starts on:, then re-record the block if it is saved.`;
+    case 'not-input':
+      return `${HIDDEN_ADVICE_OPENING}${line} as not visible to the user (hidden in place); a Wait counts a hidden element present only when it is a native text input. Wait for the testID of a visible control instead.`;
+    case 'stored-label':
+      return `${input}; this saved line quotes other text than the input's testID, and a Wait counts such an input present only when its line quotes that testID. Quote the field's testID itself in the saved plan line, then re-record the block, or wait for a visible control.`;
+    case 'form':
+      return `${input}; only a Wait written Wait for "<testID>", optionally followed by "to appear", or Wait until "<testID>" appears counts such an input present. If the plan needs only the input to be present, write line ${line} in one of those forms; otherwise ${VISIBLE_PART}.`;
+    case 'disabled':
+      return `${input}; on the read failure.screen shows it is disabled, and a Wait counts a hidden input present only while it is enabled. If an earlier step enables the field, put it before line ${line}; otherwise ${VISIBLE_PART}.`;
+    case 'capture':
+      return `${input}; the read failure.screen shows is not a complete capture with the app in front, and a Wait counts a hidden input present only on such a read. Close what is in front of the app before line ${line}, or ${VISIBLE_PART}.`;
+    case 'covered':
+      return `${input}; on the read failure.screen shows its centre does not pass the keyboard and overlay clearance check a visible testID passes. Dismiss the keyboard or bring the field clear before line ${line}, or ${VISIBLE_PART}.`;
+    case 'viewport':
+    case 'unmet':
+      // Not a gap the read shows: only what this Wait did not establish, since some exclusions (such as an
+      // ancestor outside the screen) leave every condition above apparently met.
+      return `${input}; this Wait did not establish the input's presence during polling. Wait for the testID of a visible part of the field, such as its wrapper or a digit box.`;
+  }
 }
 
 // Whether a failure's advice is that fixed hidden-in-place edit (carried through a nested login replay).
