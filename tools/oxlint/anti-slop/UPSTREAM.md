@@ -12,9 +12,11 @@ can load the generic entry point, `index.ts`.
 ## Initial lint policy
 
 At QaReN commit `d550edc3220a3fbdc4e22789a5451a7de927dc41`, Oxlint 1.78.0 checked
-795 files. Four generic rules and the native Oxlint companion had zero findings.
-The other 14 generic rules accounted for 29,089 diagnostics. File counts are distinct
-within each rule.
+795 files. QaReN enables three generic rules and the native Oxlint companion at error.
+Of the 15 disabled rules, 14 accounted for 29,089 diagnostics. The remaining rule,
+`no-unknown-type-aliases`, had zero findings in the repository. Review of this change
+found an upstream false positive where caller type parameters leak into a separately
+declared alias. Re-enable the rule after an upstream fix. File counts are distinct within each rule.
 
 | Rule | Diagnostics | Files with findings | Initial setting |
 | --- | ---: | ---: | --- |
@@ -32,7 +34,7 @@ within each rule.
 | `anti-slop/no-shape-in-symbol-names` | 242 | 29 | off |
 | `anti-slop/no-unknown-parameters` | 334 | 129 | off |
 | `anti-slop/no-unknown-returns` | 90 | 49 | off |
-| `anti-slop/no-unknown-type-aliases` | 0 | 0 | error |
+| `anti-slop/no-unknown-type-aliases` | 0 | 0 | off |
 | `anti-slop/no-widen-then-assert` | 0 | 0 | error |
 | `anti-slop/require-readable-spacing` | 24586 | 726 | off |
 | `anti-slop/require-safety-comment-for-type-assertion` | 1368 | 273 | off |
