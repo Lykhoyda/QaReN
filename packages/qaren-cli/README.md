@@ -2133,6 +2133,18 @@ the failed judgment's reason retains its original screen evidence.
 An original `TARGET_AMBIGUOUS` code is preserved, but the displayed subreason
 and suggestion describe ambiguity only when the newest observation still has
 multiple on-screen native matches for that target.
+
+A quoted Wait that fails on a stable duplicate testID reports `duplicate-id`
+when the newest admitted observation still shows multiple matches and the
+visibility evidence still supports the miss. The suggestion gives up to three
+locations by view kind and frame and notes any additional matches. Give the
+intended view a unique testID and quote it in the Wait, or quote exact visible
+text that identifies it. The `duplicate_wait_target` recovery directs you to
+inspect the last observed screen and marks restart, rebuild and cleanup
+inapplicable to this diagnosis. If the newest observation supplies passing,
+ambiguous or uncertain evidence, the failed Wait keeps its usual last-screen
+diagnostics. `check` reports `FAIL` with `PLAN_STEP_FAILED` and exit code 1.
+
 `screen` lists up to 20 controls from that observation, the target's
 own matches first, with role, testID, label, enabled, hittable, off-screen
 state and a primary mark for the first enabled, hittable, on-screen button in
