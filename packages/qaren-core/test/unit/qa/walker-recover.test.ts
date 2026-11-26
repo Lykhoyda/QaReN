@@ -608,8 +608,9 @@ test('a stored login block becomes exact-target items', () => {
   );
 });
 
-test('a selector miss after a replay recovery is terminal, not a second re-walk', async () => {
-  const f = dialogBeforePress(screen(['Other']));
+test('a late saved-selector miss cannot re-walk after a Press request', async () => {
+  const before = screen(['Settings'], 'app', { Settings: 'settings' });
+  const f = fake([before, before, screen(['Other'])]);
   const replayed = block('1. Tap "settings"\n');
   const exact: Block = {
     ...replayed,
@@ -620,11 +621,13 @@ test('a selector miss after a replay recovery is terminal, not a second re-walk'
     ),
   };
   const outcome = await walkBlock(exact, f.deps, 0, [], undefined, undefined, { mode: 'replay' });
-  assert.equal(outcome.recoveries, 1);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.equal(outcome.failure?.subreason, 'press-retry-screen-changed');
   assert.equal(outcome.miss, undefined);
-  assert.match(
-    renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /REPLAY_SELECTOR/,
+  assert.equal(outcome.recoveries, undefined);
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['press @e0'],
   );
 });
 
