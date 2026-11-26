@@ -18,132 +18,55 @@ type Rect = { x: number; y: number; width: number; height: number };
 const full: Rect = { x: 0, y: 0, width: 402, height: 874 };
 const inner: Rect = { x: 0, y: 116, width: 402, height: 758 };
 
-// Raw fixture nodes, before the Swift interactive snapshot projection.
-interface Spec {
-  type: string;
-  rect: Rect;
-  id?: string;
-  label?: string;
-  value?: string;
-  enabled?: boolean;
-  children?: Spec[];
-}
-const v = (type: string, rect: Rect, extra: Omit<Spec, 'type' | 'rect'> = {}): Spec => ({
-  type,
-  rect,
-  ...extra,
-});
-const view = (
-  rect: Rect,
-  children: Spec[] = [],
-  extra: Omit<Spec, 'type' | 'rect' | 'children'> = {},
-) => v('Other', rect, { ...extra, children });
-const carrier = (
-  rect: Rect,
-  children: Spec[] = [],
-  extra: Omit<Spec, 'type' | 'rect' | 'children' | 'id'> = {},
-) => view(rect, children, { ...extra, id: ID });
-const text = (label: string, rect: Rect): Spec => v('StaticText', rect, { label });
+type ProjectedNode = Omit<NativeNode, 'ref' | 'index'>;
 
-// The runner's label: its own label, else its value, else the first labelled descendant within 4 levels
-// (QarenIosRunnerTests+Snapshot.swift aggregatedLabel).
-const aggregated = (s: Spec, depth = 0): string | undefined => {
-  if (depth > 4) return undefined;
-  if (s.label) return s.label;
-  if (s.value) return s.value;
-  for (const c of s.children ?? []) {
-    const l = aggregated(c, depth + 1);
-    if (l) return l;
-  }
-  return undefined;
-};
-// The runner's hittable: enabled, non-empty frame, centre inside the viewport (SnapshotPredicates.swift).
-const hittable = (s: Spec, viewport: Rect) => {
-  const r = s.rect;
-  if (s.enabled === false || !(r.width > 0 && r.height > 0)) return false;
-  const cx = r.x + r.width / 2;
-  const cy = r.y + r.height / 2;
-  return (
-    cx >= viewport.x &&
-    cx < viewport.x + viewport.width &&
-    cy >= viewport.y &&
-    cy < viewport.y + viewport.height
+function projectedScreen(nodes: ProjectedNode[]): Screen {
+  const screen = join(
+    nodes.map((node, index) => ({ hittable: true, ...node, index, ref: `@${index}` })),
+    [],
   );
-};
-// Fast ordinary snapshot (-i) for the fixture types below.
-const emit = (root: Spec): NativeNode[] => {
-  const viewport =
-    root.children?.find((s) => s.type === 'Window' && s.rect.width > 0 && s.rect.height > 0)
-      ?.rect ??
-    (root.rect.width > 0 && root.rect.height > 0
-      ? root.rect
-      : { x: -Infinity, y: -Infinity, width: Infinity, height: Infinity });
-  const nodes: NativeNode[] = [];
-  const seen = new Set<string>();
-  const interactive = new Set(['Button', 'Stepper']);
-  function walk(s: Spec, depth: number, parent?: number) {
-    const label = aggregated(s);
-    const key = JSON.stringify([
-      s.type,
-      label ?? '',
-      s.id ?? '',
-      s.value ?? null,
-      s.rect.x,
-      s.rect.y,
-      s.rect.width,
-      s.rect.height,
-    ]);
-    const duplicate = seen.has(key);
-    if (parent !== undefined) seen.add(key);
-    const r = s.rect;
-    const visible =
-      r.width > 0 &&
-      r.height > 0 &&
-      r.x < viewport.x + viewport.width &&
-      r.x + r.width > viewport.x &&
-      r.y < viewport.y + viewport.height &&
-      r.y + r.height > viewport.y;
-    const included =
-      parent === undefined ||
-      (!duplicate &&
-        (!!(label || s.id || s.value !== undefined) ||
-          s.type === 'Window' ||
-          interactive.has(s.type) ||
-          (s.type === 'ScrollView' && visible && !!s.children?.length)));
-    const index = included ? nodes.length : parent;
-    if (included)
-      nodes.push({
-        ref: `@e${index}`,
-        index: index!,
-        ...(parent === undefined ? {} : { parentIndex: parent }),
-        depth,
-        type: s.type,
-        rect: s.rect,
-        ...(label ? { label } : {}),
-        ...(s.id ? { identifier: s.id } : {}),
-        ...(s.value !== undefined ? { value: s.value } : {}),
-        enabled: s.enabled !== false,
-        hittable: hittable(s, viewport),
-      });
-    const children = s.children ?? [];
-    for (const c of parent === undefined ? [...children].reverse() : children)
-      walk(c, depth + Number(included), index);
-  }
-  walk(root, 0);
-  return nodes;
-};
-function capture(root: Spec): Screen {
-  const screen = join(emit(root), []);
   screen.coverage = { native: 'complete', react: 'complete' };
   screen.keyboardVisible = false;
   screen.nativeGeneration = 7;
   return screen;
 }
 
-const app = (children: Spec[]): Spec =>
-  v('Application', full, { children: [v('Window', full, { children })] });
-const title = () => text('Fixture title', { x: 21, y: 151, width: 360, height: 30 });
-const siblings = () => capture(app([title(), carrier(full), carrier(inner)]));
+// Supply the emitted nodes of an ordinary iOS snapshot, with one Window.
+function capture(children: ProjectedNode[], label?: string): Screen {
+  return projectedScreen([
+    { type: 'Application', rect: full, depth: 0, label },
+    { type: 'Window', rect: full, depth: 1, parentIndex: 0, label },
+    ...children,
+  ]);
+}
+
+const carrier = (
+  rect: Rect,
+  evidence: Pick<NativeNode, 'label' | 'hittable'> = {},
+): ProjectedNode => ({
+  type: 'Other',
+  rect,
+  identifier: ID,
+  depth: 2,
+  parentIndex: 1,
+  ...evidence,
+});
+const text = (label: string, rect: Rect): ProjectedNode => ({
+  type: 'StaticText',
+  rect,
+  label,
+  depth: 2,
+  parentIndex: 1,
+});
+const aggregate = (label: string, rect: Rect): ProjectedNode => ({
+  type: 'Other',
+  rect,
+  label,
+  depth: 2,
+  parentIndex: 1,
+});
+const title = text('Fixture title', { x: 21, y: 151, width: 360, height: 30 });
+const siblings = () => capture([title, carrier(full), carrier(inner)], title.label);
 
 interface Fake {
   deps: WalkerDeps;
@@ -221,13 +144,11 @@ test('F1: equal-depth duplicate IDs stay failed with bounded locator advice', as
 test('G1: changes between poll signatures retain the deadline classification', async () => {
   let i = 0;
   const f = fake(() =>
-    capture(
-      app([
-        text(`Changing view ${++i}`, { x: 25, y: 160, width: 120, height: 30 }),
-        carrier(full),
-        carrier(inner),
-      ]),
-    ),
+    capture([
+      text(`Changing view ${++i}`, { x: 25, y: 160, width: 120, height: 30 }),
+      carrier(full),
+      carrier(inner),
+    ]),
   );
   const outcome = await walkBlock(block(wait), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
@@ -240,7 +161,7 @@ test('G2: a recovery read with the duplicate gone does not get duplicate advice'
   const f = fake((options) => {
     if (options?.platformPresence) {
       readRecovery = true;
-      return capture(app([title()]));
+      return capture([title], title.label);
     }
     return siblings();
   });
@@ -257,7 +178,10 @@ test('F2: the recovery read retains the pair and its newer locator geometry', as
   const f = fake((options) => {
     if (options?.platformPresence) {
       readRecovery = true;
-      return capture(app([title(), carrier(full), carrier({ ...inner, y: 128, height: 746 })]));
+      return capture(
+        [title, carrier(full), carrier({ ...inner, y: 128, height: 746 })],
+        title.label,
+      );
     }
     return siblings();
   });
@@ -274,14 +198,12 @@ test('F2: the recovery read retains the pair and its newer locator geometry', as
 
 test('F3: bound four captured identities and identify unavailable frame', async () => {
   const f = fake(() =>
-    capture(
-      app([
-        carrier({ x: 0, y: 0, width: 0, height: 0 }),
-        carrier({ x: 25, y: 140, width: 160, height: 40 }),
-        carrier({ x: 25, y: 240, width: 160, height: 40 }),
-        carrier({ x: 25, y: 340, width: 160, height: 40 }),
-      ]),
-    ),
+    capture([
+      carrier({ x: 0, y: 0, width: 0, height: 0 }, { hittable: false }),
+      carrier({ x: 25, y: 140, width: 160, height: 40 }),
+      carrier({ x: 25, y: 240, width: 160, height: 40 }),
+      carrier({ x: 25, y: 340, width: 160, height: 40 }),
+    ]),
   );
   const outcome = await walkBlock(block(wait), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
@@ -326,18 +248,18 @@ for (const [name, evidence] of [
   ],
   [
     'G4: independent aggregate label now satisfies the quote',
-    [view({ x: 24, y: 40, width: 160, height: 35 }, [], { label: 'Fresh status, twin-screen' })],
+    [aggregate('Fresh status, twin-screen', { x: 24, y: 40, width: 160, height: 35 })],
   ],
   [
     'G5: aggregate evidence on the newer read is ambiguous',
     [
-      view({ x: 24, y: 40, width: 160, height: 35 }, [], { label: 'Fresh status, twin-screen' }),
-      view({ x: 214, y: 40, width: 160, height: 35 }, [], { label: 'Other status, twin-screen' }),
+      aggregate('Fresh status, twin-screen', { x: 24, y: 40, width: 160, height: 35 }),
+      aggregate('Other status, twin-screen', { x: 214, y: 40, width: 160, height: 35 }),
     ],
   ],
 ] as const) {
   test(name, async () => {
-    const last = capture(app([carrier(full), carrier(inner), ...evidence]));
+    const last = capture([carrier(full), carrier(inner), ...evidence], evidence[0].label);
     assert.equal(carriers(last).length, 2);
     if (name.startsWith('G3')) {
       assert.equal(targetEvidence(quoted, last), 'pass');
@@ -358,7 +280,12 @@ for (const [name, evidence] of [
 }
 
 test('G6: default successful Wait still stores its unique ID', async () => {
-  const f = fake(() => capture(app([carrier(inner, [title()])])));
+  const f = fake(() =>
+    capture(
+      [carrier(inner, { label: title.label }), { ...title, depth: 3, parentIndex: 2 }],
+      title.label,
+    ),
+  );
   const outcome = await walkBlock(block(wait), f.deps);
   assert.equal(outcome.block.outcome, 'pass');
   assert.deepEqual(outcome.rows.at(-1)?.selector, { id: ID });
@@ -390,21 +317,15 @@ function overlayRead(withText: boolean): Screen {
     ['Other', 2, full, ID, 'Fixture header'],
     ['Other', 2, inner, ID, 'Fixture body'],
   ];
-  const nodes: NativeNode[] = spec.map(([type, parentIndex, frame, identifier, label], index) => ({
-    index,
-    ref: '@' + index,
-    type,
-    parentIndex,
-    rect: frame,
-    identifier,
-    label,
-    hittable: true,
-  }));
-  return Object.assign(join(nodes, []), {
-    coverage: { native: 'complete', react: 'complete' },
-    keyboardVisible: false,
-    nativeGeneration: 7,
-  } as const);
+  return projectedScreen(
+    spec.map(([type, parentIndex, frame, identifier, label]) => ({
+      type,
+      parentIndex,
+      rect: frame,
+      identifier,
+      label,
+    })),
+  );
 }
 
 async function waitHitsAtDeadline(recoverRead?: Screen) {
