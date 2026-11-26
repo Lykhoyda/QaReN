@@ -13,6 +13,7 @@ export const PRESS_RETRY_WINDOW_MS = 4_000;
 export const PRESS_RETRY_READS = 8;
 export const PRESS_RETRY_POLL_MS = 500;
 export const LATE_PRESS_PASS = 'The planned transition appeared after the first readback.';
+export const LOGIN_BLOCK_FAILED = 'the login block did not pass: ';
 
 const DETAILS: Record<PressRetryReason, string> = {
   'press-retry-screen-changed': 'The screen changed without proving the planned transition.',
@@ -30,12 +31,15 @@ export function pressRetryDetail(reason: PressRetryReason, disposition: PressDis
   return `ACTION_OUTCOME_UNCERTAIN: ${DETAILS[reason]} ${sent}`;
 }
 
+const PRESS_DETAILS = PRESS_RETRY_REASONS.flatMap((reason) => [
+  pressRetryDetail(reason, 'none'),
+  pressRetryDetail(reason, 'possible'),
+]);
+
 const FIXED_PRESS_DETAILS = new Set([
   LATE_PRESS_PASS,
-  ...PRESS_RETRY_REASONS.flatMap((reason) => [
-    pressRetryDetail(reason, 'none'),
-    pressRetryDetail(reason, 'possible'),
-  ]),
+  ...PRESS_DETAILS,
+  ...PRESS_DETAILS.map((detail) => `${LOGIN_BLOCK_FAILED}${detail}`),
 ]);
 
 export const isFixedPressRetryDetail = (detail: string): boolean => FIXED_PRESS_DETAILS.has(detail);
@@ -169,6 +173,7 @@ export class PressRetryEvidence {
   readonly initialDialog: boolean;
   private readonly proofEligible: boolean;
   targetChanged = false;
+  interrupted = false;
   proofReads = 0;
   private unexpectedFront = false;
   private expectedDialog = false;
@@ -225,6 +230,7 @@ export class PressRetryEvidence {
       if (this.proofEligible) vote = dialogVote(this.before, current);
     } else if (current.front !== this.before.front) {
       this.unexpectedFront = true;
+      this.interrupted = current.front === 'dialog' && !current.devError && !current.renderError;
     }
     this.proofReads = vote === undefined ? 0 : vote === this.previousVote ? 2 : 1;
     this.previousVote = vote;

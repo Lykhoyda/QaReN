@@ -1250,6 +1250,48 @@ test('a proven Tap that opens a system prompt passes and the next Wait declines 
   );
 });
 
+test('an unproven Tap whose system prompt renders inside the late window passes and the next Wait declines it', async () => {
+  const f = app(home());
+  f.deps.platform = 'ios';
+  let sentAt: number | undefined;
+  let dismissed = false;
+  f.deps.captureScreen = async () => {
+    if (dismissed) return screen([element('@done', 'Done')]);
+    return sentAt === undefined || f.deps.now() < sentAt + 600 ? home() : titled('Notifications');
+  };
+  f.deps.press = async (ref, context) => {
+    context.authorize();
+    f.actions.push(`press ${ref}`);
+    sentAt = f.deps.now();
+    return { ok: true, proven: false };
+  };
+  f.deps.dialog = async (action, context) => {
+    context.authorize();
+    f.actions.push(`dialog ${action}`);
+    dismissed = true;
+    return { ok: true, proven: true, executed: true };
+  };
+  const events: Record<string, unknown>[] = [];
+  f.deps.pressRetry = (event) => events.push(event);
+  ticking(f);
+  const result = await runPlan(
+    parsePlan('1. Tap "Settings"\n2. Wait for "Done" to appear').blocks!,
+    f.deps,
+  );
+  assert.equal(result.verdict, 'PASS', result.failure?.seen);
+  assert.deepEqual(f.actions, ['press @settings', 'dialog dismiss']);
+  assert.equal(result.recoveries, 1);
+  assert.deepEqual(
+    events.map((event) => event.outcome),
+    ['dialog-interrupted'],
+  );
+  assert.ok(cleanDiagnostic(events[0]));
+  assert.deepEqual(
+    result.steps.filter((row) => row.line === 1).map((row) => row.outcome),
+    ['pass'],
+  );
+});
+
 test('a different system prompt after a declined one is declined once too', async () => {
   const f = app(titled('Notifications'));
   f.deps.dialog = async (action) => {

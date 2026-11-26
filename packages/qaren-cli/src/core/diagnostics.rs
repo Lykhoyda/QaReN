@@ -355,7 +355,7 @@ fn clean_press_retry(fields: &Map<String, Value>) -> Option<Value> {
     let outcome = fields.get("outcome")?.as_str()?;
     if started > 8 || admitted > started || proof > admitted || proof > 2
         || (outcome == "passed-late" && proof != 2)
-        || !matches!(outcome, "passed-late" | "capture-refused" | "process-ended" | "render-error"
+        || !matches!(outcome, "passed-late" | "dialog-interrupted" | "capture-refused" | "process-ended" | "render-error"
             | "press-retry-screen-changed" | "press-retry-target-changed"
             | "press-retry-no-effect" | "press-retry-evidence-unavailable")
         || !matches!(fields.get("firstDisposition")?.as_str()?, "none" | "possible" | "observed" | "unknown")
@@ -793,6 +793,10 @@ mod tests {
             "readOverran": false, "firstDisposition": "possible", "networkIdle": "unknown"
         });
         assert_eq!(clean(&event), Some(event.clone()));
+        let mut interrupted = event.clone();
+        interrupted["outcome"] = json!("dialog-interrupted");
+        interrupted["proofReads"] = json!(0);
+        assert_eq!(clean(&interrupted), Some(interrupted.clone()));
         for (key, value) in [
             ("line", json!(0)), ("operationId", json!(0)), ("readsStarted", json!(1.5)),
             ("readsStarted", json!(9)), ("readsAdmitted", json!(4)), ("proofReads", json!(1)),

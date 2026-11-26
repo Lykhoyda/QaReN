@@ -23,6 +23,7 @@ import { INTERRUPTION_VETOES, type InterruptionDiagnostic } from './recover.js';
 const PRESS_RETRY_OUTCOMES = [
   ...PRESS_RETRY_REASONS,
   'passed-late',
+  'dialog-interrupted',
   'capture-refused',
   'process-ended',
   'render-error',

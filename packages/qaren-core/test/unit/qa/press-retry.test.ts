@@ -8,6 +8,7 @@ import { CaptureDeadline, captureScreen } from '../../../dist/qa/capture.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
 import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { cleanDiagnostic } from '../../../dist/qa/diagnostics.js';
+import { pressRetryDetail } from '../../../dist/qa/press-retry.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
 import { HandlerError } from '../../../dist/qa/adapt.js';
 import { attested } from './platform-presence-fixtures.ts';
@@ -732,3 +733,53 @@ test('H5 a stop during the guard pause preempts its decision', async () => {
   assert.deepEqual(f.events, []);
   assert.equal(f.reads.length, 3);
 });
+
+for (const arrives of [true, false]) {
+  test(`H5 a saved-login Tap ${arrives ? 'is proven by' : 'keeps its context without'} the recovered outer step`, async () => {
+    let sentAt: number | undefined;
+    const signIn = () => page('Sign in', 'signin', '@signin');
+    const f = rig((_index, time, sent) => {
+      if (sent === 0 || !arrives || time < sentAt! + 600) return signIn();
+      return page('Home', 'home', '@home');
+    });
+    const send = f.deps.press;
+    f.deps.press = async (...args) => {
+      sentAt ??= f.deps.now();
+      return send(...args);
+    };
+    f.deps.hideDevMenu = async () => {
+      throw new Error('unexpected dev menu');
+    };
+    f.deps.login = {
+      marker: { id: 'signin' },
+      block: { ...plan('1. Tap "signin"')[0], slug: 'login' },
+    };
+    const outcome = await walkBlock(plan('1. Tap "home"')[0], f.deps);
+    if (arrives) {
+      assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome.failure));
+      assert.deepEqual(f.sends, ['@signin', '@home']);
+      assert.deepEqual(
+        outcome.rows.map(({ block, outcome }) => [block, outcome]),
+        [
+          ['login', 'pass'],
+          [outcome.block.key, 'retry'],
+          [outcome.block.key, 'pass'],
+        ],
+      );
+      assert.equal(outcome.rows[0].reason, late);
+      assert.deepEqual(
+        f.events.map((event) => event.outcome),
+        ['passed-late'],
+      );
+      return;
+    }
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.deepEqual(f.sends, ['@signin']);
+    const reason = outcome.failure?.subreason;
+    assert.ok(reason?.startsWith('press-retry-'), reason);
+    assert.equal(
+      outcome.failure?.seen,
+      `the login block did not pass: ${pressRetryDetail(reason as never, 'possible')}`,
+    );
+  });
+}

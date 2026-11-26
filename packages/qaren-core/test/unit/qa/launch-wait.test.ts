@@ -396,8 +396,7 @@ test('a dialog after Press cannot trigger recovery or restore launch polling', a
   };
   const ledger = await ledgerOf('1. Tap "Profile"\n', device.deps);
   assert.equal(dismissed, false);
-  assert.equal(ledger.verdict, 'FAIL');
-  assert.equal(ledger.failure?.subreason, 'press-retry-screen-changed');
+  assert.equal(ledger.verdict, 'PASS', JSON.stringify(ledger.failure));
   assert.deepEqual(device.actions, ['press @profile']);
   assert.ok(ledger.steps.every((row) => row.implicitWaitMs === undefined));
 });

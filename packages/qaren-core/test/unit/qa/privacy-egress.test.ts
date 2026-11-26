@@ -326,11 +326,12 @@ for (const policy of ['strict', 'non-strict'] as const) {
     assert.equal(ledger.failure?.subreason, 'press-retry-screen-changed');
     const detail =
       'ACTION_OUTCOME_UNCERTAIN: The screen changed without proving the planned transition. The original action was never sent.';
-    assert.equal(ledger.failure?.seen, detail);
+    const outer = `the login block did not pass: ${detail}`;
+    assert.equal(ledger.failure?.seen, outer);
     const failures = ledger.steps.filter((row) => row.outcome === 'fail');
     assert.deepEqual(
       failures.map((row) => row.reason),
-      [detail, detail],
+      [detail, outer],
     );
     assert.notEqual(failures[0].operationId, failures[1].operationId);
     assert.doesNotMatch(JSON.stringify(ledger), /account|canary|702|\uFFFD|[\uE0F0\uE0F1]/u);

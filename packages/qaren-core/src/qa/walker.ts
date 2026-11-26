@@ -6,6 +6,7 @@ import {
   pressRetryDetail,
   isFixedPressRetryDetail,
   LATE_PRESS_PASS,
+  LOGIN_BLOCK_FAILED,
   PRESS_RETRY_POLL_MS,
   PRESS_RETRY_READS,
   PRESS_RETRY_WINDOW_MS,
@@ -3273,7 +3274,7 @@ async function walkBlockScoped(
       '; the control evidence is incomplete or unknown, so nothing was dismissed',
     'not-an-opt-in': '; the screen is not a strict permission opt-in, so nothing was dismissed',
   };
-  const replayLogin = async () => {
+  const replayLogin = async (next: Item) => {
     const login = deps.login?.block;
     if (!login) {
       if (currentInputs()?.hasInputs) {
@@ -3302,6 +3303,7 @@ async function walkBlockScoped(
     const nested = await walkBlock(login, counted, shots, typed, privacy, sequence, {
       recover: false,
       login: true,
+      nextBlockItem: () => next,
     });
     shots += taken;
     separateRowOperations(nested.rows);
@@ -3309,9 +3311,10 @@ async function walkBlockScoped(
     if (nested.refusal) return { refuse: nested.refusal };
     if (nested.failure)
       return {
-        fail: asPressRetryReason(nested.failure.subreason)
-          ? nested.failure.seen
-          : ['the login block did not pass: ', ...segments(nested.failure.seen)],
+        fail:
+          asPressRetryReason(nested.failure.subreason) && typeof nested.failure.seen === 'string'
+            ? `${LOGIN_BLOCK_FAILED}${nested.failure.seen}`
+            : [LOGIN_BLOCK_FAILED, ...segments(nested.failure.seen)],
         ...nestedSubreason(nested),
         // The saved login block's own fixed edit for a hidden-in-place miss names that block's line.
         ...(isHiddenInPlaceSuggestion(nested.failure.suggestion)
@@ -3571,7 +3574,7 @@ async function walkBlockScoped(
             'recovery',
           ));
         },
-        ...(deps.login && first === undefined ? { replayLogin } : {}),
+        ...(deps.login && first === undefined ? { replayLogin: () => replayLogin(item) } : {}),
         dismiss: async (label, optIn) => {
           optInDecided = optIn;
           if (deps.interruptionVeto) {
@@ -4089,13 +4092,14 @@ async function walkBlockScoped(
     original: Element | undefined,
     maxAttempts: number,
     first?: Observation,
-  ): Promise<'pass' | WalkOutcome> => {
+  ): Promise<'pass' | { lateInterruption: Observation } | WalkOutcome> => {
     const until = Math.min(
       deps.now() + PRESS_RETRY_WINDOW_MS,
       itemDeadline ?? Infinity,
       deps.walkDeadlineMs ?? Infinity,
     );
     const disposition = pressDisposition(pressAct!);
+    const mayPass = disposition !== 'none' && !(!pressAct!.ok && pressAct!.mutation === 'none');
     const next = block.items[block.items.indexOf(item) + 1] ?? opts.nextBlockItem?.();
     const evidence = new PressRetryEvidence(
       before.screen,
@@ -4178,6 +4182,10 @@ async function walkBlockScoped(
           );
         }
         evidence.admit(observation.screen);
+        if (evidence.interrupted && mayPass) {
+          report('dialog-interrupted');
+          return { lateInterruption: observation };
+        }
         if (evidence.proofReads === 2) {
           if (deps.now() >= until) {
             evidence.resetRead();
@@ -6475,7 +6483,8 @@ async function walkBlockScoped(
                 after,
               );
               if (result === 'pass') continue items;
-              return result;
+              if (!('lateInterruption' in result)) return result;
+              after = result.lateInterruption;
             }
           }
           // A capture delta cannot stand in for bound selection on these controls.
@@ -6559,7 +6568,9 @@ async function walkBlockScoped(
               after,
             );
             if (result === 'pass') continue items;
-            return result;
+            if (!('lateInterruption' in result)) return result;
+            after = result.lateInterruption;
+            changed = true;
           }
           const shot = postActionTried ? postActionShot : await shoot(item);
           const unverified =

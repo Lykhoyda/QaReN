@@ -1332,10 +1332,14 @@ stable planned system dialog with positive app-process continuity. The next
 item takes its own observation and runs independently. A proven Tap, or a Tap
 that could have taken effect and whose first readback already shows a new
 system dialog, does not enter this window; that dialog reaches the next item's
-interruption handling.
+interruption handling. An unplanned system dialog that first appears during
+the window ends it the same way: the Tap passes without another send. In a
+saved login block replayed by [recovery](#step-recovery), the step that
+recovery retries is the next item for the block's last Tap.
 
 If the window ends without that proof, the failure stays on the original Tap
-line with one of the four `press-retry-*` reasons below. The receipt records
+line with one of the four `press-retry-*` reasons below. In a saved login
+block, the retried step reports that detail after `the login block did not pass:`. The receipt records
 whether the first action could have taken effect or the runner confirmed it
 never sent the action. Review the evidence before deciding whether the action
 took effect. The `press-retry` diagnostic contains closed outcomes, counts,

@@ -173,15 +173,21 @@ test('two positively bound prompt reads hand off to the authored Dialog', async 
   assert.equal(outcome.block.outcome, 'pass');
 });
 
-test('an unplanned late dialog stops the original Press', async () => {
+test('an unplanned late dialog passes the original Press and reaches the next item', async () => {
   const remind = screen(['Remind']);
-  const settings = screen(['Settings']);
   const prompt = screen(['Allow'], 'dialog');
-  const f = fake([remind, remind, prompt, prompt, remind, settings, settings, screen(['Profile'])]);
-  const outcome = await walkBlock(block('1. Tap "Remind"\n2. Tap "Settings"\n'), f.deps);
-  assert.deepEqual(sent(f.calls), ['press @e0']);
-  assert.equal(outcome.recoveries, undefined);
-  assert.equal(outcome.failure?.subreason, 'press-retry-screen-changed');
+  const f = fake([remind, remind, prompt]);
+  const capture = f.deps.captureScreen;
+  f.deps.captureScreen = async (request) =>
+    f.calls.includes('dialog dismiss') ? screen(['Settings']) : capture(request);
+  const outcome = await walkBlock(block('1. Tap "Remind"\n2. Wait for "Settings"\n'), f.deps);
+  assert.deepEqual(sent(f.calls), ['press @e0', 'dialog dismiss']);
+  assert.equal(outcome.recoveries, 1);
+  assert.equal(outcome.failure, undefined);
+  assert.deepEqual(
+    f.rows.filter((row) => row.line === 1).map((row) => row.outcome),
+    ['pass'],
+  );
 });
 
 test('a first attempt under a dialog leaves it to the next dialog step and fails', async () => {
