@@ -200,6 +200,19 @@ app.nodes = [target]; target.frame.origin.y = 25; probe("moved")
 target.frame.origin.y = 20
 RunnerObjCExceptionCatcher.fail = true; probe("unavailable"); RunnerObjCExceptionCatcher.fail = false
 target.delay = 0.32; probe("unavailable"); target.delay = 0
+func reason(_ expected: String?, _ generation: Int = 7) {
+  let payload = h.execute(command(generation)).data
+  precondition(payload?.hitProbe == (expected == nil ? "hittable" : "unavailable"))
+  precondition(payload?.liveCheckReason == expected, "\\(String(describing: expected))")
+  precondition(h.lastLiveCheckUnavailable == "original")
+}
+retain(); reason(nil)
+retain(nil, nil); reason("no-identity")
+retain(); reason("expired", 6)
+app.nodes = [target, XCUIElement()]; reason("ambiguous")
+app.nodes = []; reason("absent")
+app.nodes = [target]; target.delay = 0.4; reason("deadline"); target.delay = 0
+retain()
 precondition(h.liveTargetCheck(app: app, command: command(), deadline: 0) == .unavailable)
 func ordinaryTap(_ generation: Int = 7) -> Response {
   h.coordinateTaps = 0; target.taps = 0; RunnerObjCExceptionCatcher.calls = 0

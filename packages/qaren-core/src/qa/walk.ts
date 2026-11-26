@@ -66,7 +66,7 @@ import { LEGACY_BUNDLE_IDS } from '../runners/ensure-single-runner.js';
 import { androidForeignDriverMessage } from '../runners/external-runner-detect.js';
 import {
   readIOSLabelProvenance,
-  readIOSHitProbe,
+  readIOSHitProbeWithReason,
   RUNNER_HOST_BUNDLE_ID,
   RUNNER_TEST_BUNDLE_ID,
   observeAppProcess,
@@ -1114,7 +1114,8 @@ export async function openSession(
             context: QaDispatchContext,
             generation: number,
             identity: HitProbeIdentity,
-          ) => stop.track(() => readIOSHitProbe(ref, appId, generation, context, identity)),
+          ) =>
+            stop.track(() => readIOSHitProbeWithReason(ref, appId, generation, context, identity)),
         }
       : {}),
     press: (ref, qaContext, options) =>

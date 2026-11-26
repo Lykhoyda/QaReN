@@ -805,6 +805,46 @@ pub struct OverlayHitReceipt {
     pub observation: u64,
     pub live_hit: HitProbeResult,
     pub predicate: OverlayCoverage,
+    // Why an unavailable read gave no answer: one fixed word; any other word drops only this field.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "live_check_reason"
+    )]
+    pub live_check_reason: Option<String>,
+}
+
+// The core's, the iOS client's and the runner's fixed words for a read-only hit probe with no answer.
+const LIVE_CHECK_REASONS: &[&str] = &[
+    "not-identifiable",
+    "no-reader",
+    "no-generation",
+    "no-frame",
+    "late",
+    "threw",
+    "stale-ref",
+    "identity-changed",
+    "runner-refused",
+    "generation-changed",
+    "expired",
+    "no-identity",
+    "absent",
+    "ambiguous",
+    "exception",
+    "deadline",
+    "read-failed",
+    "unreported",
+];
+
+// Any value that is not one listed word drops only this field, never its check or the check's siblings.
+fn live_check_reason<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(value
+        .as_str()
+        .filter(|word| LIVE_CHECK_REASONS.contains(word))
+        .map(str::to_owned))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -935,7 +975,17 @@ fn native_capture_ref<'de, D: serde::Deserializer<'de>>(
 fn overlay_checks<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Vec<OverlayHitReceipt>>, D::Error> {
-    Ok(passive(deserializer)?.filter(|checks: &Vec<OverlayHitReceipt>| checks.len() <= 64))
+    // A reason explains only a read that gave no answer.
+    Ok(passive(deserializer)?
+        .filter(|checks: &Vec<OverlayHitReceipt>| checks.len() <= 64)
+        .map(|mut checks| {
+            for check in &mut checks {
+                if check.live_hit != HitProbeResult::Unavailable {
+                    check.live_check_reason = None;
+                }
+            }
+            checks
+        }))
 }
 
 // A plain scroll that passed although every dispatched attempt left the screen unchanged; never an end-of-content proof.

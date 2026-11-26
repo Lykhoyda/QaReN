@@ -4,6 +4,10 @@ import {
   OverlayHits,
   type HitProbeIdentity,
   type HitProbeResult,
+  type HitProbeRead,
+  hitProbeRead,
+  hitProbeErrorReason,
+  expiredHitProbeReason,
   type LiveCheckReason,
   type OverlayHitReceipt,
 } from './live-hit.js';
@@ -288,7 +292,7 @@ export interface WalkerDeps {
     context: QaDispatchContext,
     generation: number,
     identity: HitProbeIdentity,
-  ): Promise<HitProbeResult>;
+  ): Promise<HitProbeResult | HitProbeRead>;
   platform?: BlockPlatform;
   pressReadback?(evidence: PressEvidence | undefined): void;
   readLabelProvenance?(
@@ -1821,7 +1825,7 @@ async function walkBlockScoped(
     for (const witness of witnesses) {
       // A read that would outlive the observation never starts.
       if (observationDeadline(observation.timing) - deps.now() < WITNESS_READ_RESERVE_MS) break;
-      const read = await readHit(item, observation, witness);
+      const read = (await readHitWithReason(item, observation, witness)).result;
       if (read === 'hittable') {
         groundProofs.set(item.line, { status: 'proven', ref: witness.ref, kind: witness.kind });
         return band;
@@ -2441,16 +2445,18 @@ async function walkBlockScoped(
     return shot;
   };
   // One read-only iOS live hit read inside the observation's expiry; a late or failed read is 'unavailable'.
-  const readHit = async (
+  const readHitWithReason = async (
     item: Item,
     observation: Observation,
     element: Element,
     deadline = Infinity,
-  ): Promise<HitProbeResult> => {
+  ): Promise<HitProbeRead> => {
     const generation = observation.screen.nativeGeneration;
     const rect = elementFrame(element);
-    if (deps.platform !== 'ios' || !deps.hitProbe || generation === undefined || !rect)
-      return 'unavailable';
+    if (deps.platform !== 'ios' || !deps.hitProbe)
+      return { result: 'unavailable', reason: 'no-reader' };
+    if (generation === undefined) return { result: 'unavailable', reason: 'no-generation' };
+    if (!rect) return { result: 'unavailable', reason: 'no-frame' };
     const context = new QaDispatchContext(
       observationDeadline(observation.timing, deadline),
       deps.now,
@@ -2469,12 +2475,16 @@ async function walkBlockScoped(
             rect,
           }),
       );
-      if (!context.expired) return read;
+      if (!context.expired) return hitProbeRead(read);
+      return { result: 'unavailable', reason: expiredHitProbeReason(context) };
     } catch (error) {
       if (isAbort(error) || (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED'))
         throw error;
+      return {
+        result: 'unavailable',
+        reason: error === timedOut ? 'late' : hitProbeErrorReason(error),
+      };
     }
-    return 'unavailable';
   };
   // Same-label duplicates left after proof: up to four the runner can identify get a live hit read.
   const probeDuplicates = async (
@@ -2499,7 +2509,7 @@ async function walkBlockScoped(
       // A read that would outlive the observation never runs.
       if (deps.now() >= observationDeadline(observation.timing)) break;
       if (nestedCandidate(element, contenders)) continue;
-      if ((await readHit(item, observation, element)) === 'not-hittable')
+      if ((await readHitWithReason(item, observation, element)).result === 'not-hittable')
         exclusions.push(excludedCandidate(element, 'not-hittable'));
     }
     if (exclusions.length === (decided.candidateExclusions?.length ?? 0)) return decided;
@@ -2522,16 +2532,21 @@ async function walkBlockScoped(
     const hits = (observation.overlayHits ??= new OverlayHits(observation.screen));
     const cached = hits.get(element, observation.screen);
     if (cached) return cached;
-    const result = overlayProbeCoverage(element, observation.screen)
-      ? await readHit(item, observation, element, deadline)
-      : 'unavailable';
+    const { result, reason }: HitProbeRead = overlayProbeCoverage(element, observation.screen)
+      ? await readHitWithReason(item, observation, element, deadline)
+      : { result: 'unavailable', reason: 'not-identifiable' };
     hits.set(element, result);
     let row = overlayRows.get(item.line);
     if (row?.observation !== observation.id) {
       row = { observation: observation.id, checks: [] };
       overlayRows.set(item.line, row);
     }
-    row.checks.push({ observation: observation.id, liveHit: result, predicate: facts });
+    row.checks.push({
+      observation: observation.id,
+      liveHit: result,
+      predicate: facts,
+      ...(reason ? { liveCheckReason: reason } : {}),
+    });
     return result;
   };
   const visibilityProbe = (

@@ -1,4 +1,13 @@
-import { HIT_PROBE_RESULTS, type HitProbeResult, type HitProbeIdentity } from '../qa/live-hit.js';
+import {
+  HIT_PROBE_RESULTS,
+  CLIENT_UNAVAILABLE,
+  expiredHitProbeReason,
+  hitProbeErrorReason,
+  RUNNER_LIVE_CHECK_REASONS,
+  type HitProbeResult,
+  type HitProbeIdentity,
+  type HitProbeRead,
+} from '../qa/live-hit.js';
 import {
   cleanProvenanceReadDiagnostic,
   labelProvenanceFromWire,
@@ -2810,7 +2819,10 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
 
   if (args.command === 'hitProbe') {
     const observedRunner = runnerState;
-    if (!observedRunner) return okResult({ hitProbe: 'unavailable' });
+    // The client's own refusals carry their word in meta, which a runner reply never fills.
+    const local = (word: (typeof CLIENT_UNAVAILABLE)[number]) =>
+      okResult({ hitProbe: 'unavailable' }, { meta: { hitProbeUnavailable: word } });
+    if (!observedRunner) return local('runner-refused');
     try {
       args.qaContext?.check();
       const reply = await sendCommandOnce(
@@ -2820,13 +2832,13 @@ export async function runIOS(args: RunIOSArgs): Promise<ToolResult> {
         args.qaContext,
         args.qaTiming,
       );
-      if (!reply.ok || runnerState !== observedRunner || args.qaContext?.expired)
-        return okResult({ hitProbe: 'unavailable' });
+      if (!reply.ok || runnerState !== observedRunner) return local('runner-refused');
+      if (args.qaContext?.expired) return local(expiredHitProbeReason(args.qaContext));
       return okResult(reply.data ?? { hitProbe: 'unavailable' });
     } catch (error) {
       throwIfCancelled();
       if (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED') throw error;
-      return okResult({ hitProbe: 'unavailable' });
+      return local(hitProbeErrorReason(error));
     }
   }
 
@@ -3369,20 +3381,31 @@ export async function readIOSHitProbe(
   qaContext: QaDispatchContext,
   identity: HitProbeIdentity,
 ): Promise<HitProbeResult> {
+  return (await readIOSHitProbeWithReason(ref, bundleId, generation, qaContext, identity)).result;
+}
+
+// The same read, with the fixed word that says why an unavailable read gave no answer.
+export async function readIOSHitProbeWithReason(
+  ref: string,
+  bundleId: string,
+  generation: number,
+  qaContext: QaDispatchContext,
+  identity: HitProbeIdentity,
+): Promise<HitProbeRead> {
   const target = getFreshRefTarget(ref);
+  if (!target || target.snapshotGeneration !== generation)
+    return { result: 'unavailable', reason: 'stale-ref' };
   if (
-    !target ||
-    target.snapshotGeneration !== generation ||
     (identity.identifier
       ? target.snapshotIdentifier !== identity.identifier
       : target.snapshotLabel !== identity.label) ||
     (['x', 'y', 'width', 'height'] as const).some(
       (key) => target.rect[key] !== identity.rect[key],
     ) ||
-    (!target.snapshotIdentifier && !target.snapshotLabel) ||
-    qaContext.expired
+    (!target.snapshotIdentifier && !target.snapshotLabel)
   )
-    return 'unavailable';
+    return { result: 'unavailable', reason: 'identity-changed' };
+  if (qaContext.expired) return { result: 'unavailable', reason: expiredHitProbeReason(qaContext) };
   try {
     const response = await runIOS({
       command: 'hitProbe',
@@ -3396,23 +3419,46 @@ export async function readIOSHitProbe(
       snapshotIdentifier: target.snapshotIdentifier,
       snapshotLabel: target.snapshotLabel,
     });
-    if (
-      response.isError ||
-      qaContext.expired ||
-      JSON.stringify(getFreshRefTarget(ref)) !== JSON.stringify(target)
-    )
-      return 'unavailable';
-    const data = (
-      JSON.parse(response.content[0]?.text ?? '{}') as {
-        data?: { hitProbe?: unknown; snapshotGeneration?: unknown };
-      }
-    ).data;
-    if (data?.snapshotGeneration !== generation) return 'unavailable';
-    return HIT_PROBE_RESULTS.find((result) => result === data?.hitProbe) ?? 'unavailable';
+    if (response.isError) return { result: 'unavailable', reason: 'runner-refused' };
+    if (qaContext.expired)
+      return { result: 'unavailable', reason: expiredHitProbeReason(qaContext) };
+    // Name what changed during the read: the ref is gone, its generation moved, or its identity or frame did.
+    const after = getFreshRefTarget(ref);
+    if (JSON.stringify(after) !== JSON.stringify(target))
+      return {
+        result: 'unavailable',
+        reason: !after
+          ? 'stale-ref'
+          : after.snapshotGeneration !== target.snapshotGeneration
+            ? 'generation-changed'
+            : 'identity-changed',
+      };
+    const { data, meta } = JSON.parse(response.content[0]?.text ?? '{}') as {
+      data?: { hitProbe?: unknown; snapshotGeneration?: unknown; liveCheckReason?: unknown };
+      meta?: { hitProbeUnavailable?: unknown };
+    };
+    const local = CLIENT_UNAVAILABLE.find((word) => word === meta?.hitProbeUnavailable);
+    if (local) return { result: 'unavailable', reason: local };
+    // A runner reply speaks for this read only at this generation, and only in the runner's own words;
+    // a reply without a numeric generation shows no mismatch, so it explains nothing.
+    if (typeof data?.snapshotGeneration !== 'number')
+      return { result: 'unavailable', reason: 'unreported' };
+    if (data.snapshotGeneration !== generation)
+      return { result: 'unavailable', reason: 'generation-changed' };
+    const result = HIT_PROBE_RESULTS.find((listed) => listed === data?.hitProbe);
+    if (result !== undefined && result !== 'unavailable') return { result };
+    // A runner word explains only an exact `unavailable`; a missing or unknown result explains nothing.
+    return {
+      result: 'unavailable',
+      reason:
+        (result === 'unavailable' &&
+          RUNNER_LIVE_CHECK_REASONS.find((word) => word === data?.liveCheckReason)) ||
+        'unreported',
+    };
   } catch (error) {
     if (isAbort(error) || (error instanceof QaDispatchError && error.code === 'RUN_CANCELLED'))
       throw error;
-    return 'unavailable';
+    return { result: 'unavailable', reason: hitProbeErrorReason(error) };
   }
 }
 

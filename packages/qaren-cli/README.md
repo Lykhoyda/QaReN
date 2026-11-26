@@ -1790,6 +1790,15 @@ an anonymous or ambiguous identity, or an older runner retains the refusal with
 “no live hit read was available”. Each poll probes a carrier at most once and
 reuses the result only within that observation and native snapshot generation.
 The row's `overlayChecks` records `liveHit` and the value-free cutter facts.
+When the production iOS overlay probe gives no answer (`liveHit: unavailable`),
+QaReN records a fixed `liveCheckReason`: one word from QaReN (`not-identifiable`,
+`no-reader`, `no-generation`, `no-frame`), its iOS client (`stale-ref`,
+`identity-changed`, `generation-changed`, `runner-refused`, `late`, `threw`), or
+the runner (`expired`, `no-identity`, `absent`, `ambiguous`, `exception`,
+`deadline`, `read-failed`). `unreported` means that no runner reason was
+accepted: QaReN accepts one only on a reply that is exactly `unavailable` at the
+requested snapshot generation. The same entries appear for an inferred-overlay
+Fill. An older adapter that returns only the bare result can omit the field.
 
 An iOS Fill under the same inferred cover also requires a positive read-only
 probe to skip inferred-overlay clearance. A negative or unavailable probe ends
