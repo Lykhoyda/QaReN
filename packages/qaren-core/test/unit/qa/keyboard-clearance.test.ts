@@ -276,7 +276,7 @@ test('a moved-target retry retains its React-only twin ambiguity without keyboar
   assert.equal(count(f, 'dismiss'), 0);
   assert.match(
     JSON.stringify(outcome.failure?.seen),
-    /did not settle across 4 captures \(ambiguous:2 \| ambiguous:2 \| ambiguous:2 \| ambiguous:2\); it was not dispatched again/,
+    /The original target changed without proving the planned transition/,
   );
 });
 

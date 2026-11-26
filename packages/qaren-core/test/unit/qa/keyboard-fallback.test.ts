@@ -1186,7 +1186,7 @@ test('U12: short free-text echoes remain readable while quoted fill slots stay m
   const fake = app({ typedLabel: 'Code A12B' });
   const sequence: WalkSequence = { observation: 0 };
   const outcome = await walkBlock(
-    blocks(plan('12', 'qa-hidden-email', '2. Tap "qa-hidden-email-pressable"\n'))[0],
+    blocks(plan('12', 'qa-hidden-email', '✓ "Unseen"\n'))[0],
     fake.deps,
     undefined,
     undefined,

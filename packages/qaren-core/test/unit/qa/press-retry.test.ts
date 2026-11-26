@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { serializeBlock, writeBlock } from '../../../dist/qa/blocks.js';
 import { CaptureDeadline, captureScreen } from '../../../dist/qa/capture.js';
 import { NativeSnapshotIncomplete } from '../../../dist/qa/private-input.js';
+import { RunInputs, withInputs } from '../../../dist/qa/inputs.js';
 import { cleanDiagnostic } from '../../../dist/qa/diagnostics.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
 import { HandlerError } from '../../../dist/qa/adapt.js';
@@ -433,29 +434,33 @@ for (const videoPolicy of ['strict', 'non-strict'] as const) {
   });
 }
 
-test('H6 a late protected input cannot rewrite a fixed Press explanation', async () => {
-  const value = 'effect';
-  const carrier = () => {
-    const screen = page('Wrong page');
-    const field = element('@secure', 'Secure field', { kind: 'input', secure: true });
-    screen.elements.push(field);
-    capturePrivateScreen(screen, [
-      { values: [value], secure: true, elements: [field], associationUnique: true },
-    ]);
-    return screen;
-  };
-  const f = queued([draft, draft, carrier]);
-  const privacy = new ObservedPrivacy();
-  f.deps.privacy = privacy;
-  const ledger = await runPlan(plan(), f.deps);
-  assert.equal(ledger.verdict, 'FAIL');
-  assert.notEqual(privacy.redact(value), value);
-  const fixed =
-    'ACTION_OUTCOME_UNCERTAIN: The screen changed without proving the planned transition. The original action may have taken effect.';
-  assert.equal(ledger.failure?.seen, fixed);
-  assert.equal(ledger.steps[0].reason, fixed);
-  assert.deepEqual(f.actions, []);
-});
+for (const runtimeInput of [undefined, 'unrelated synthetic input'] as const)
+  test(`H6 late observed data cannot rewrite fixed Press detail ${runtimeInput ? 'with runtime inputs' : 'without runtime inputs'}`, async () => {
+    const value = 'effect';
+    const carrier = () => {
+      const screen = page('Wrong page');
+      const field = element('@secure', 'Secure field', { kind: 'input', secure: true });
+      screen.elements.push(field);
+      capturePrivateScreen(screen, [
+        { values: [value], secure: true, elements: [field], associationUnique: true },
+      ]);
+      return screen;
+    };
+    const f = queued([draft, draft, carrier]);
+    const privacy = new ObservedPrivacy();
+    f.deps.privacy = privacy;
+    const run = () => runPlan(plan(), f.deps);
+    const ledger = runtimeInput
+      ? await withInputs(new RunInputs({ TOKEN: runtimeInput }, ['TOKEN'], privacy), run)
+      : await run();
+    assert.equal(ledger.verdict, 'FAIL');
+    assert.notEqual(privacy.redact(value), value);
+    const fixed =
+      'ACTION_OUTCOME_UNCERTAIN: The screen changed without proving the planned transition. The original action may have taken effect.';
+    assert.equal(ledger.failure?.seen, fixed);
+    assert.equal(ledger.steps[0].reason, fixed);
+    assert.deepEqual(f.actions, []);
+  });
 
 const diagnostic = {
   kind: 'press-retry',

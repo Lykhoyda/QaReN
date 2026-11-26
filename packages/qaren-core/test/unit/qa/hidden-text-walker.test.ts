@@ -302,8 +302,6 @@ const BRAVO_PASS =
   'resolved through text hidden from accessibility; tapped its button "qa-hidden-card-b"';
 const BRAVO_CLAUSE =
   '; "Bravo plan" is inside a button that hides its children from accessibility and has no accessibilityLabel (the button at 14,262,374,90, testID "qa-hidden-card-b"), so no element carries it. Give the button an accessibilityLabel, or target "qa-hidden-card-b"';
-const NO_CHANGE =
-  '; its button "qa-hidden-card-b" was tapped once through that text and the tap showed no change';
 
 function withResult(screen: Screen, result: string): Screen {
   const swap = (text: string) => (text === 'Result: none' ? result : text);
@@ -394,19 +392,15 @@ test('B4: a bound press that no longer resolves ends the step without recovery o
   assert.deepEqual(f.modes, ['ordinary', 'presence', 'ordinary']);
 });
 
-test('B4: a press the runner refuses each time is never counted as a tap', async () => {
+test('B4: a press the runner refuses is never counted as a tap', async () => {
   const f = bravo({
     acts: [refused('RUNNER_REFUSED: test'), refused('RUNNER_REFUSED: test')],
   });
   const { outcome, reason } = await walk('1. Tap "Bravo plan"', f.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.deepEqual(f.handoffs, ['refused', 'refused']);
-  assert.match(
-    reason,
-    /; its button "qa-hidden-card-b" was not tapped: the runner refused the press: RUNNER_REFUSED: test/,
-  );
+  assert.deepEqual(f.handoffs, ['refused']);
+  assert.match(reason, /The original action was never sent/);
   assert.doesNotMatch(reason, /was tapped once/);
-  assert.ok(f.modes.length <= 8, f.modes.join());
 });
 
 for (const [name, first] of [
@@ -419,7 +413,7 @@ for (const [name, first] of [
     const { outcome, reason } = await walk('1. Tap "Bravo plan"', f.deps);
     assert.equal(outcome.block.outcome, 'fail');
     assert.deepEqual(f.handoffs, ['refused', 'executed']);
-    assert.ok(reason.includes(NO_CHANGE), reason);
+    assert.match(reason, /No effect was observed within the window/);
   });
 }
 
@@ -446,18 +440,15 @@ test('B4: a hidden-text press refused as covered gets one clearance drag and one
   );
 });
 
-test('B4: an executed tap that changes nothing is never repeated by the inner retry', async () => {
+test('B4: an executed tap that changes nothing is never repeated during late observation', async () => {
   const f = bravo();
   const { outcome, reason } = await walk('1. Tap "Bravo plan"', f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.deepEqual(f.actions, ['press @e12']);
-  assert.match(reason, /^TARGET_NOT_FOUND: /);
-  assert.ok(reason.includes(BRAVO_CLAUSE), reason);
-  assert.ok(reason.endsWith(NO_CHANGE), reason);
-  assert.ok(f.modes.length <= 8, f.modes.join());
+  assert.match(reason, /The original action may have taken effect/);
 });
 
-test('B4: an executed tap that changes nothing is never repeated after an outer recovery pass', async () => {
+test('B4: a late promo cannot trigger another action after an executed tap', async () => {
   let promoUp = false;
   const f = bravo({
     presence: (tapped) => {
@@ -478,7 +469,7 @@ test('B4: an executed tap that changes nothing is never repeated after an outer 
   const { outcome } = await walk('1. Tap "Bravo plan"', f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.actions.filter((a) => a === 'press @e12').length, 1, f.actions.join());
-  assert.ok(f.actions.includes('press @close'), f.actions.join());
+  assert.ok(!f.actions.includes('press @close'), f.actions.join());
 });
 
 test('B4: a Wait and a literal check on the hidden text fail with the cause and never tap', async () => {
@@ -537,8 +528,6 @@ const ALPHA_PASS =
   'resolved through text hidden from accessibility; tapped the unnamed button at 14,161.7,374,90';
 const ALPHA_UNBOUND =
   'TARGET_NOT_FOUND: "Alpha plan" is text hidden from accessibility; its unnamed button no longer resolved to exactly one element on the next read, so nothing was tapped';
-const ALPHA_NO_CHANGE =
-  '; its unnamed button at 14,161.7,374,90 was tapped once through that text and the tap showed no change';
 
 type CardEdit = Parameters<typeof hiddenCard>[1];
 
@@ -634,22 +623,19 @@ for (const [name, edit] of [
   });
 }
 
-test('N4: an executed tap that changes nothing is never repeated by the inner retry', async () => {
+test('N4: an executed tap that changes nothing is never repeated during late observation', async () => {
   const f = alpha();
   const { outcome, reason } = await walk('1. Tap "Alpha plan"', f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.deepEqual(f.actions, ['press @e25']);
-  assert.match(reason, /^TARGET_NOT_FOUND: /);
-  assert.ok(reason.includes(ALPHA_CLAUSE), reason);
-  assert.ok(reason.endsWith(ALPHA_NO_CHANGE), reason);
-  assert.ok(f.log.length <= 9, f.log.join());
+  assert.match(reason, /The original action may have taken effect/);
 });
 
-for (const [title, fixture, clause] of [
-  ['Alpha plan', alpha, ALPHA_NO_CHANGE],
-  ['Bravo plan', bravo, NO_CHANGE],
+for (const [title, fixture] of [
+  ['Alpha plan', alpha],
+  ['Bravo plan', bravo],
 ] as const) {
-  test(`one executed hidden-text tap stays spent when "${title}" becomes accessible before retry`, async () => {
+  test(`one executed hidden-text tap stays spent when "${title}" becomes accessible during readback`, async () => {
     const f = fixture();
     const capture = f.deps.captureScreen;
     let readsAfterTap = 0;
@@ -677,7 +663,7 @@ for (const [title, fixture, clause] of [
     assert.ok(readsAfterTap > 1);
     assert.equal(outcome.block.outcome, 'fail');
     assert.equal(f.actions.filter((action) => action.startsWith('press ')).length, 1);
-    assert.ok(reason.endsWith(clause), reason);
+    assert.match(reason, /The screen changed without proving the planned transition/);
     assert.ok(outcome.rows.every((row) => row.selector === undefined));
   });
 }
@@ -692,9 +678,28 @@ for (const [title, fixture] of [
     let readsAfterTap = 0;
     let answered = false;
     f.deps.captureScreen = async (request) => {
-      const screen = await capture(request);
+      const screen = { ...(await capture(request)), appProcessIdentifier: 123 };
       if (answered || !f.handoffs.includes('executed') || ++readsAfterTap === 1) return screen;
-      return { ...screen, front: 'dialog' };
+      return {
+        ...screen,
+        front: 'dialog',
+        elements: [
+          {
+            ...screen.elements[0],
+            ref: '@prompt-title',
+            kind: 'text',
+            label: 'Notifications',
+            offscreen: false,
+          },
+          {
+            ...screen.elements[0],
+            ref: '@allow',
+            kind: 'button',
+            label: 'Allow',
+            offscreen: false,
+          },
+        ],
+      };
     };
     f.deps.dialog = async (action) => {
       f.actions.push(`dialog ${action}`);
@@ -709,13 +714,15 @@ for (const [title, fixture] of [
     ]);
     assert.ok(
       outcome.rows.some(
-        (row) => row.outcome === 'pass' && row.reason?.includes('the next step owns it'),
+        (row) =>
+          row.outcome === 'pass' &&
+          row.reason?.includes('The planned transition appeared after the first readback.'),
       ),
     );
   });
 }
 
-test('N4: an executed tap that changes nothing is never repeated after an outer recovery pass', async () => {
+test('N4: a late promo cannot trigger another action after an executed tap', async () => {
   let promoUp = false;
   const f = alpha();
   const capture = f.deps.captureScreen;
@@ -738,7 +745,7 @@ test('N4: an executed tap that changes nothing is never repeated after an outer 
   const { outcome } = await walk('1. Tap "Alpha plan"', f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.actions.filter((a) => a.startsWith('press @e25')).length, 1, f.actions.join());
-  assert.ok(f.actions.includes('press @close'), f.actions.join());
+  assert.ok(!f.actions.includes('press @close'), f.actions.join());
 });
 
 test('N4: a press refused as covered gets one clearance, a new presence read and proof, and one more press', async () => {
@@ -797,20 +804,14 @@ test('N4: after a press refused as covered, a read that no longer proves the but
   );
 });
 
-test('N4: a press the runner refuses each time is never counted as a tap', async () => {
+test('N4: a press the runner refuses is never counted as a tap', async () => {
   const f = alpha({
     acts: [refused('RUNNER_REFUSED: test'), refused('RUNNER_REFUSED: test')],
   });
   const { outcome, reason } = await walk('1. Tap "Alpha plan"', f.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.ok(
-    f.handoffs.every((h) => h === 'refused'),
-    f.handoffs.join(),
-  );
-  assert.match(
-    reason,
-    /; its unnamed button at 14,161\.7,374,90 was not tapped: the runner refused the press: RUNNER_REFUSED: test/,
-  );
+  assert.deepEqual(f.handoffs, ['refused']);
+  assert.match(reason, /The original action was never sent/);
   assert.doesNotMatch(reason, /was tapped once/);
 });
 

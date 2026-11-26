@@ -501,7 +501,7 @@ test('Q7: after the scroll, an executed tap that changes nothing is never repeat
   assert.equal(run.outcome.block.outcome, 'fail');
   assert.equal(run.presses.length, 1, run.log.join());
   assert.equal(run.scrolls.length, 1, run.log.join());
-  assert.match(run.reason, /was tapped once through that text and the tap showed no change/);
+  assert.match(run.reason, /The original action may have taken effect/);
 });
 
 test('Q7: a runner refusal of the press after the scroll ends the step with no second scroll or press', async () => {

@@ -367,7 +367,7 @@ test('a dialog on the first step is recovered before any polling', async () => {
   assert.ok(ledger.steps.some((row) => row.outcome === 'pass' && row.implicitWaitMs !== undefined));
 });
 
-test('dialog recovery after a step dispatch never restores launch polling', async () => {
+test('a dialog after Press cannot trigger recovery or restore launch polling', async () => {
   let postPressCaptures = 0;
   let dismissed = false;
   const device = app((_t, actions) => {
@@ -380,7 +380,7 @@ test('dialog recovery after a step dispatch never restores launch polling', asyn
   });
   const capture = device.deps.captureScreen;
   device.deps.captureScreen = async (options) => {
-    assert.equal(options?.budgetMs, undefined, 'a dispatched step must never launch-poll');
+    if (!options?.pressGuardRead) assert.equal(options?.budgetMs, undefined);
     return capture(options);
   };
   device.deps.press = async (ref, context) => {
@@ -395,10 +395,10 @@ test('dialog recovery after a step dispatch never restores launch polling', asyn
     return { ok: true, proven: true, executed: true };
   };
   const ledger = await ledgerOf('1. Tap "Profile"\n', device.deps);
-  assert.equal(dismissed, true);
+  assert.equal(dismissed, false);
   assert.equal(ledger.verdict, 'FAIL');
-  assert.match(ledger.failure!.seen, /^TARGET_NOT_FOUND: /);
-  assert.deepEqual(device.actions, ['press @profile', 'dialog dismiss']);
+  assert.equal(ledger.failure?.subreason, 'press-retry-screen-changed');
+  assert.deepEqual(device.actions, ['press @profile']);
   assert.ok(ledger.steps.every((row) => row.implicitWaitMs === undefined));
 });
 
@@ -557,7 +557,7 @@ test('a late placeholder-only input fills from the polled observation', async ()
   assert.ok(ledger.steps.find((row) => row.outcome === 'pass')!.implicitWaitMs! >= 3_000);
 });
 
-test('an ordinary retry cannot replenish the consumed launch allowance', async () => {
+test('post-Press observation cannot replenish the launch allowance', async () => {
   let refused = false;
   let refusedAt = 0;
   let pollStartedAt: number | undefined;
@@ -568,7 +568,7 @@ test('an ordinary retry cannot replenish the consumed launch allowance', async (
   });
   const capture = device.deps.captureScreen;
   device.deps.captureScreen = async (options) => {
-    if (options?.budgetMs !== undefined) {
+    if (options?.budgetMs !== undefined && !options.pressGuardRead) {
       assert.equal(refused, false, 'a refusal must not start another launch poll');
       pollStartedAt ??= device.clock();
       pollCaptures += 1;
@@ -586,18 +586,17 @@ test('an ordinary retry cannot replenish the consumed launch allowance', async (
   const ledger = await ledgerOf('1. Tap "Profile"\n', device.deps);
   assert.equal(refused, true);
   assert.equal(ledger.verdict, 'FAIL');
-  assert.match(ledger.failure!.seen, /^TARGET_NOT_FOUND: /);
-  assert.ok(ledger.steps.some((row) => row.outcome === 'retry'));
-  assert.equal(failingRow(ledger).attempt, 2);
+  assert.match(ledger.failure!.seen, /The original action was never sent/);
+  assert.equal(failingRow(ledger).attempt, 1);
   assert.ok(pollsBeforeRefusal > 1);
   assert.equal(pollCaptures, pollsBeforeRefusal);
   assert.ok(pollStartedAt !== undefined);
   for (const row of ledger.steps) assert.equal(row.implicitWaitMs, refusedAt - pollStartedAt);
-  assert.ok(device.clock() < refusedAt + 1_000);
+  assert.ok(device.clock() < refusedAt + 4_200);
   assert.deepEqual(device.actions, []);
 });
 
-test('a late target keeps the same retry budget as one present at once', async () => {
+test('a late target and an immediate target each get one Press request', async () => {
   // Recovery is configured (hideDevMenu), so its no-op probe runs before the poll.
   for (const at of [0, 4_000]) {
     let refused = 0;
@@ -612,9 +611,9 @@ test('a late target keeps the same retry budget as one present at once', async (
       return press(ref, context);
     };
     const ledger = await ledgerOf('1. Tap "Profile"\n', device.deps);
-    assert.equal(ledger.verdict, 'PASS', `target at ${at}: ${JSON.stringify(ledger.failure)}`);
+    assert.equal(ledger.verdict, 'FAIL', `target at ${at}: ${JSON.stringify(ledger.failure)}`);
     assert.equal(refused, 1, `target at ${at}`);
-    assert.deepEqual(device.actions, ['press @profile'], `target at ${at}`);
+    assert.deepEqual(device.actions, [], `target at ${at}`);
   }
 });
 

@@ -352,6 +352,25 @@ test('an overlay first seen by recovery passes the press without retrying it', a
   assert.deepEqual(f.actions, ['@next', '@dismiss']);
 });
 
+test('an incomplete guard read does not consume the first admitted RedBox recovery', async () => {
+  const before = screen([element('@next', 'Next')]);
+  const f = fixture({ before });
+  const capture = f.deps.captureScreen;
+  let readbacks = 0;
+  f.deps.captureScreen = async (options) => {
+    if (f.actions.at(-1) !== '@next') return capture(options);
+    if (readbacks++ === 0) return before;
+    if (readbacks === 2) throw new NativeSnapshotIncomplete(0, ['unattested']);
+    return capture(options);
+  };
+  const result = await walkBlock(plan()[0], f.deps, 0, [], undefined, undefined, {
+    singleAttempt: true,
+  });
+  assert.equal(result.block.outcome, 'pass');
+  assert.deepEqual(f.actions, ['@next', '@dismiss']);
+  assert.equal(result.rows[0].devError?.afterAction, true);
+});
+
 for (const repeatedTarget of [false, true]) {
   test(`a delayed overlay before attempt two never reuses the prior act (${repeatedTarget})`, async () => {
     const before = screen([element('@next', 'Next')]);

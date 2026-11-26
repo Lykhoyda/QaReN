@@ -98,17 +98,28 @@ function block(markdown: string): Block {
   return parsed.blocks[0];
 }
 
-test('an unchanged screen with a dialog in front recovers once and the retry passes', async () => {
-  const covered = screen(['Settings'], 'dialog');
-  const f = fake([
-    covered,
-    covered,
-    covered,
-    covered,
-    covered,
-    screen(['Settings']),
-    screen(['Profile']),
-  ]);
+function dialogBeforePress(destination: Screen, afterPress = destination) {
+  const f = fake([]);
+  let front = screen(['Allow'], 'dialog');
+  f.deps.captureScreen = async () => {
+    f.calls.push('capture');
+    return front;
+  };
+  const dismiss = f.deps.dialog;
+  f.deps.dialog = async (...args) => {
+    front = destination;
+    return dismiss(...args);
+  };
+  const press = f.deps.press;
+  f.deps.press = async (...args) => {
+    front = afterPress;
+    return press(...args);
+  };
+  return f;
+}
+
+test('a dialog covering the target is dismissed before the first Press', async () => {
+  const f = dialogBeforePress(screen(['Settings']), screen(['Profile']));
   const ledger = await runPlan([block('1. Tap "Settings"\n')], f.deps);
   assert.equal(ledger.verdict, 'PASS');
   assert.equal(ledger.recoveries, 1);
@@ -116,7 +127,7 @@ test('an unchanged screen with a dialog in front recovers once and the retry pas
   assert.equal(ledger.llmTurns, 0);
   assert.deepEqual(
     f.calls.filter((c) => !c.startsWith('capture')),
-    ['press @e0', 'press @e0', 'dialog dismiss', 'press @e0'],
+    ['dialog dismiss', 'press @e0'],
   );
   const recovered = ledger.steps.find((r) => r.reason?.includes('recovered: dialog'));
   assert.equal(recovered?.outcome, 'retry');
@@ -125,7 +136,6 @@ test('an unchanged screen with a dialog in front recovers once and the retry pas
     f.rows.map((row) => [row.attempt, row.outcome]),
     [
       [1, 'retry'],
-      [2, 'retry'],
       [1, 'pass'],
     ],
   );
@@ -134,18 +144,13 @@ test('an unchanged screen with a dialog in front recovers once and the retry pas
 });
 
 test('each line announces a value-free start before its rows, under the same operation', async () => {
-  const covered = screen(['Settings'], 'dialog');
   const events: string[] = [];
   const starts: StepStart[] = [];
-  const f = fake(
-    [covered, covered, covered, covered, covered, screen(['Settings']), screen(['Profile'])],
-    {
-      start: (start) => {
-        starts.push(start);
-        events.push(`start ${start.operationId}`);
-      },
-    },
-  );
+  const f = dialogBeforePress(screen(['Settings']), screen(['Profile']));
+  f.deps.start = (start) => {
+    starts.push(start);
+    events.push(`start ${start.operationId}`);
+  };
   const row = f.deps.row;
   f.deps.row = (r) => {
     events.push(`${r.outcome} ${r.operationId}`);
@@ -170,18 +175,17 @@ test('each line announces a value-free start before its rows, under the same ope
 });
 
 test('a second failure of the same item fails without a second recovery', async () => {
-  const f = fake([screen(['Settings'], 'dialog')]);
+  const f = dialogBeforePress(screen(['Settings']));
   const ledger = await runPlan([block('1. Tap "Settings"\n')], f.deps);
   assert.equal(ledger.verdict, 'FAIL');
   assert.equal(ledger.recoveries, 1);
   assert.equal(f.calls.filter((c) => c === 'dialog dismiss').length, 1);
-  assert.match(ledger.failure?.seen ?? '', /did not change after recovery/);
-  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 3);
+  assert.match(ledger.failure?.seen ?? '', /The original action may have taken effect/);
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
   assert.deepEqual(
     f.rows.map((row) => [row.attempt, row.outcome]),
     [
       [1, 'retry'],
-      [2, 'retry'],
       [1, 'fail'],
     ],
   );
@@ -605,8 +609,7 @@ test('a stored login block becomes exact-target items', () => {
 });
 
 test('a selector miss after a replay recovery is terminal, not a second re-walk', async () => {
-  const covered = screen(['Settings'], 'dialog', { Settings: 'settings' });
-  const f = fake([covered, covered, covered, covered, covered, screen(['Other'])]);
+  const f = dialogBeforePress(screen(['Other']));
   const replayed = block('1. Tap "settings"\n');
   const exact: Block = {
     ...replayed,
@@ -749,7 +752,7 @@ for (const [plan, method] of [
   ['1. Dismiss the dialog\n', 'dialog'],
   ['1. Type "hello" into "Settings"\n', 'fill'],
 ] as const) {
-  test(`recovery permits only one additional dispatch: ${plan.trim()}`, async () => {
+  test(`dispatch allowance after an unproven result: ${plan.trim()}`, async () => {
     const covered = screen(['Settings'], 'dev-menu');
     if (method === 'fill') {
       covered.elements[0].kind = 'input';
@@ -768,6 +771,15 @@ for (const [plan, method] of [
     });
     const outcome = await walkBlock(block(plan), f.deps);
     assert.equal(outcome.block.outcome, 'fail');
+    if (method === 'press') {
+      assert.equal(outcome.recoveries, undefined);
+      assert.equal(dispatches, 1);
+      assert.match(
+        renderReason(outcome.failure?.seen ?? '', (text) => text),
+        /The original action was never sent/,
+      );
+      return;
+    }
     assert.equal(outcome.recoveries, 1);
     assert.equal(dispatches, 3);
     assert.match(
@@ -882,7 +894,7 @@ test('N1: an uncertain press inside the login replay names its reason on the out
 });
 
 test('N3: an uncertain recovery-owned dialog send names its reason', async () => {
-  const covered = screen(['Settings'], 'dialog');
+  const covered = screen(['Allow'], 'dialog');
   const f = fake([covered]);
   f.deps.dialog = async (action, context) => {
     f.calls.push(`dialog ${action}`);

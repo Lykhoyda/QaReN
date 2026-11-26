@@ -1630,7 +1630,6 @@ async function walkBlockScoped(
       // A scroll step's momentum outlives the step and its block; the next targeted dispatch settles first.
       if (item.kind === 'scroll') sequence.momentum = true;
       const result = await send(context);
-      if (plannedPress && pressDisposition(result) !== 'none') pressMayHaveActed = true;
       observeRowSettle(result);
       if (kind === 'press' && result.liveCheck) {
         const counts = (guardRow(item.line).inconclusivePresses ??= {});
@@ -1638,6 +1637,7 @@ async function walkBlockScoped(
       }
       if (result.entryMismatch) fillMismatch = result.entryMismatch;
       context.assertComplete();
+      if (plannedPress && pressDisposition(result) !== 'none') pressMayHaveActed = true;
       const resultCode = result.error?.split(':', 1)[0];
       diagnostic(
         item,
@@ -4161,7 +4161,7 @@ async function walkBlockScoped(
         if (observation.screen.front === 'dev-redbox') {
           evidence.resetRead();
           if (
-            readsStarted === 1 &&
+            readsAdmitted === 1 &&
             maxAttempts === 1 &&
             pressMayHaveActed &&
             mutationStarted &&
@@ -5076,11 +5076,6 @@ async function walkBlockScoped(
           let act: ActResult;
           for (;;) {
             try {
-              if (item.kind === 'press' && hiddenTap?.act && !hiddenTap.element)
-                throw new ResolutionError({
-                  refuse: 'TARGET_NOT_FOUND',
-                  reason: `"${item.target.quoted}" did not change the screen after one tap`,
-                });
               usable(before, item);
               if (item.kind === 'press' || item.kind === 'fill') {
                 if (item.target.quoted === undefined) resolvedBy = 'jev';
@@ -7426,12 +7421,8 @@ export async function runPlan(
     const render = (reason: Reason): string => {
       // Late observations cannot rewrite closed Press explanations. Apply the declared input mask
       // when the run has a runtime input namespace, as the wire and receipt do.
-      if (
-        typeof reason === 'string' &&
-        isFixedPressRetryDetail(reason) &&
-        !currentInputs()?.hasInputs
-      )
-        return reason;
+      if (typeof reason === 'string' && isFixedPressRetryDetail(reason))
+        return currentInputs()?.redactDeclared(reason) ?? reason;
       return renderReason(
         reason,
         (text) => privacy.redact(text),

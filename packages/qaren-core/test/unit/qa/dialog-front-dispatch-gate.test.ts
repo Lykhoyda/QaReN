@@ -149,18 +149,23 @@ for (const [plan, verb] of [
   });
 }
 
-test('a retry that finds the prompt its step raised passes on that late effect when the next step answers it', async () => {
-  const remind = screen(['Remind']);
+test('two positively bound prompt reads hand off to the authored Dialog', async () => {
+  const remind = { ...screen(['Remind']), appProcessIdentifier: 123 };
   const set = screen(['Reminder set']);
-  const prompt = screen(['Allow'], 'dialog');
+  const prompt = { ...screen(['Allow']), front: 'dialog' as const, appProcessIdentifier: 123 };
+  prompt.elements.unshift({
+    ...prompt.elements[0],
+    ref: '@prompt-title',
+    kind: 'text',
+    label: 'Notifications',
+  });
   const f = fake([remind, remind, prompt, prompt, set, set]);
   const outcome = await walkBlock(block('1. Tap "Remind"\n2. Accept the system dialog\n'), f.deps);
   assert.deepEqual(sent(f.calls), ['press @e0', 'dialog accept']);
   assert.deepEqual(
     f.rows.map((row) => [row.line, row.attempt, row.outcome]),
     [
-      [1, 1, 'retry'],
-      [1, 2, 'pass'],
+      [1, 1, 'pass'],
       [2, 1, 'pass'],
     ],
   );
@@ -168,14 +173,15 @@ test('a retry that finds the prompt its step raised passes on that late effect w
   assert.equal(outcome.block.outcome, 'pass');
 });
 
-test('a retry that finds a dialog with no dialog step next declines it by default and retries', async () => {
+test('an unplanned late dialog stops the original Press', async () => {
   const remind = screen(['Remind']);
   const settings = screen(['Settings']);
   const prompt = screen(['Allow'], 'dialog');
   const f = fake([remind, remind, prompt, prompt, remind, settings, settings, screen(['Profile'])]);
   const outcome = await walkBlock(block('1. Tap "Remind"\n2. Tap "Settings"\n'), f.deps);
-  assert.deepEqual(sent(f.calls), ['press @e0', 'dialog dismiss', 'press @e0', 'press @e0']);
-  assert.equal(outcome.recoveries, 1);
+  assert.deepEqual(sent(f.calls), ['press @e0']);
+  assert.equal(outcome.recoveries, undefined);
+  assert.equal(outcome.failure?.subreason, 'press-retry-screen-changed');
 });
 
 test('a first attempt under a dialog leaves it to the next dialog step and fails', async () => {

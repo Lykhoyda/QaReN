@@ -258,7 +258,7 @@ test('withheld screenshots, refreshes and automatic replays are explicit without
     { ok: true, proven: false },
   );
   replay.deps.timing = (e) => events.push(e);
-  await runPlan(parsePlan('1. Tap "Save"').blocks!, replay.deps);
+  await runPlan(parsePlan('1. Scroll down').blocks!, replay.deps);
   assert.equal(events.filter((e) => e.stage === 'replay').length, 1);
 });
 
