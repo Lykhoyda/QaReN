@@ -1588,7 +1588,7 @@ test('a replayed step whose declared target names an opt-in control withholds th
   assert.equal(plain.declinedOptIns?.[0]?.afterPlannedPress, true);
 });
 
-test('an unplanned system permission alert stops on the planned tap', async () => {
+test('a system permission alert after a planned tap is still declined by the dialog branch', async () => {
   const f = app(opener(), {
     '@open': () => ({
       ...screen([element('@deny', "Don't Allow"), element('@allow', 'Allow')]),
@@ -1601,8 +1601,7 @@ test('an unplanned system permission alert stops on the planned tap', async () =
     return dialog(action, context);
   };
   const result = await run('1. Tap "Open"\n2. Wait for "Ready" to appear', f);
-  assert.equal(result.verdict, 'FAIL');
-  assert.equal(result.failure?.subreason, 'press-retry-screen-changed');
-  assert.deepEqual(f.actions, ['press @open']);
+  assert.equal(result.verdict, 'PASS');
+  assert.deepEqual(f.actions, ['press @open', 'dialog dismiss']);
   assert.equal(result.declinedOptIns, undefined);
 });
