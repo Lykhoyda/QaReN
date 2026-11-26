@@ -17,6 +17,19 @@
     "*.yml",
     "*.yaml",
     "*.toml",
-    "*.html"
+    "*.html",
+    ".agent/**",
+    ".agents/**",
+    ".claude/**",
+    ".codex/**",
+    ".continue/**",
+    ".cursor/**",
+    ".gemini/**",
+    ".opencode/**",
+    ".pi/**",
+    ".roo/**",
+    ".windsurf/**",
+    ".codex-pair/**",
+    "tools/oxlint/anti-slop/**"
   ]
 }

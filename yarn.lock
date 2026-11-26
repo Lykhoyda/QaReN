@@ -761,6 +761,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@oxlint/plugins@npm:1.78.0":
+  version: 1.78.0
+  resolution: "@oxlint/plugins@npm:1.78.0"
+  checksum: 10/52f6e591376f227b7695f79a767e41d14c496c5b648e61518d0063235a5ea720c50049c00ee0c8b5b2ad2f9444e5ce0f47a694bdc17ba2089429ff71691da870
+  languageName: node
+  linkType: hard
+
 "@qaren/design@workspace:packages/qaren-design":
   version: 0.0.0-use.local
   resolution: "@qaren/design@workspace:packages/qaren-design"
@@ -1785,6 +1792,7 @@ __metadata:
   resolution: "qaren-workspace@workspace:."
   dependencies:
     "@changesets/cli": "npm:^2.31.1"
+    "@oxlint/plugins": "npm:1.78.0"
     esbuild: "npm:^0.28.2"
     husky: "npm:^9.1.7"
     oxfmt: "npm:0.55.0"
