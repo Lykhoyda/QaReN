@@ -17,9 +17,10 @@ test('the published drafting instructions put the three edge cases in priority o
 
 test('saved plan selection retains requested scope and drafts missing journeys outside the plan book', () => {
   const selection = skill.split('## Saved plans\n')[1]?.split('\n## ')[0] ?? '';
-  assert.match(selection, /explicitly selected plan/i);
-  assert.match(selection, /smoke-only/i);
-  assert.match(selection, /exact rerun/i);
+  assert.match(
+    selection,
+    /explicitly selected plan[^.]*smoke-only[^.]*exact rerun[^.]*keep the requested scope/i,
+  );
   assert.match(selection, /compare[^.]*steps[^.]*coverage/i);
   assert.match(selection, /missing journeys[^.]*temporary[^.]*outside `\.qaren\/plans\/`/i);
 });
