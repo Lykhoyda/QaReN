@@ -8,7 +8,7 @@ skills tell it what to run; none of them drives a device directly.
 
 | Ask your agent         | What it does                                                                                                                                          |
 | ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| "QA this feature"      | Picks a saved plan or writes one from the feature's screens in source, then runs it on your working tree.                                             |
+| "QA this feature"      | Checks a matching saved plan against the feature's screens in source, writes a temporary plan for the journeys it lacks, then runs them on your working tree. |
 | "QA PR #12"            | Runs the plan at the pull request's head. It posts the result to the pull request only when you ask, after you confirm the plan and recording may be posted. |
 | "Follow the run"       | Follows the latest run live.                                                                                                                          |
 | "Report a QaReN bug"   | Drafts a sanitized GitHub issue about QaReN, shows it in full, and files it only after you confirm.                                                    |

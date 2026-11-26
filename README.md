@@ -144,8 +144,8 @@ PATH linking and existing-command protection.
 
 Once setup has passed, ask your agent in plain words:
 
-- "QA this feature": it picks a saved plan or writes one from the feature's screens in
-  source, then runs it on your working tree.
+- "QA this feature": it checks a matching saved plan against the feature's screens in
+  source, writes a temporary plan for the journeys it lacks, then runs them on your working tree.
 - "QA PR #12": it runs the plan at the pull request's head, and posts the result to the
   pull request only when you ask, after you confirm the plan and recording may be posted.
 - "Follow the run": it follows the latest run live.
