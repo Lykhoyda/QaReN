@@ -98,6 +98,7 @@ import {
   scrollUntilDirection,
   targetEvidence,
   aggregateTargetVisible,
+  duplicateWaitSuggestion,
   targetNeedsPresence,
   presenceMiss,
   hiddenInPlaceElement,
@@ -912,7 +913,7 @@ async function walkBlockScoped(
   let latestObservation = 0;
   let itemObservationStart = 0;
   // When each screen was captured, and the observation the last device action was dispatched on.
-  const captured = new WeakMap<Screen, { at: number; id: number }>();
+  const captured = new WeakMap<Screen, { at: number; id: number; overlayHits?: OverlayHits }>();
   // The newest observation that passed admission, recovery's captures included.
   let newest: Screen | undefined;
   // The newest admitted observation of the current line only; `newest` outlives the line.
@@ -2147,6 +2148,7 @@ async function walkBlockScoped(
     devError?: LedgerRow['devError'],
     // A Wait's definite stable absence: only then is the reported read checked for an element hidden in place.
     stableWaitMiss = false,
+    duplicateWaitMiss = false,
   ): WalkOutcome => {
     const notes = [
       ...new Set(
@@ -2229,6 +2231,17 @@ async function walkBlockScoped(
             exactIdentities(last, target, item.kind).filter(
               ({ element }) => !element.offscreen && !element.ref.startsWith('react:'),
             ).length > 1;
+          const duplicate =
+            duplicateWaitMiss &&
+            !miss &&
+            item.kind === 'wait' &&
+            !item.precondition &&
+            targetCode === 'TARGET_NOT_FOUND' &&
+            last.front === 'app' &&
+            interruptions.get(item.line)?.provenance !== 'ownership' &&
+            lastReason === 'present-but-unavailable'
+              ? duplicateWaitSuggestion(target, last, seen.overlayHits)
+              : undefined;
           const subreason = ambiguous ? 'ambiguous' : lastReason;
           // Android: the read failure.screen shows (last), with its own 'absent' diagnosis, carries the
           // hidden-in-place words and advice; they never describe another read.
@@ -2243,9 +2256,10 @@ async function walkBlockScoped(
           }
           lastScreen = {
             screen: now,
-            suggestion:
-              // The hidden-in-place advice describes the same read as failure.screen.
-              hiddenInPlace
+            suggestion: duplicate
+              ? redact(duplicate)
+              : // The hidden-in-place advice describes the same read as failure.screen.
+                hiddenInPlace
                 ? hiddenInPlaceSuggestion(hiddenInPlaceNeed(item, hiddenInPlace, last), item.line)
                 : // A more specific diagnosis, such as a placeholder coverage gap, keeps its own advice.
                   targetCode === LAUNCH_MISS &&
@@ -2268,7 +2282,7 @@ async function walkBlockScoped(
                       item.kind,
                       deps.platform === 'ios',
                     ),
-            subreason,
+            subreason: duplicate ? 'duplicate-id' : subreason,
           };
         }
       } catch {
@@ -2537,6 +2551,8 @@ async function walkBlockScoped(
       ? await readHitWithReason(item, observation, element, deadline)
       : { result: 'unavailable', reason: 'not-identifiable' };
     hits.set(element, result);
+    const stamp = captured.get(observation.screen);
+    if (stamp?.id === observation.id) stamp.overlayHits = hits;
     let row = overlayRows.get(item.line);
     if (row?.observation !== observation.id) {
       row = { observation: observation.id, checks: [] };
@@ -4512,14 +4528,14 @@ async function walkBlockScoped(
             if (recovering === 'retry') continue attempts;
             if (recovering) return recovering;
             if (unchanged) {
-              const miss =
-                !reactOnly &&
-                presenceMiss(item.target, observation.screen, observation.overlayHits);
+              const miss = reactOnly
+                ? undefined
+                : presenceMiss(item.target, observation.screen, observation.overlayHits);
               return judged(
                 failed(
                   item,
                   1,
-                  miss ? `${reason}; ${miss}` : reason,
+                  miss ? `${reason}; ${miss.reason}` : reason,
                   observation.screen,
                   await shoot(item),
                   undefined,
@@ -4527,6 +4543,7 @@ async function walkBlockScoped(
                   'TARGET_NOT_FOUND',
                   undefined,
                   !reactOnly,
+                  miss?.duplicateId,
                 ),
                 observation.screen,
               );

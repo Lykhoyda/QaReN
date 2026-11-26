@@ -329,6 +329,7 @@ pub enum RecoveryReason {
     DriverExited,
     StorageFailed,
     PreviousPlanPress,
+    DuplicateWaitTarget,
     ActionOutcomeUncertain,
 }
 
@@ -445,6 +446,7 @@ impl From<RecoveryReason> for Recovery {
             RunCancelled => ("re-run when ready; nothing resumes automatically", None, cleanup),
             ForeignAdmissionUnresolved => return Self::foreign_admission(),
             PreviousPlanPress => return Self::previous_plan_press(),
+            DuplicateWaitTarget => return Self::duplicate_wait_target(),
             ActionOutcomeUncertain => return Self::action_uncertain(None),
             BuildTimeLimit => return Self::build_time_limit("run again"),
             _ => return Self::ios_runner(reason, "<run-id>", false, false, false),
@@ -604,11 +606,10 @@ impl Recovery {
         }
     }
 
-    // A screen observed after the plan's own press: inspect it first; no reset is indicated.
-    fn previous_plan_press() -> Self {
+    fn inspect_last_screen(reason: RecoveryReason, ladder: Vec<RecoveryRung>) -> Self {
         Self {
             key: None,
-            reason: RecoveryReason::PreviousPlanPress,
+            reason,
             next_rung: None,
             action: RecoveryAction::InspectLastObservedScreen,
             automatic: false,
@@ -616,14 +617,35 @@ impl Recovery {
             requires_user_ok: false,
             own_cleanup_required: false,
             own_run_id: None,
-            ladder: vec![
+            ladder,
+        }
+    }
+
+    // A screen observed after the plan's own press: inspect it first; no reset is indicated.
+    fn previous_plan_press() -> Self {
+        Self::inspect_last_screen(
+            RecoveryReason::PreviousPlanPress,
+            vec![
                 RecoveryRung::step(1, false, false, "inspect the last observed screen before retrying"),
                 RecoveryRung::step(2, false, false, "no restart of the app, Metro or the runner is indicated by this observation"),
                 RecoveryRung::step(3, false, false, "no device restart is indicated by this observation"),
                 RecoveryRung::step(4, false, false, "no native rebuild is indicated by this observation"),
                 RecoveryRung::step(5, false, false, "no cleanup or fresh prepare is indicated by this observation"),
             ],
-        }
+        )
+    }
+
+    fn duplicate_wait_target() -> Self {
+        Self::inspect_last_screen(
+            RecoveryReason::DuplicateWaitTarget,
+            vec![
+                RecoveryRung::step(1, false, false, "choose a unique target before re-running the plan"),
+                RecoveryRung::step(2, false, false, "restarting the app, Metro or the runner cannot disambiguate a shared identifier"),
+                RecoveryRung::step(3, false, false, "no device restart is indicated by the shared identifier"),
+                RecoveryRung::step(4, false, false, "no native rebuild is indicated by the shared identifier"),
+                RecoveryRung::step(5, false, false, "the shared identifier does not call for cleanup and a fresh prepare"),
+            ],
+        )
     }
 
     // An uncertain step selects no rung; the review is the action. `owed_by` names the run when it still owes its own cleanup.
@@ -1006,9 +1028,8 @@ mod runner_rung_tests {
             PersistenceFailed, IdentityUnavailable, ForeignAdmissionUnresolved, CandidateDrifted, RunCancelled,
             GracefulPending, IdentityMismatch, IdentityUnknown, CommandIneligible, LeaseUnproven, OwnerUnproven,
             CoreUnproven, InventoryUnknown, DriverSurvived, GroupRemaining, HostRemaining, HostCleanupFailed,
-            DriverExited, StorageFailed, PreviousPlanPress,
+            DriverExited, StorageFailed, PreviousPlanPress, DuplicateWaitTarget,
         ];
-        // The 25 reasons at the pin (the build adds ActionOutcomeUncertain, which never reaches ios_runner).
         for reason in every {
             // The arguments the runner projection passes: needs_user_ok is always false there (cleanup.rs project_runner_recovery).
             for (destroys, borrowed) in [(false, false), (true, false), (false, true), (true, true)] {
