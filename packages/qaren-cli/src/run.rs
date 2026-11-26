@@ -4728,6 +4728,103 @@ mod last_screen_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    // C1 exercises the core failure handoff and durable recovery.
+    #[test]
+    fn duplicate_wait_diagnostic_has_inspect_recovery_and_keeps_owner_precedence() {
+        let root = runs_root("duplicate-wait");
+        let suggestion = "Multiple captured elements carry the quoted testID (other at 0,0,402,874; other at 0,116,402,758). Give the intended view a unique testID and quote it in the Wait, or quote exact visible text that identifies it on this screen.";
+        let seen: core::LedgerFailure = serde_json::from_value(json!({
+            "step": 2, "seen": "target did not appear",
+            "screen": screen(), "subreason": "duplicate-id", "suggestion": suggestion,
+        }))
+        .unwrap();
+        let current = record("check-20261030T082000Z", "abc");
+        let resolve = || plan_step_failure(Some(&seen));
+        let fail = walk_failure(None, &resolve, Some(&seen), &root, &current, false);
+        assert_eq!(fail.code, FailureCode::PlanStepFailed);
+        assert_eq!(fail.step, Some(2));
+        assert_eq!(fail.subreason.as_deref(), Some("duplicate-id"));
+        assert!(fail.screen.is_some());
+        assert_eq!(fail.next_action.as_str(), suggestion);
+        let wire = serde_json::to_value(&fail).unwrap();
+        let recovery = &wire["recovery"];
+        assert_eq!(recovery["reason"], "duplicate_wait_target");
+        assert_eq!(recovery["action"], "inspect_last_observed_screen");
+        assert_eq!(recovery.get("next_rung"), Some(&serde_json::Value::Null));
+        for flag in [
+            "automatic",
+            "destroys_state",
+            "requires_user_ok",
+            "own_cleanup_required",
+        ] {
+            assert_eq!(recovery[flag], false);
+        }
+        let rungs = recovery["ladder"].as_array().unwrap();
+        assert_eq!(rungs.len(), 5);
+        for (index, rung) in rungs.iter().enumerate() {
+            assert_eq!(rung["rung"], index + 1);
+            for flag in ["applicable", "destroys_state", "requires_user_ok"] {
+                assert_eq!(rung[flag], false);
+            }
+        }
+        let inputs =
+            std::sync::Arc::new(crate::redact::InputValues::from_values(vec!["402".into()]));
+        let durable =
+            crate::redact::with_input_scope(inputs, || crate::redact::durable_json(&fail)).unwrap();
+        let durable: serde_json::Value = serde_json::from_str(&durable).unwrap();
+        let advice = durable["suggestion"].as_str().unwrap();
+        assert!(!advice.contains("402"));
+        assert!(advice.contains("Give the intended view a unique testID"));
+        assert_eq!(durable["subreason"], "duplicate-id");
+        assert_eq!(durable["recovery"]["reason"], "duplicate_wait_target");
+        let cli = Failure::new("verify", FailureCode::CandidateDrifted, "drifted", "re-run");
+        let fail = walk_failure(Some(cli), &resolve, Some(&seen), &root, &current, false);
+        assert_eq!(fail.code, FailureCode::CandidateDrifted);
+        assert!(fail.recovery.is_none());
+        assert_eq!(fail.next_action.as_str(), "re-run");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    // C2 exercises receipt projection with a run-owned cleanup failure.
+    #[test]
+    fn duplicate_wait_diagnostic_preserves_suggestion_when_run_owns_cleanup() {
+        let root = runs_root("duplicate-wait-cleanup");
+        let suggestion = "Give the intended view a unique testID and quote it in the Wait.";
+        let mut seen = ledger_failure(screen());
+        seen.subreason = Some("duplicate-id".into());
+        seen.suggestion = Some(OutputText::from_output(suggestion));
+        let mut current = record("check-1", "abc");
+        current.resources.runner_cleanup_cause = Some(RecoveryReason::StorageFailed);
+        let failure = walk_failure(
+            None,
+            &|| plan_step_failure(Some(&seen)),
+            Some(&seen),
+            &root,
+            &current,
+            false,
+        );
+        let mut receipt = Receipt::new(
+            "check",
+            &current.run_id,
+            ReceiptResult::Fail,
+            "cleaned",
+            "2026-10-30T08:15:00Z".into(),
+        );
+        receipt.recovery = failure.build_recovery().cloned();
+        receipt.failure = Some(failure);
+        crate::commands::cleanup::project_runner_recovery(&mut receipt, &current);
+        let json = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(json["recovery"]["reason"], "storage_failed");
+        assert_eq!(json["failure"]["recovery"], json["recovery"]);
+        assert_eq!(json["failure"]["suggestion"], suggestion);
+        assert_eq!(json["failure"]["subreason"], "duplicate-id");
+        let action = json["next_action"].as_str().unwrap();
+        assert!(action.contains("qaren cleanup check-1 --json"));
+        assert!(action.ends_with(suggestion));
+        assert_eq!(json["failure"]["next_action"], action);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn a_withheld_dismissal_after_a_planned_press_points_at_the_last_screen_on_every_run() {
         let root = runs_root("repeat-previous-press");
