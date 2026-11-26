@@ -1759,18 +1759,26 @@ export function targetOnScreen(
   );
 }
 
+interface PresenceMiss {
+  reason: string;
+  duplicateId?: true;
+}
+
 // Why a quoted wait saw no match, from identifiers and frames only, never labels or text.
 export function presenceMiss(
   target: Target,
   screen: Screen,
   hits?: OverlayHits,
-): string | undefined {
+): PresenceMiss | undefined {
   const quoted = target.quoted;
   if (quoted === undefined || target.exact === 'text') return undefined;
   const ids = idIdentities(quoted, screen).map(({ element }) => element);
   const list = (elements: Element[]) => elements.map(describeCandidate).join('; ');
   if (ids.length > 1)
-    return `${ids.length} elements carry the identifier "${quoted}": ${list(ids)}`;
+    return {
+      reason: `${ids.length} elements carry the identifier "${quoted}": ${list(ids)}`,
+      duplicateId: true,
+    };
   if (ids.length === 1) {
     const [only] = ids;
     let branch = 'none';
@@ -1782,9 +1790,11 @@ export function presenceMiss(
         : presenceCovered(only, screen, hits)
           ? `has its centre covered (${branch})`
           : undefined;
-    return why && `the element carrying the identifier "${quoted}" ${why}: ${list(ids)}`;
+    return why
+      ? { reason: `the element carrying the identifier "${quoted}" ${why}: ${list(ids)}` }
+      : undefined;
   }
-  return `no captured element carries the identifier "${quoted}"`;
+  return { reason: `no captured element carries the identifier "${quoted}"` };
 }
 
 // Android: the one native identity carrying a quoted id that this read reports as not visible to the user while
@@ -1974,6 +1984,34 @@ export function aggregateTargetVisible(
     !keyboardCoversElement(element) &&
     !scrollTargetCovered(element, screen, hits)
   );
+}
+
+export function duplicateWaitSuggestion(
+  target: Target,
+  screen: Screen,
+  hits?: OverlayHits,
+): string | undefined {
+  if (target.quoted === undefined || target.exact !== undefined) return undefined;
+  const ids = idIdentities(target.quoted, screen);
+  if (ids.length < 2 || targetEvidence(target, screen, hits) !== 'fail') return undefined;
+  // A newer read may carry separate visibility evidence or contradictory aggregate evidence.
+  try {
+    if (aggregateTargetVisible(target, screen, hits)) return undefined;
+  } catch (error) {
+    if (!(error instanceof ResolutionError) || error.code !== 'TARGET_AMBIGUOUS') throw error;
+    return undefined;
+  }
+  const locations = ids.slice(0, 3).map(({ element }) => {
+    const frame = elementFrame(element);
+    return frame &&
+      frame.width > 0 &&
+      frame.height > 0 &&
+      Object.values(frame).every(Number.isFinite)
+      ? `${element.kind} at ${frame.x},${frame.y},${frame.width},${frame.height}`
+      : `${element.kind} (frame unavailable)`;
+  });
+  if (ids.length > locations.length) locations.push('additional captured matches');
+  return `Multiple captured elements carry the quoted testID (${locations.join('; ')}). Give the intended view a unique testID and quote it in the Wait, or quote exact visible text that identifies it on this screen.`;
 }
 
 export function targetVisible(target: Target, screen: Screen, hits?: OverlayHits): boolean {

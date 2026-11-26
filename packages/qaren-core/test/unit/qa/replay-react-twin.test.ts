@@ -113,7 +113,7 @@ test('a quoted wait passed by visible text saves the text, not a covered native 
 test('a missed quoted wait says whether its id was absent or rejected', () => {
   const quoted = (id: string) => ({ quoted: id, phrase: id });
   assert.match(
-    presenceMiss(quoted('close'), joined([], [button('close')]))!,
+    presenceMiss(quoted('close'), joined([], [button('close')]))!.reason,
     /^the element carrying the identifier "close" is in the React tree but not the native capture: button id=close /,
   );
   const shared = joined(
@@ -123,12 +123,12 @@ test('a missed quoted wait says whether its id was absent or rejected', () => {
     ],
     [],
   );
-  assert.match(
-    presenceMiss(quoted('close'), shared)!,
-    /^2 elements carry the identifier "close": /,
-  );
+  const duplicate = presenceMiss(quoted('close'), shared);
+  assert.equal(duplicate?.duplicateId, true);
+  assert.match(duplicate.reason, /^2 elements carry the identifier "close": /);
   assert.equal(
-    presenceMiss(quoted('profile_button'), joined([{ id: 'header-profileButton', y: 40 }], [])),
+    presenceMiss(quoted('profile_button'), joined([{ id: 'header-profileButton', y: 40 }], []))
+      ?.reason,
     'no captured element carries the identifier "profile_button"',
   );
 });

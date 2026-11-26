@@ -3969,6 +3969,11 @@ fn walk_failure(
             failure.next_action = suggestion.clone();
             failure.suggestion = Some(suggestion.clone());
         }
+        if failure.code == FailureCode::PlanStepFailed
+            && failure.subreason.as_deref() == Some("duplicate-id")
+        {
+            failure = failure.with_recovery(RecoveryReason::DuplicateWaitTarget);
+        }
     }
     let previous_press = failure.subreason.as_deref() == Some(PREVIOUS_PLAN_PRESS);
     if previous_press {
@@ -5959,7 +5964,7 @@ mod uncertain_ladder_tests {
             PersistenceFailed, IdentityUnavailable, ForeignAdmissionUnresolved, CandidateDrifted, RunCancelled,
             GracefulPending, IdentityMismatch, IdentityUnknown, CommandIneligible, LeaseUnproven, OwnerUnproven,
             CoreUnproven, InventoryUnknown, DriverSurvived, GroupRemaining, HostRemaining, HostCleanupFailed,
-            DriverExited, StorageFailed, PreviousPlanPress,
+            DriverExited, StorageFailed, PreviousPlanPress, DuplicateWaitTarget,
         ];
         for reason in every {
             for destroys in [false, true] {
