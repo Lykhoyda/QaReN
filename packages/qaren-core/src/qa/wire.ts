@@ -413,9 +413,13 @@ export function createWriter(write: (line: string) => void, runId: string): Wire
         if (!clean) return;
         if (
           !currentInputs()?.hasInputs &&
-          !['target-miss', 'media-withheld', 'label-provenance', 'interruption-rejected'].includes(
-            String(clean.kind),
-          ) &&
+          ![
+            'target-miss',
+            'media-withheld',
+            'label-provenance',
+            'interruption-rejected',
+            'press-retry',
+          ].includes(String(clean.kind)) &&
           !(
             clean.kind === 'metric' &&
             INPUT_FREE_DIAGNOSTIC_STAGES.some((stage) => stage === clean.stage)

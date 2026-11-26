@@ -244,6 +244,7 @@ export interface CaptureDeps {
   platformPresence?: boolean;
   timing?: TimingObserver;
   requirePrivateInputs?: boolean;
+  pressGuardRead?: boolean;
   appId?: string;
   // An installed release build: no capture is read as a development surface.
   releaseApp?: boolean;
@@ -727,6 +728,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
         throw retryRefusal.withReads(nativeReads, Math.round(now() - started));
       }
       if (error instanceof AppProcessGoneError) throw error;
+      if (deps.pressGuardRead) throw new NativeCaptureError();
       if (!deps.requirePrivateInputs) throw error;
       if (
         !(error instanceof HandlerError) ||
@@ -736,6 +738,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
         throw new NativeCaptureError();
       runnerDown = true;
     }
+    if (deps.pressGuardRead) break;
     const retryDropped =
       !runnerDown &&
       deps.requirePrivateInputs &&
@@ -819,7 +822,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
       react: reactCaptureCoverage(react),
     };
     // Privacy comes from the native tree, so one not proven complete cannot be masked safely.
-    if (deps.requirePrivateInputs && captureCoverage.native !== 'complete')
+    if ((deps.requirePrivateInputs || deps.pressGuardRead) && captureCoverage.native !== 'complete')
       throw new NativeSnapshotIncomplete(
         nodes.length,
         captureCoverage.native === 'unknown'

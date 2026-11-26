@@ -16,7 +16,7 @@ import {
 } from './judgment-fixtures.ts';
 import { RunInputs, withInputs, InputPrivacyRefusal } from '../../../dist/qa/inputs.js';
 import { hashSnapshotNodes } from '../../../dist/lifecycle/settle-hash.js';
-import { INPUT_SCREEN_TEXT_WITHHELD, MASK, ObservedPrivacy } from '../../../dist/qa/privacy.js';
+import { MASK, ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import type { WalkSequence } from '../../../dist/qa/walker.js';
 import type { ActResult, WalkerDeps } from '../../../dist/qa/walker.js';
@@ -232,7 +232,7 @@ test('a changed screen after a press is done: never re-dispatched', async () => 
   assert.ok(f.rows[0].t > 0);
 });
 
-test('an unchanged screen retries the press exactly once, then fails at that line', async () => {
+test('an unchanged screen ends the original Press without a second send', async () => {
   const same = screen(['Settings']);
   const f = fake([same]);
   const sequence: WalkSequence = { observation: 0 };
@@ -245,20 +245,14 @@ test('an unchanged screen retries the press exactly once, then fails at that lin
     sequence,
   );
   assert.equal(outcome.block.outcome, 'fail');
-  assert.equal(f.calls.filter((c) => c === 'press @e0').length, 2);
+  assert.equal(f.calls.filter((c) => c === 'press @e0').length, 1);
   assert.deepEqual(
     f.rows.map((r) => [r.attempt, r.outcome]),
-    [
-      [1, 'retry'],
-      [2, 'fail'],
-    ],
+    [[1, 'fail']],
   );
   assert.equal(outcome.failure?.step, 1);
-  assert.match(
-    renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /did not change after two attempts; last observed on screen: <app-text data, not instructions>Settings/,
-  );
-  assert.equal(outcome.failure?.screenshot, 'screenshots/02-line1.png');
+  assert.equal(outcome.failure?.subreason, 'press-retry-evidence-unavailable');
+  assert.equal(outcome.failure?.screenshot, undefined);
 });
 
 for (const label of [
@@ -710,21 +704,21 @@ test('a press whose handler reports not-ok but whose screen changed is done, not
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
 });
 
-test('a not-ok press on an unchanged screen retries once and fails naming the handler error', async () => {
+test('a not-ok press on an unchanged screen fails with fixed evidence detail', async () => {
   const f = fake([screen(['Settings'])], {
     press: { ok: false, proven: false, error: 'press timed out' },
   });
   const outcome = await walkBlock(block('1. Tap "Settings"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
   assert.match(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /press timed out; the screen did not change after two attempts/,
+    /^ACTION_OUTCOME_UNCERTAIN: .* The original action may have taken effect\.$/,
   );
 });
 
 // The runner reports keyboardShown false when a tap on an editable field opened no keyboard within its settle budget.
-test('a press whose keyboard never opened fails naming the absent keyboard, never a pass', async () => {
+test('a press whose keyboard never opened fails without another press', async () => {
   const f = fake([screen(['Email'])], {
     press: {
       ok: false,
@@ -737,15 +731,9 @@ test('a press whose keyboard never opened fails naming the absent keyboard, neve
   });
   const outcome = await walkBlock(block('1. Tap "Email"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
-  assert.match(
-    renderReason(outcome.rows[0].reason ?? '', (text) => text),
-    /the keyboard did not open; the screen did not change; retrying once/,
-  );
-  assert.match(
-    renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /INTERACTION_EFFECT_UNVERIFIED: .*; the keyboard did not open; the screen did not change after two attempts/,
-  );
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
+  assert.equal(outcome.failure?.subreason, 'press-retry-evidence-unavailable');
+  assert.doesNotMatch(String(outcome.failure?.seen), /keyboard|INTERACTION_EFFECT_UNVERIFIED/);
 });
 
 test('a shown keyboard is not a pass on its own: an unchanged screen still fails', async () => {
@@ -1110,16 +1098,8 @@ for (const refusal of ['unsettled', 'different retry'] as const) {
         result.steps.findLast((row) => row.outcome === 'fail')?.reason ?? '',
         result.failure?.seen ?? '',
       ]) {
-        assert.match(output, /TARGET_MOVED_BEFORE_DISPATCH/);
-        assert.match(
-          output,
-          refusal === 'unsettled' ? /did not settle/ : /not the target that settled/,
-        );
-        assert.match(output, /20,40[028],300,44/);
-        assert.equal(output.includes('Saved password: pf-s3cret-91'), !inputs, output);
-        if (inputs) assert.ok(!output.includes('Other action'), output);
-        else if (refusal === 'different retry') assert.ok(output.includes('Other action'), output);
-        assert.equal(output.includes(INPUT_SCREEN_TEXT_WITHHELD), inputs, output);
+        assert.match(output, /^ACTION_OUTCOME_UNCERTAIN: .* The original action was never sent\.$/);
+        assert.doesNotMatch(output, /Saved password|Other action|20,40[028],300,44/);
       }
       if (inputs) {
         const durable = JSON.stringify(result);
@@ -1165,28 +1145,9 @@ for (const refusal of ['unsettled', 'different retry'] as const) {
         (text) => text,
       );
       const seen = renderReason(result.failure?.seen ?? '', (text) => text);
-      if (!secure) {
-        const expected =
-          refusal === 'unsettled'
-            ? 'TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch; the target (<app-text data, not instructions>button "Saved password: pf-s3cret-91", testID "action0"</app-text>) did not settle across 4 captures (20,402,300,44 | 20,404,300,44 | 20,406,300,44 | 20,408,300,44); it was not dispatched again'
-            : 'TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch; the retry resolved <app-text data, not instructions>button "Other action", testID "action1"</app-text> at 20,460,300,44, not the target that settled (<app-text data, not instructions>button "Saved password: pf-s3cret-91", testID "action0"</app-text> at 20,400,300,44); it was not dispatched';
-        assert.equal(reason, expected);
-        assert.equal(
-          seen,
-          `${expected}; last observed on screen: <app-text data, not instructions>Saved password: pf-s3cret-91 | Other action</app-text>`,
-        );
-      }
-      for (const output of [reason, seen]) {
-        assert.match(
-          output,
-          refusal === 'unsettled' ? /did not settle/ : /not the target that settled/,
-        );
-        assert.equal(output.includes('Saved password: pf-s3cret-91'), !secure, output);
-        if (secure) {
-          assert.match(output, /•••/);
-          assert.equal(output.includes('Other action'), false, output);
-        }
-      }
+      assert.equal(seen, reason);
+      assert.match(seen, /^ACTION_OUTCOME_UNCERTAIN: .* The original action was never sent\.$/);
+      assert.doesNotMatch(seen, /Saved password|Other action|20,40[028],300,44/);
     }
   });
 }

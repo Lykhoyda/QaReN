@@ -419,34 +419,26 @@ test('L7/L9: a target with a testID binds by the ID even when the quote is a lab
   }
 });
 
-test('L10: after an executed quote-bound press the second attempt resolves the line afresh', async () => {
+test('L10: a late ambiguous label ends the original quote-bound press', async () => {
   const f = fixture(screen([button()]));
   f.deps.press = async (ref, context) => {
     context.authorize();
     f.actions.push(`press ${ref}`);
     return { ok: true, proven: false, executed: true, mutation: 'possible' };
   };
-  const emit = f.deps.row!;
-  f.deps.row = (row) => {
-    emit(row);
-    if (row.outcome === 'retry')
+  const capture = f.deps.captureScreen;
+  f.deps.captureScreen = (options) => {
+    if (options?.pressGuardRead)
       f.setScreen(screen([button(), button('@twin', { ...CLEAR, y: 300 })]));
+    return capture(options);
   };
-  const { result, reason } = await f.run();
+  const { result } = await f.run();
   assert.equal(result.verdict, 'FAIL');
-  assert.match(
-    reason,
-    /TARGET_AMBIGUOUS: multiple elements labelled or identified "Continue" match the target/,
-  );
-  assert.doesNotMatch(reason, /buttons of the same size on the next read/);
+  assert.equal(result.failure?.subreason, 'press-retry-target-changed');
   assert.deepEqual(f.actions, ['scroll down', 'press @continue']);
-  assert.equal(
-    f.rows.some((row) => row.outcome === 'retry'),
-    true,
-  );
 });
 
-test('L10: an executed ID-bound press retains its ID binding on the second attempt', async () => {
+test('L10: a late observation retains its original ID binding without sending', async () => {
   const withID = (ref: string, rect = CLEAR) => button(ref, rect, { identifier: 'continue' });
   const f = fixture(
     screen([withID('@next')]),
@@ -458,12 +450,13 @@ test('L10: an executed ID-bound press retains its ID binding on the second attem
     f.actions.push(`press ${ref}`);
     return { ok: true, proven: false, executed: true, mutation: 'possible' };
   };
-  const emit = f.deps.row!;
-  f.deps.row = (row) => {
-    emit(row);
-    if (row.outcome === 'retry')
+  const capture = f.deps.captureScreen;
+  f.deps.captureScreen = (options) => {
+    if (options?.pressGuardRead)
       f.setScreen(screen([withID('@next'), button('@twin', { ...CLEAR, y: 300 })]));
+    return capture(options);
   };
-  await f.run();
-  assert.deepEqual(f.actions, ['scroll down', 'press @next', 'press @next']);
+  const { result } = await f.run();
+  assert.equal(result.failure?.subreason, 'press-retry-screen-changed');
+  assert.deepEqual(f.actions, ['scroll down', 'press @next']);
 });

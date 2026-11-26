@@ -216,7 +216,7 @@ test('the current target on an unchanged screen prevents dismissal', async () =>
     return { ok: true, proven: false, executed: true };
   };
   assert.equal((await runPlan(plan(), f.deps)).verdict, 'FAIL');
-  assert.deepEqual(f.actions, ['press @settings', 'press @settings']);
+  assert.deepEqual(f.actions, ['press @settings']);
 });
 
 test('a later target in the same block prevents dismissal and reports a value-free rejection', async () => {
@@ -1198,8 +1198,19 @@ test('a step recovers at most two different pop-ups', async () => {
 
 test('a system prompt the app asks again after recovery declined it is left to the plan author', async () => {
   const f = app(alert());
+  // This scenario tests a prompt at the next item, after an ordinary successful press.
+  const capture = f.deps.captureScreen;
+  let afterSettings = false;
+  f.deps.captureScreen = (options) => {
+    if (afterSettings) {
+      afterSettings = false;
+      return Promise.resolve(screen([element('@opening', 'Opening settings')]));
+    }
+    return capture(options);
+  };
   f.deps.press = async (ref) => {
     f.actions.push(`press ${ref}`);
+    afterSettings = ref === '@settings';
     f.show(alert());
     return { ok: true, proven: false, executed: true };
   };
@@ -1225,8 +1236,19 @@ test('a different system prompt after a declined one is declined once too', asyn
     f.show(f.actions.length === 1 ? home() : screen([element('@done', 'Done')]));
     return { ok: true, proven: true, executed: true };
   };
+  // This scenario tests a prompt at the next item, after an ordinary successful press.
+  const capture = f.deps.captureScreen;
+  let afterSettings = false;
+  f.deps.captureScreen = (options) => {
+    if (afterSettings) {
+      afterSettings = false;
+      return Promise.resolve(screen([element('@opening', 'Opening settings')]));
+    }
+    return capture(options);
+  };
   f.deps.press = async (ref) => {
     f.actions.push(`press ${ref}`);
+    afterSettings = ref === '@settings';
     f.show(ref === '@settings' ? titled('Location') : home());
     return { ok: true, proven: false, executed: true };
   };
@@ -1300,8 +1322,19 @@ test('a repeated prompt with the same title and buttons stays declined when its 
     visibleText: ['Notifications', message, "Don't Allow", 'Allow'],
   });
   const f = app(prompt('Receive updates'));
+  // This scenario tests a prompt at the next item, after an ordinary successful press.
+  const capture = f.deps.captureScreen;
+  let afterSettings = false;
+  f.deps.captureScreen = (options) => {
+    if (afterSettings) {
+      afterSettings = false;
+      return Promise.resolve(screen([element('@opening', 'Opening settings')]));
+    }
+    return capture(options);
+  };
   f.deps.press = async (ref) => {
     f.actions.push(`press ${ref}`);
+    afterSettings = ref === '@settings';
     f.show(prompt('Receive reminders'));
     return { ok: true, proven: false, executed: true };
   };
@@ -1761,47 +1794,26 @@ for (const [name, presenceRead] of [
     );
   });
 
-  test(`a ${name} presence read on the second press attempt scrolls nothing`, async () => {
+  test(`a ${name} guard capture after a Press cannot scroll`, async () => {
     const f = app(homeAfterPromo());
     f.deps.platform = 'ios';
-    let clock = 0;
-    let promoUp = false;
-    let presenceReads = 0;
-    let refreshed = false;
-    f.deps.now = () => clock;
-    f.deps.sleep = async (ms) => {
-      clock += ms;
+    ticking(f);
+    const capture = f.deps.captureScreen;
+    let guardReads = 0;
+    f.deps.captureScreen = (request) => {
+      if (!request?.pressGuardRead) return capture(request);
+      guardReads++;
+      return presenceRead();
     };
-    f.deps.row = (row) => {
-      if (row.outcome === 'retry') promoUp = true;
-    };
-    f.deps.captureScreen = async (request) => {
-      if (request?.platformPresence) {
-        presenceReads += 1;
-        clock += 11_000;
-        return presenceRead();
-      }
-      if (presenceReads) refreshed = true;
-      return promoUp ? modalOverHome({ ordinary: true }) : homeAfterPromo();
-    };
-    f.deps.press = async (ref) => {
+    f.deps.press = async (ref, context) => {
+      context.authorize();
       f.actions.push(`press ${ref}`);
-      return { ok: true, proven: refreshed, executed: true };
-    };
-    f.deps.scroll = async () => {
-      f.actions.push('scroll');
-      promoUp = false;
-      return { ok: true, proven: false, executed: true };
+      return { ok: true, proven: false };
     };
     const result = await runPlan(parsePlan('1. Tap "qa-promo-home-target"').blocks!, f.deps);
     assert.equal(result.verdict, 'FAIL');
-    assert.equal(presenceReads, 1);
-    assert.equal(refreshed, false, 'no capture follows the unplaced read');
+    assert.ok(guardReads > 0);
     assert.deepEqual(f.actions, ['press @home-target']);
-    assert.match(
-      result.failure?.seen ?? '',
-      /the read that would place it was late or incomplete, so nothing was scrolled/,
-    );
     assert.equal(result.recoveries, 0);
   });
 }

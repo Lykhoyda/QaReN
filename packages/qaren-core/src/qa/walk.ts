@@ -760,7 +760,8 @@ export async function openSession(
     }));
   onClose(close);
   const devicePin = metroDevicePin(platform, target.deviceName);
-  const remainingMs = () => Math.max(0, request.walkBudgetMs - now() - 1000);
+  const walkDeadlineMs = request.walkBudgetMs - 1000;
+  const remainingMs = () => Math.max(0, walkDeadlineMs - now());
   const bundleRequests =
     target.metroBundleRequests && launchBundleRequests(target.metroBundleRequests);
   const walkDeadline = performance.now() + remainingMs();
@@ -1065,6 +1066,8 @@ export async function openSession(
     platform,
     note: log,
     mediaWithheld: diagnostic,
+    pressRetry: diagnostic,
+    walkDeadlineMs,
     videoPolicy: request.videoPolicy ?? 'undeclared',
     privacy,
     // An empty key refuses every question before any request; undefined would read the environment.
@@ -1093,7 +1096,7 @@ export async function openSession(
             budgetMs: options?.budgetMs,
             now,
             timing: options?.timing,
-            warn: log,
+            ...(options?.pressGuardRead ? { pressGuardRead: true } : { warn: log }),
             native: (presenceBudgetMs) =>
               rawSnapshot(
                 options?.platformPresence,

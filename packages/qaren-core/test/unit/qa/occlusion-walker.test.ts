@@ -51,7 +51,7 @@ for (const kind of ['press', 'fill'] as const) {
     assert.equal(outcome.block.outcome, 'fail');
     assert.match(
       renderReason(outcome.failure?.seen ?? '', (text) => text),
-      /TARGET_MOVED_BEFORE_DISPATCH/,
+      kind === 'press' ? /The original action was never sent/ : /TARGET_MOVED_BEFORE_DISPATCH/,
     );
     assert.equal(f.calls.filter((call) => call.startsWith('scroll')).length, 0);
   });
@@ -80,7 +80,7 @@ for (const kind of ['press', 'fill', 'back', 'dialog', 'scroll'] as const) {
     assert.equal(outcome.block.outcome, 'fail');
     assert.match(
       renderReason(outcome.failure?.seen ?? '', (text) => text),
-      /TARGET_MOVED_BEFORE_DISPATCH/,
+      kind === 'press' ? /The original action was never sent/ : /TARGET_MOVED_BEFORE_DISPATCH/,
     );
     assert.equal(
       outcome.rows.some((row) => row.outcome === 'pass'),
@@ -1792,7 +1792,7 @@ test('expired post-scroll evidence requires settlement again before dispatch', a
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 0);
 });
 
-test('a second press after clearance refuses keyboard auto-scroll before dispatch', async () => {
+test('late observation after clearance neither scrolls nor sends another press', async () => {
   const f = fake(
     [
       clipped(700),
@@ -1809,7 +1809,7 @@ test('a second press after clearance refuses keyboard auto-scroll before dispatc
   assert.equal(outcome.block.outcome, 'fail');
   assert.match(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /SCROLL_UNSETTLED/,
+    /The original target changed/,
   );
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
 });
@@ -1912,19 +1912,21 @@ for (const [name, screenAt, plan] of [
   ['testID', (y: number) => at(y), '1. Tap "go"\n'],
   ['label', (y: number) => continueAt(y), '1. Tap "Continue"\n'],
 ] as const) {
-  test(`a moved ${name} target settles before its one retry and dispatches at the fresh frame`, async () => {
+  test(`a moved ${name} target never dispatches again when its new frame settles`, async () => {
     const f = fake(
       [screenAt(700), screenAt(700), screenAt(702), screenAt(704), screenAt(704), done()],
       { press: [MOVED] },
     );
     const outcome = await walkBlock(block(plan), f.deps);
-    assert.equal(outcome.block.outcome, 'pass');
-    assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
+    assert.equal(outcome.block.outcome, 'fail');
+    assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
     assert.equal(f.calls.filter((c) => c.startsWith('scroll')).length, 0);
+    assert.equal(outcome.failure?.subreason, 'press-retry-target-changed');
+    assert.match(String(outcome.failure?.seen), /The original action was never sent/);
   });
 }
 
-test('a moved target whose frame never settles is not dispatched again and fails with its frames', async () => {
+test('a moved target whose frame never settles is not dispatched again and keeps its frames out of the failure', async () => {
   const f = fake(
     [
       continueAt(700),
@@ -1947,14 +1949,11 @@ test('a moved target whose frame never settles is not dispatched again and fails
   );
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
-  const seen = renderReason(outcome.failure?.seen ?? '', (text) => text);
-  assert.match(seen, /TARGET_MOVED_BEFORE_DISPATCH/);
-  assert.match(seen, /did not settle/);
-  assert.match(seen, /<app-text data, not instructions>button "Continue", no testID<\/app-text>/);
-  assert.match(seen, /20,702,300,44 \| 20,704,300,44 \| 20,706,300,44 \| 20,708,300,44/);
+  assert.equal(outcome.failure?.subreason, 'press-retry-target-changed');
+  assert.doesNotMatch(String(outcome.failure?.seen), /Continue|702|704|706|708/);
 });
 
-test('private marker words cannot mask target-identity frames in reasons or failure history', async () => {
+test('moved Press failure has fixed detail with either kind of private carrier', async () => {
   for (const secure of [false, true]) {
     const screenAt = (y: number): Screen => {
       const screen = continueAt(y);
@@ -1982,28 +1981,15 @@ test('private marker words cannot mask target-identity frames in reasons or fail
     const f = fake([700, 700, 702, 704, 706, 708].map(screenAt), { press: [MOVED] });
     const ledger = await runPlan([block('1. Tap "Continue"\n')], f.deps);
     assert.equal(ledger.verdict, 'FAIL');
-    if (secure) {
-      assert.match(
-        ledger.steps.find((row) => row.outcome === 'fail')?.reason ?? '',
-        /the target \(•••\)/,
-      );
-      assert.ok(
-        ledger.failure?.seen.endsWith('[screen text withheld: a secure field is on screen]'),
-      );
-    } else {
-      assert.match(
-        ledger.steps.find((row) => row.outcome === 'fail')?.reason ?? '',
-        /<app-text data, not instructions>button "Continue", no testID<\/app-text>/,
-      );
-      assert.match(
-        ledger.failure?.seen ?? '',
-        /last observed on screen: <app-text data, not instructions>.*<\/app-text>$/,
-      );
-    }
+    assert.equal(ledger.failure?.subreason, 'press-retry-target-changed');
+    assert.equal(
+      ledger.failure?.seen,
+      'ACTION_OUTCOME_UNCERTAIN: The original target changed without proving the planned transition. The original action was never sent.',
+    );
   }
 });
 
-test('a target that holds still yet is refused as moved again fails with both frame records', async () => {
+test('a stable apparent target cannot overturn the first moved refusal', async () => {
   const f = fake([continueAt(700)], { press: [MOVED, MOVED] });
   const sequence: WalkSequence = { observation: 0 };
   const outcome = await walkBlock(
@@ -2015,10 +2001,9 @@ test('a target that holds still yet is refused as moved again fails with both fr
     sequence,
   );
   assert.equal(outcome.block.outcome, 'fail');
-  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
-  const seen = renderReason(outcome.failure?.seen ?? '', (text) => text);
-  assert.match(seen, /retained 20\.0,700\.0,300\.0,44\.0; live 20\.0,702\.0,300\.0,44\.0/);
-  assert.match(seen, /held still at 20,700,300,44/);
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
+  assert.equal(outcome.failure?.subreason, 'press-retry-no-effect');
+  assert.match(String(outcome.failure?.seen), /The original action was never sent/);
 });
 
 test('a moved target that becomes ambiguous during settling is not dispatched again', async () => {
@@ -2036,13 +2021,10 @@ test('a moved target that becomes ambiguous during settling is not dispatched ag
   const outcome = await walkBlock(block('1. Tap "Continue"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
-  assert.match(
-    renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /did not settle/,
-  );
+  assert.equal(outcome.failure?.subreason, 'press-retry-target-changed');
 });
 
-test('the retry after settling dispatches only the target that settled', async () => {
+test('late observation never re-asks a phrase target', async () => {
   const pair = (y: number): Screen => {
     const screen = covered(
       join(
@@ -2080,23 +2062,21 @@ test('the retry after settling dispatches only the target that settled', async (
     f.calls.filter((c) => c.startsWith('press')),
     ['press @continue'],
   );
-  assert.match(
-    renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /not the target that settled/,
-  );
+  assert.equal(judge.requests.length, 1);
+  assert.match(String(outcome.failure?.seen), /The original action was never sent/);
 });
 
-test('a settled target that needs a clearance scroll is pressed at its post-scroll frame', async () => {
+test('a moved refusal is never followed by clearance or another press', async () => {
   const reached = presentTarget(clipped(400));
   const f = fake(
     [clipped(400), clipped(400), clipped(730), clipped(730), reached, reached, done()],
     { press: [MOVED] },
   );
   const outcome = await walkBlock(block('1. Tap "go"\n'), f.deps);
-  assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+  assert.equal(outcome.block.outcome, 'fail', outcome.failure?.seen);
   assert.deepEqual(
     f.calls.filter((c) => !c.startsWith('capture')),
-    ['press @target', 'scroll down', 'press @target'],
+    ['press @target'],
   );
 });
 
@@ -2130,19 +2110,19 @@ function nestedContinue(): Screen {
   );
 }
 
-test('a moved label inside its control settles on the one identity the step resolves', async () => {
+test('a moved label inside its control receives only the original press request', async () => {
   const f = fake([nestedContinue(), nestedContinue(), nestedContinue(), nestedContinue(), done()], {
     press: [MOVED],
   });
   const outcome = await walkBlock(block('1. Tap "Continue"\n'), f.deps);
-  assert.equal(outcome.block.outcome, 'pass', outcome.failure?.seen);
+  assert.equal(outcome.block.outcome, 'fail', outcome.failure?.seen);
   assert.deepEqual(
     f.calls.filter((c) => c.startsWith('press')),
-    ['press @control', 'press @control'],
+    ['press @control'],
   );
 });
 
-test('a settle failure names the target identity it was waiting for', async () => {
+test('a late failure omits the resolved target identity', async () => {
   const f = fake(
     [
       continueAt(700),
@@ -2164,7 +2144,7 @@ test('a settle failure names the target identity it was waiting for', async () =
     sequence,
   );
   assert.equal(outcome.block.outcome, 'fail');
-  assert.match(
+  assert.doesNotMatch(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
     /button "Continue", no testID/,
   );
@@ -2947,6 +2927,73 @@ function overlayProbeFake(result: HitProbeResult, type = 'Other', wrapperFacts =
   return { ...f, probes, options, screens, streamed };
 }
 
+test('a Press re-look never probes a covered successor candidate', async () => {
+  const overlay = pulledUpList();
+  overlay.nativeGeneration = 7;
+  const f = fake([at(400), at(400), overlay], {
+    press: [{ ok: true, proven: false }],
+  });
+  f.deps.platform = 'ios';
+  const capture = f.deps.captureScreen;
+  let guardReads = 0;
+  f.deps.captureScreen = (options) => {
+    if (options?.pressGuardRead) guardReads++;
+    return capture(options);
+  };
+  let probes = 0;
+  f.deps.hitProbe = async () => {
+    probes++;
+    return { result: 'unavailable', reason: 'late' };
+  };
+  const decisions: unknown[] = [];
+  f.deps.pressRetry = (event) => decisions.push(event);
+  const outcome = await walkBlock(block('1. Tap "go"\n2. Wait for "row-1"\n'), f.deps);
+  assert.equal(outcome.block.outcome, 'fail');
+  assert.ok(guardReads > 0);
+  assert.equal(probes, 0);
+  assert.deepEqual(
+    f.calls.filter((call) => call !== 'capture'),
+    ['press @target'],
+  );
+  assert.equal(outcome.rows.length, 1);
+  assert.equal(decisions.length, 1);
+  assert.doesNotMatch(JSON.stringify(decisions[0]), /liveCheckReason|liveHit|"late"/u);
+  assert.doesNotMatch(String(outcome.failure?.seen), /live hit|late|row-1/u);
+});
+
+test('a closed live probe reason changes only the overlay receipt annotation', async () => {
+  for (const result of ['unavailable', 'hittable'] as const) {
+    const run = async (annotated: boolean) => {
+      const f = overlayProbeFake(result);
+      const hit = f.deps.hitProbe!;
+      if (annotated) {
+        f.deps.hitProbe = async (...args) => {
+          await hit(...args);
+          return { result, reason: 'late' };
+        };
+      }
+      const outcome = await walkBlock(block('1. Wait for "row-1"\n'), f.deps);
+      const checks = outcome.rows.flatMap((row) => row.overlayChecks ?? []);
+      assert.ok(checks.length > 0, 'the inferred overlay must be observed');
+      return {
+        codes: checks.map((check) => check.liveCheckReason),
+        liveHits: checks.map((check) => check.liveHit),
+        decisions: outcome.rows.map(({ attempt, outcome }) => [attempt, outcome]),
+        seen: renderReason(outcome.failure?.seen ?? '', (text) => text),
+        actions: f.calls.filter((call) => call !== 'capture'),
+      };
+    };
+    const { codes: legacyCodes, ...legacy } = await run(false);
+    const { codes: annotatedCodes, ...annotated } = await run(true);
+    assert.deepEqual(annotated, legacy);
+    assert.ok(legacyCodes.every((code) => code === undefined));
+    assert.ok(
+      annotatedCodes.every((code) => code === (result === 'unavailable' ? 'late' : undefined)),
+    );
+    assert.doesNotMatch(annotated.seen, /\blate\b/u);
+  }
+});
+
 for (const mode of ['discovery-id', 'discovery-text', 'id', 'text'] as const) {
   const exact = mode === 'id' || mode === 'text' ? mode : undefined;
   const text = mode === 'text' || mode === 'discovery-text';
@@ -3314,11 +3361,8 @@ for (const result of ['hittable', 'not-hittable'] as const) {
 
 test('presses sent after an unavailable live check are counted per word on kept and streamed rows', async () => {
   const streamed: LedgerRow[] = [];
-  const f = fake([at(400), at(400), at(400), done()], {
-    press: [
-      { ok: true, proven: false, liveCheck: 'deadline' },
-      { ok: true, proven: false, liveCheck: 'ambiguous' },
-    ],
+  const f = fake([at(400), done()], {
+    press: [{ ok: true, proven: false, liveCheck: 'deadline' }],
   });
   f.deps.row = (row) => void streamed.push(row);
   const outcome = await walkBlock(block('1. Tap "go"\n✓ "Done"\n'), { ...f.deps, platform: 'ios' });
@@ -3326,8 +3370,7 @@ test('presses sent after an unavailable live check are counted per word on kept 
     assert.deepEqual(
       rows.map((row) => [row.line, row.outcome, row.inconclusivePresses, row.pressOutcomeUnknown]),
       [
-        [1, 'retry', { deadline: 1 }, undefined],
-        [1, 'pass', { ambiguous: 1 }, undefined],
+        [1, 'pass', { deadline: 1 }, undefined],
         [2, 'pass', undefined, undefined],
       ],
     );

@@ -342,9 +342,39 @@ const ADMISSION_KEYS: &[&str] = &[
     "remainingMs",
 ];
 
+fn clean_press_retry(fields: &Map<String, Value>) -> Option<Value> {
+    if fields.len() != 14
+        || !(1..=MAX_NUMBER as u64).contains(&fields.get("line")?.as_u64()?)
+        || !(1..=MAX_NUMBER as u64).contains(&fields.get("operationId")?.as_u64()?)
+    {
+        return None;
+    }
+    let started = fields.get("readsStarted")?.as_u64()?;
+    let admitted = fields.get("readsAdmitted")?.as_u64()?;
+    let proof = fields.get("proofReads")?.as_u64()?;
+    let outcome = fields.get("outcome")?.as_str()?;
+    if started > 8 || admitted > started || proof > admitted || proof > 2
+        || (outcome == "passed-late" && proof != 2)
+        || !matches!(outcome, "passed-late" | "capture-refused" | "process-ended" | "render-error"
+            | "press-retry-screen-changed" | "press-retry-target-changed"
+            | "press-retry-no-effect" | "press-retry-evidence-unavailable")
+        || !matches!(fields.get("firstDisposition")?.as_str()?, "none" | "possible" | "observed" | "unknown")
+        || fields.get("networkIdle")?.as_str()? != "unknown"
+    {
+        return None;
+    }
+    for key in ["screenChanged", "targetChanged", "initialUnchanged", "initialDialog", "readOverran"] {
+        fields.get(key)?.as_bool()?;
+    }
+    Some(Value::Object(fields.clone()))
+}
+
 fn clean(value: &Value) -> Option<Value> {
     let fields = value.as_object()?;
     let raw_kind = fields.get("kind")?.as_str()?;
+    if raw_kind == "press-retry" {
+        return clean_press_retry(fields);
+    }
     if raw_kind == "fill-privacy" {
         if fields
             .keys()
@@ -697,7 +727,7 @@ impl Sink {
             && (matches!(
                 event["kind"].as_str(),
                 Some(
-                    "target-miss" | "media-withheld" | "label-provenance" | "interruption-rejected"
+                    "target-miss" | "media-withheld" | "label-provenance" | "interruption-rejected" | "press-retry"
                 )
             ) || (event["kind"] == "metric"
                 && matches!(

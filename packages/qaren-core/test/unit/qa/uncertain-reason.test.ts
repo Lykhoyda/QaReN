@@ -294,40 +294,7 @@ test('U9: a run without inputs shows the same reason beside the screen text', as
   assert.equal(result.failure?.subreason, 'keyboard-visible');
 });
 
-test('U11: an unchanged first press is retried, and the uncertain second press names its reason', async () => {
-  let presses = 0;
-  const { f, result } = await run(
-    {
-      name: 'U11',
-      screens: A,
-      arrange: (f) => {
-        f.deps.press = async (ref, context) => {
-          f.actions.push(`press ${ref}`);
-          context!.authorize();
-          if (++presses === 2) refuse(context!, 'dispatch-unconfirmed');
-          return { ok: true, proven: false };
-        };
-      },
-      expected: 'dispatch-unconfirmed',
-      captures: 0,
-      dispatch: INTERRUPTED,
-    },
-    true,
-  );
-  assert.equal(result.verdict, 'FAIL');
-  assert.deepEqual(f.actions, ['press @save', 'press @save']);
-  assert.deepEqual(
-    result.steps.map((step) => [step.attempt, step.outcome]),
-    [
-      [1, 'retry'],
-      [2, 'fail'],
-    ],
-  );
-  assert.match(result.failure!.seen, /^ACTION_OUTCOME_UNCERTAIN/);
-  assert.equal(result.failure?.subreason, 'dispatch-unconfirmed');
-});
-
-test('guard: an unchanged tap keeps its own words and gets no subreason', async () => {
+test('guard: an unchanged tap ends locally with its closed subreason', async () => {
   const { f, result } = await run(
     {
       name: 'guard unchanged',
@@ -346,8 +313,13 @@ test('guard: an unchanged tap keeps its own words and gets no subreason', async 
     true,
   );
   assert.equal(result.verdict, 'FAIL');
-  assert.match(result.failure!.seen, /the screen did not change after two attempts/);
-  assert.equal(result.failure?.subreason, undefined);
+  assert.match(result.failure!.seen, /^ACTION_OUTCOME_UNCERTAIN:/);
+  assert.equal(result.failure?.subreason, 'press-retry-evidence-unavailable');
+  assert.deepEqual(f.actions, ['press @save']);
+  assert.deepEqual(
+    result.steps.map(({ attempt, outcome }) => [attempt, outcome]),
+    [[1, 'fail']],
+  );
   const output = JSON.stringify({ result, rows: f.rows });
   for (const canary of [SECRET, LABEL, TEST_ID]) assert.ok(!output.includes(canary), canary);
 });

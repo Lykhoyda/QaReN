@@ -10,11 +10,12 @@ import { cleanDiagnostic } from '../../../dist/qa/diagnostics.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
 import { HandlerError } from '../../../dist/qa/adapt.js';
 import { attested } from './platform-presence-fixtures.ts';
+import { capturePrivateScreen, ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { parsePlan } from '../../../dist/qa/plan.js';
 import { join as joinScreen, type Screen } from '../../../dist/qa/screen.js';
 import { runPlan, walkBlock, type ActResult, type WalkerDeps } from '../../../dist/qa/walker.js';
 import { createWriter, resultForWalk } from '../../../dist/qa/wire.js';
-import { choice, scriptedJudge } from './judgment-fixtures.ts';
+import { choice, element, scriptedJudge } from './judgment-fixtures.ts';
 
 const late = 'The planned transition appeared after the first readback.';
 const save = '1. Tap "save"';
@@ -186,9 +187,9 @@ for (const [platform, result] of [
           [1, 'pass'],
         ],
       );
-      assert.equal(f.rows[0].reason, late);
+      assert.equal(resultLedger.steps[0].reason, late);
       assert.equal(f.rows[0].ref, undefined);
-      assert.deepEqual(f.rows[0].selector, { id: 'save' });
+      assert.deepEqual(resultLedger.steps[0].selector, { id: 'save' });
       assert.ok(f.reads.length >= 5);
       assert.equal(f.events.length, 1);
       assert.equal(f.events[0].proofReads, 2);
@@ -196,6 +197,41 @@ for (const [platform, result] of [
     });
   }
 }
+
+test('H1 busy Save stays on the original operation until two Review reads', async () => {
+  const busy = () => {
+    const nodes = nativePage('Draft');
+    const screen = joinScreen(
+      [
+        ...nodes.slice(0, 3),
+        { ...nodes[3], enabled: false, hittable: false },
+        {
+          ref: '@spinner',
+          index: 4,
+          parentIndex: 3,
+          type: 'ActivityIndicator',
+          rect: { x: 24, y: 320, width: 350, height: 56 },
+        },
+      ],
+      [],
+    );
+    return {
+      ...screen,
+      front: 'app' as const,
+      coverage: { native: 'complete', react: 'complete' } as const,
+    };
+  };
+  // The first readback can finish before the pending state paints.
+  const f = queued([draft, draft, busy, review]);
+  const ledger = await runPlan(plan(), f.deps);
+  assert.equal(ledger.verdict, 'PASS');
+  assert.deepEqual(f.sends, ['@old']);
+  assert.equal(f.deliveries(), 1);
+  assert.equal(ledger.steps[0].reason, late);
+  assert.equal(f.events[0].readsAdmitted, 3);
+  assert.equal(f.events[0].proofReads, 2);
+  assert.equal(f.events[0].targetChanged, true);
+});
 
 const hidden = () => {
   const screen = draft();
@@ -389,12 +425,37 @@ for (const videoPolicy of ['strict', 'non-strict'] as const) {
     const ledger = await runPlan(plan(), f.deps);
     writer.diagnostic(f.events[0]);
     assert.equal(writer.result(resultForWalk(ledger, 'lease')), 1);
-    assert.equal(f.rows[0].reason, ledger.failure?.seen);
+    assert.equal(ledger.steps[0].reason, ledger.failure?.seen);
+    assert.equal(f.rows[0].reason, undefined);
     assert.ok(!JSON.stringify({ wire, ledger }).includes('LATE-CANARY-59388'));
     assert.strictEqual(f.rows[0].screenshot, undefined);
     assert.equal(ledger.failure?.subreason, 'press-retry-screen-changed');
   });
 }
+
+test('H6 a late protected input cannot rewrite a fixed Press explanation', async () => {
+  const value = 'effect';
+  const carrier = () => {
+    const screen = page('Wrong page');
+    const field = element('@secure', 'Secure field', { kind: 'input', secure: true });
+    screen.elements.push(field);
+    capturePrivateScreen(screen, [
+      { values: [value], secure: true, elements: [field], associationUnique: true },
+    ]);
+    return screen;
+  };
+  const f = queued([draft, draft, carrier]);
+  const privacy = new ObservedPrivacy();
+  f.deps.privacy = privacy;
+  const ledger = await runPlan(plan(), f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.notEqual(privacy.redact(value), value);
+  const fixed =
+    'ACTION_OUTCOME_UNCERTAIN: The screen changed without proving the planned transition. The original action may have taken effect.';
+  assert.equal(ledger.failure?.seen, fixed);
+  assert.equal(ledger.steps[0].reason, fixed);
+  assert.deepEqual(f.actions, []);
+});
 
 const diagnostic = {
   kind: 'press-retry',
@@ -464,9 +525,9 @@ for (const separate of [false, true]) {
       const ledger = await runPlan(blocks, f.deps, [], store);
       assert.deepEqual(f.sends, ['@old']);
       assert.equal(ledger.verdict, 'PASS');
-      assert.equal(f.rows[0].source, 'replayed');
-      assert.deepEqual(f.rows[0].selector, { id: 'save' });
-      assert.equal(f.rows[0].reason, late);
+      assert.equal(ledger.blocks[0].source, 'replayed');
+      assert.deepEqual(ledger.steps[0].selector, { id: 'save' });
+      assert.equal(ledger.steps[0].reason, late);
       assert.ok(f.reads.length >= 5);
       const file = join(appRoot, '.qaren', 'actions', `${blocks[0].slug}.yaml`);
       const bytes = readFileSync(file);
@@ -474,7 +535,7 @@ for (const separate of [false, true]) {
       const failed = await runPlan(blocks, wrong.deps, [], store);
       assert.deepEqual(wrong.sends, ['@old']);
       assert.equal(failed.failure?.subreason, 'press-retry-screen-changed');
-      assert.equal(wrong.rows[0].source, 'replayed');
+      assert.equal(failed.blocks[0].source, 'replayed');
       assert.equal(wrong.rows[0].operationId, wrong.events[0].operationId);
       assert.deepEqual(readFileSync(file), bytes);
     } finally {
@@ -490,6 +551,7 @@ for (const [name, before, candidate, successor, expected] of [
     draft,
     () => {
       const screen = page('Review', 'next');
+      screen.elements.push(draft().elements.find((e) => e.testID === 'save')!);
       return {
         ...screen,
         elements: [
@@ -531,4 +593,125 @@ test('H5 an incomplete read resets the proof pair and a later change of process 
   assert.equal(f.events[0].proofReads, 0);
   assert.deepEqual(f.sends, ['@old']);
   assert.deepEqual(f.actions, []);
+});
+
+function withSavedStore(
+  run: (store: { appRoot: string; appId: string; platform: 'ios' }) => Promise<void>,
+): Promise<void> {
+  const appRoot = mkdtempSync(join(tmpdir(), 'press-successor-'));
+  return run({ appRoot, appId: 'com.example.app', platform: 'ios' }).finally(() => {
+    rmSync(appRoot, { recursive: true, force: true });
+  });
+}
+
+function saveSelector(
+  block: ReturnType<typeof plan>[number],
+  store: { appRoot: string; appId: string; platform: 'ios' },
+  selector: { id: string } | { text: string },
+): void {
+  const item = block.items[0];
+  const result = serializeBlock(
+    block,
+    [
+      {
+        block: block.slug,
+        line: item.line,
+        text: item.raw,
+        attempt: 1,
+        kind: 'step',
+        resolvedBy: 'exact',
+        t: 0,
+        outcome: 'pass',
+        selector,
+      },
+    ],
+    store,
+  );
+  assert.ok('yaml' in result);
+  writeBlock(store.appRoot, block.slug, result.yaml);
+}
+
+for (const saved of [true, false]) {
+  test(`H7 a cross-block successor reuses the validated ${saved ? 'stored ID' : 'absence'}`, () =>
+    withSavedStore(async (store) => {
+      const blocks = plan(`### Save\n${save}\n### Next\n2. Tap "next"`);
+      if (saved) saveSelector(blocks[1], store, { id: 'next' });
+      const destination = () => page('Review', 'next', '@next');
+      const f = queued([draft, draft, destination]);
+      let proofReads = -1;
+      const event = f.deps.pressRetry;
+      f.deps.pressRetry = (decision) => {
+        event?.(decision);
+        proofReads = f.reads.length;
+        saveSelector(blocks[1], store, { text: 'next' });
+      };
+      const ledger = await runPlan(blocks, f.deps, [], store);
+      assert.equal(ledger.verdict, 'PASS', JSON.stringify(ledger.failure));
+      assert.equal(ledger.blocks[1].source, saved ? 'replayed' : 'discovered');
+      assert.deepEqual(f.sends, ['@old', '@next']);
+      assert.ok(proofReads >= 4);
+      assert.ok(f.reads.length >= proofReads + 2);
+    }));
+}
+
+for (const [action, label, verdict] of [
+  ['Tap "next"', 'Review', 'FAIL'],
+  ['Fill "next" with "sample"', 'Review', 'FAIL'],
+  ['Wait for "next"', 'Review', 'FAIL'],
+  ['Wait for "next"', 'next', 'PASS'],
+] as const) {
+  test(`H7 stored text ${action} keeps its discriminator with visible title "${label}"`, () =>
+    withSavedStore(async (store) => {
+      const blocks = plan(`### Save\n${save}\n### Next\n2. ${action}`);
+      saveSelector(blocks[1], store, { text: 'next' });
+      const destination = () => page(label, 'next', '@next');
+      const f = queued([draft, draft, destination]);
+      const ledger = await runPlan(blocks, f.deps, [], store);
+      assert.equal(ledger.verdict, verdict, JSON.stringify(ledger.failure));
+      assert.deepEqual(f.sends, ['@old']);
+      assert.equal(f.events[0].proofReads, verdict === 'PASS' ? 2 : 0);
+      assert.equal(ledger.steps.length, verdict === 'PASS' ? 2 : 1);
+    }));
+}
+
+test('H7 a block precondition is the immediate successor', async () => {
+  const blocks = plan(`### Save\n${save}\n### Next\nstarts on: "gate"\n2. Tap "next"`);
+  const f = queued([draft, draft, () => page('Review', 'next', '@next')]);
+  const ledger = await runPlan(blocks, f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.deepEqual(f.sends, ['@old']);
+  assert.equal(ledger.steps.length, 1);
+  assert.equal(f.events[0].proofReads, 0);
+});
+
+test('H7 an authored Wait does not combine a literal-text vote with an exact-ID vote', async () => {
+  const f = queued([draft, draft, () => page('next'), () => page('Review', 'next'), draft]);
+  const ledger = await runPlan(plan(`${save}\n2. Wait for "next"`), f.deps);
+  assert.equal(ledger.verdict, 'FAIL');
+  assert.equal(ledger.steps.length, 1);
+  assert.deepEqual(f.sends, ['@old']);
+});
+
+test('H5 a transient planned Dialog with no process evidence stays unavailable', async () => {
+  const f = queued([draft, draft, () => prompt('Allow access'), draft]);
+  f.deps.platform = 'android';
+  const ledger = await runPlan(plan(`${save}\n2. Dismiss the system dialog`), f.deps);
+  assert.equal(ledger.failure?.subreason, 'press-retry-evidence-unavailable');
+  assert.deepEqual(f.actions, []);
+  assert.equal(f.events[0].screenChanged, true);
+});
+
+test('H5 a stop during the guard pause preempts its decision', async () => {
+  const f = queued([draft, draft, review]);
+  let cancelled = false;
+  f.deps.cancelled = () => cancelled;
+  f.deps.sleep = async () => {
+    cancelled = true;
+  };
+  const result = await runPlan(plan(), f.deps);
+  assert.match(result.failure?.seen ?? '', /RUN_CANCELLED/);
+  assert.deepEqual(f.sends, ['@old']);
+  assert.deepEqual(f.actions, []);
+  assert.deepEqual(f.events, []);
+  assert.equal(f.reads.length, 3);
 });
