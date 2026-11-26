@@ -434,7 +434,7 @@ for (const videoPolicy of ['strict', 'non-strict'] as const) {
   });
 }
 
-for (const runtimeInput of [undefined, 'unrelated synthetic input'] as const)
+for (const runtimeInput of [undefined, 'ZXQ9VJ8K5'] as const)
   test(`H6 late observed data cannot rewrite fixed Press detail ${runtimeInput ? 'with runtime inputs' : 'without runtime inputs'}`, async () => {
     const value = 'effect';
     const carrier = () => {
