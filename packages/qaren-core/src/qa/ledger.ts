@@ -141,6 +141,7 @@ export interface LedgerFailure {
     | TargetMissDiagnostic['reason']
     | 'ambiguous'
     | 'previous-plan-press'
+    | 'duplicate-id'
     | UncertainReason;
   // Why a scroll step failed; set only by the walker, never read from reason prose.
   cause?:
