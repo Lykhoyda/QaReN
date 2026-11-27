@@ -2223,8 +2223,8 @@ async function reapAndRelaunchFastRunner(
 }
 
 // A QA step that sent nothing found the runner not answering. Probes it; with `relaunch`, a runner that
-// stopped (never one refused for its identity or version) gets the one bounded attach-only start that a
-// timeout containment uses, under the same single-flight guard.
+// stopped (never one refused for its identity, version or credential) gets the one bounded attach-only
+// start that a timeout containment uses, under the same single-flight guard.
 export async function recoverDownFastRunner(
   deviceId: string,
   bundleId: string,
@@ -2244,15 +2244,19 @@ export async function recoverDownFastRunner(
   // Its reap is done; its own bookkeeping may still hold the poison for a tick. A new reap is not ours.
   if (owned ? poisonReap !== null && poisonReap !== owned : runnerPoisoned) return 'down';
   const first = await probeFastRunnerLivenessDetailed();
-  // A runner that answers is not down. One that answers for another identity or version is not
-  // QaReN's to restart (a relaunch cannot fix it and could end another driver's runner): the
-  // step's own failure stands, as it does for a live one.
+  // A runner that answers is not down. One that answers for another identity, version or
+  // credential is not QaReN's to restart (a relaunch cannot fix it and could end another driver's
+  // runner): the step's own failure stands, as it does for a live one.
   // A containment that replaced the runner while this step waited made the restart for it.
   if (first.liveness === 'alive')
     return owned && runnerState !== stateBefore && readerRelaunch?.outcome === 'ready'
       ? 'relaunched'
       : 'alive';
-  if (first.liveness === 'stale' && first.staleReason !== 'health') return 'alive';
+  if (
+    first.liveness === 'stale' &&
+    (first.staleReason !== 'health' || first.healthDetail === 'http-4xx')
+  )
+    return 'alive';
   if (!relaunch || runnerPoisoned || poisonReap) return 'down';
   try {
     await reapAndRelaunchFastRunner(

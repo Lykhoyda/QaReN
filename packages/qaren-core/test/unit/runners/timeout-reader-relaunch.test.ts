@@ -35,7 +35,7 @@ import {
 } from '../../../dist/runners/protocol.js';
 import { parseEnvelope } from '../../helpers/result-helpers.js';
 
-let healthReplies: ('down' | 'refused' | 'missing-presence' | 'alive')[] = [];
+let healthReplies: ('down' | 'refused' | 'unauthorized' | 'missing-presence' | 'alive')[] = [];
 let spawned: (EventEmitter & {
   stdout: PassThrough;
   stderr: PassThrough;
@@ -155,6 +155,11 @@ beforeEach((t) => {
       if (health === 'down') return Response.json({ ok: false });
       if (health === 'refused')
         throw new TypeError('fetch failed', { cause: { code: 'ECONNREFUSED' } });
+      if (health === 'unauthorized')
+        return Response.json(
+          { ok: false, error: { code: 'RUNNER_OWNERSHIP_MISMATCH' } },
+          { status: 401 },
+        );
       return Response.json({
         ok: true,
         protocolVersion: 2,
@@ -951,6 +956,21 @@ test('I5 a reader answering for another identity is left alone: not down, never 
   });
   assert.equal(await recoverDownFastRunner('fixture-ios', 'dev.fixture', true), 'alive');
   assert.equal(launches, 0);
+});
+
+test('I5b a reader refusing this run credential is left alone: not down, never relaunched', async () => {
+  const tracked = {
+    pid: process.pid,
+    port: 22089,
+    deviceId: 'fixture-ios',
+    bundleId: 'dev.fixture',
+    startedAt: 'now',
+  };
+  _setFastRunnerStateForTest(tracked);
+  healthReplies = ['unauthorized'];
+  assert.equal(await recoverDownFastRunner('fixture-ios', 'dev.fixture', true), 'alive');
+  assert.equal(launches, 0);
+  assert.equal(getFastRunnerState()?.pid, tracked.pid);
 });
 
 test("I6 a step that waited on a containment's relaunch answers relaunched without a launch of its own", async () => {
