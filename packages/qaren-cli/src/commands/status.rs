@@ -148,7 +148,7 @@ pub fn status(runner: &mut dyn Runner, runs_root: &Path, run_id: &str) -> Receip
             ),
         );
         receipt.next_action = format!(
-            "look at the simulator if needed, then qaren cleanup {run_id} --json to release Metro, the simulator and the device lease"
+            "look at the simulator if needed, then qaren cleanup {run_id} --json. It attempts to release this run's recorded resources; check the cleanup receipt for the result."
         );
         receipt.held = Some(held.clone());
     }

@@ -8,6 +8,15 @@ use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+// Writing stdout failed (most often its reader went away); say so on stderr, which may still work, and end as before.
+fn output_closed() -> u8 {
+    let _ = std::io::Write::write_all(
+        &mut std::io::stderr(),
+        b"qaren watch: stopped because it could not write its output; run it again with its output going somewhere writable\n",
+    );
+    0
+}
+
 #[cfg(test)]
 mod queue_tests;
 
@@ -938,18 +947,18 @@ fn follow(
             plain(&state, &mut printed)
         } else {
             if write!(out, "\x1b[H\x1b[2J").is_err() {
-                return 0;
+                return output_closed();
             }
             let (width, height) = dimensions.unwrap();
             frame(&state, width, height)
         };
         for line in lines {
             if writeln!(out, "{line}").is_err() {
-                return 0;
+                return output_closed();
             }
         }
         if out.flush().is_err() {
-            return 0;
+            return output_closed();
         }
         if args.json || state.status() != Status::Live {
             return 0;

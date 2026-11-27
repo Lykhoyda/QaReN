@@ -2883,7 +2883,7 @@ fn teardown(
 ) -> (Vec<(String, String)>, bool, bool) {
     events::stage("cleanup", StageState::Running, None, None);
     let held = Outcome::Held(format!(
-        "{HOLD_REASON}; qaren cleanup {} releases it",
+        "{HOLD_REASON}; qaren cleanup {} can retry the release once the resources that gate the lease are accounted for",
         ctx.record.run_id
     ));
     let mut outcomes: Vec<(String, Outcome)> = Vec::new();

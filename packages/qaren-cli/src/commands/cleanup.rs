@@ -453,10 +453,7 @@ pub fn cleanup_with_policy(
         }
     }
     if let Some(m) = record.resources.metro.clone() {
-        outcomes.push((
-            "metro".to_string(),
-            cleanup_process_group(runner, m.identity.as_ref(), m.spawned.pgid, Some(m.port)),
-        ));
+        outcomes.push(("metro".to_string(), cleanup_metro_group(runner, &m)));
     }
 
     if let Some(outcome) = cleanup_build_slot(runner, &mut record) {
@@ -2653,7 +2650,7 @@ pub(crate) fn unclean_legs(outcomes: &[(String, Outcome)]) -> Vec<String> {
 
 pub(crate) fn retained_lease_outcome(unclean: &[String], run_id: &str) -> Outcome {
     Outcome::Unresolved(format!(
-        "retained: {} not proven gone; qaren cleanup {run_id} releases it",
+        "retained: {} not proven gone; qaren cleanup {run_id} retries the release once they are accounted for",
         unclean.join(", ")
     ))
 }
@@ -2696,23 +2693,49 @@ fn kill_group(
     pgid: i32,
     signal: &str,
 ) -> Result<(), Outcome> {
+    kill_group_draining(runner, identity, pgid, signal, Duration::ZERO).map(|_| ())
+}
+
+// Metro's TERM grace is fixed; its graceful stop after TERM is not.
+const METRO_DRAIN: Duration = Duration::from_secs(20);
+const DRAIN_STEP: Duration = Duration::from_millis(250);
+// Also bounds the wait when the wall clock behind monotonic_ms steps back.
+const DRAIN_MAX_POLLS: u32 = 80;
+
+// `drain` is non-zero only for a recorded Metro, at both its TERM and its KILL step. A held run's Metro
+// launcher is no child of this process: once it exits another process reaps it, its pid stops proving
+// the group is ours, and the signal is withheld. A group whose leader has no process row then gets up to
+// `drain` to leave the process table by itself; nothing more is signalled. On that path a group already
+// absent, like a drained one, returns Ok(false) so the caller's port and presence proofs decide removal.
+// Ok(true) means the signal was attempted (its result is not checked, as before).
+fn kill_group_draining(
+    runner: &mut dyn Runner,
+    identity: Option<&PidIdentity>,
+    pgid: i32,
+    signal: &str,
+    drain: Duration,
+) -> Result<bool, Outcome> {
     let probed = identity
         .filter(|i| i.pid == pgid)
         .map(|i| crate::runrecord::probe_pid_birth(runner, i));
     if !probed.is_some_and(|(_, pinned)| pinned) {
         let liveness = probed.map(|(liveness, _)| liveness);
         runner.try_reap(pgid);
-        return Err(
-            if liveness == Some(PidLiveness::Dead)
-                && metro::group_presence(runner, pgid) == metro::GroupPresence::Absent
-            {
-                Outcome::Removed
-            } else {
-                Outcome::Unresolved(
-                    "process group signal withheld: current leader ownership is unproven".into(),
-                )
-            },
-        );
+        if liveness == Some(PidLiveness::Dead) {
+            match metro::group_presence(runner, pgid) {
+                metro::GroupPresence::Absent if !drain.is_zero() => return Ok(false),
+                metro::GroupPresence::Absent => return Err(Outcome::Removed),
+                metro::GroupPresence::Present
+                    if !drain.is_zero() && leader_row_absent(runner, pgid) =>
+                {
+                    return drain_group(runner, pgid, drain).map(|()| false)
+                }
+                _ => {}
+            }
+        }
+        return Err(Outcome::Unresolved(
+            "process group signal withheld: current leader ownership is unproven".into(),
+        ));
     }
     runner.run(&CmdSpec::new(
         "kill-group",
@@ -2720,7 +2743,49 @@ fn kill_group(
         &[signal, "--", &format!("-{pgid}")],
         10,
     ));
-    Ok(())
+    Ok(true)
+}
+
+// `ps -p` finished, found no such process and said nothing: the only answer that opens the drain.
+fn leader_row_absent(runner: &mut dyn Runner, pid: i32) -> bool {
+    let output = runner.run(&CmdSpec::new(
+        "ps-leader",
+        "ps",
+        &["-p", &pid.to_string(), "-o", "pid="],
+        10,
+    ));
+    !output.timed_out
+        && output.exit_code == Some(1)
+        && output.stdout.trim().is_empty()
+        && output.stderr.trim().is_empty()
+}
+
+// Ok once the group is positively absent; the caller's port and presence checks still decide removal.
+fn drain_group(runner: &mut dyn Runner, pgid: i32, budget: Duration) -> Result<(), Outcome> {
+    let deadline = runner
+        .monotonic_ms()
+        .saturating_add(budget.as_millis() as u64);
+    for _ in 0..DRAIN_MAX_POLLS {
+        // Every listing is charged to the budget and needs a whole second of it (probe_seconds_left).
+        if runner
+            .monotonic_ms()
+            .saturating_add(DRAIN_STEP.as_millis() as u64 + 1000)
+            > deadline
+        {
+            break;
+        }
+        runner.sleep(DRAIN_STEP);
+        runner.try_reap(pgid);
+        // An unknown listing is no proof either way: keep polling inside the budget.
+        if metro::group_presence_until(runner, pgid, Some(deadline)) == metro::GroupPresence::Absent
+        {
+            return Ok(());
+        }
+    }
+    Err(Outcome::Unresolved(format!(
+        "process group not proven gone within a {} s wait after its leader exited; nothing more is signalled without a proven leader",
+        budget.as_secs()
+    )))
 }
 
 pub(crate) fn cleanup_build(
@@ -2807,6 +2872,30 @@ pub(crate) fn cleanup_process_group(
     pgid: i32,
     port: Option<u16>,
 ) -> Outcome {
+    cleanup_process_group_draining(runner, identity, pgid, port, Duration::ZERO)
+}
+
+// A recorded Metro: the one group whose escalation may drain (see kill_group_draining).
+pub(crate) fn cleanup_metro_group(
+    runner: &mut dyn Runner,
+    metro: &crate::runrecord::MetroResource,
+) -> Outcome {
+    cleanup_process_group_draining(
+        runner,
+        metro.identity.as_ref(),
+        metro.spawned.pgid,
+        Some(metro.port),
+        METRO_DRAIN,
+    )
+}
+
+fn cleanup_process_group_draining(
+    runner: &mut dyn Runner,
+    identity: Option<&PidIdentity>,
+    pgid: i32,
+    port: Option<u16>,
+    drain: Duration,
+) -> Outcome {
     let mut cleanup_runner = crate::exec::CleanupRunner(runner);
     let runner: &mut dyn Runner = &mut cleanup_runner;
     // kill -pgid with 0/1/negative has catastrophic special semantics; a record
@@ -2877,17 +2966,31 @@ pub(crate) fn cleanup_process_group(
     let proven_ours = identity.is_some_and(|recorded| recorded.pid == pgid)
         && leader == Some(PidLiveness::AliveMatching);
     let outcome = if proven_ours {
-        if let Err(outcome) = kill_group(runner, identity, pgid, "-TERM") {
-            return outcome;
-        }
-        runner.sleep(Duration::from_millis(1500));
-        if let Err(outcome) = kill_group(runner, identity, pgid, "-KILL") {
-            return outcome;
-        }
-        runner.sleep(Duration::from_millis(300));
+        let termed = match kill_group_draining(runner, identity, pgid, "-TERM", drain) {
+            Ok(termed) => termed,
+            Err(outcome) => return outcome,
+        };
+        // A Metro group already absent or drained at TERM goes straight to the final proofs.
+        let killed = if termed {
+            runner.sleep(Duration::from_millis(1500));
+            let killed = match kill_group_draining(runner, identity, pgid, "-KILL", drain) {
+                Ok(killed) => killed,
+                Err(outcome) => return outcome,
+            };
+            runner.sleep(Duration::from_millis(300));
+            killed
+        } else {
+            false
+        };
+        // Without a KILL attempt from this call (a drained Metro), say where the proof failed instead.
+        let when = if killed { "after KILL" } else { "at final verification" };
         let leader_after = identity.map(|recorded| probe_pid_identity(runner, recorded));
         if leader_after == Some(PidLiveness::AliveMatching) {
-            return Outcome::Unresolved("group leader survived TERM and KILL".to_string());
+            return Outcome::Unresolved(if killed {
+                "group leader survived TERM and KILL".to_string()
+            } else {
+                "group leader alive again at final verification".to_string()
+            });
         }
         if let Some(p) = port {
             let output = runner.run(&metro::port_owner_spec(p));
@@ -2896,24 +2999,24 @@ pub(crate) fn cleanup_process_group(
                 metro::PortOwners::Owned(pid) => match metro::pgid_of(runner, pid) {
                     Some(owner) if owner == pgid => {
                         return Outcome::Unresolved(format!(
-                            "port {p} still owned by the group after KILL"
+                            "port {p} still owned by the group {when}"
                         ))
                     }
                     Some(_) => {}
                     None => {
                         return Outcome::Unresolved(format!(
-                            "port {p} owner could not be attributed after KILL"
+                            "port {p} owner could not be attributed {when}"
                         ))
                     }
                 },
                 metro::PortOwners::Multiple => {
                     return Outcome::Unresolved(format!(
-                        "port {p} has multiple listeners after KILL"
+                        "port {p} has multiple listeners {when}"
                     ))
                 }
                 metro::PortOwners::Unknown => {
                     return Outcome::Unresolved(format!(
-                        "port {p} state could not be determined after KILL"
+                        "port {p} state could not be determined {when}"
                     ))
                 }
             }
@@ -3339,6 +3442,7 @@ fn cleanup_farm(
 mod integrity_tests {
     use super::*;
     use crate::exec::MockRunner;
+    use crate::runrecord::MetroResource;
 
     const BIRTH: &str = "Wed Aug 12 16:01:00 2026";
 
@@ -3356,6 +3460,272 @@ mod integrity_tests {
             CmdOutput::success(&inventory.to_string()),
         );
         runner.expect_run("launchctl list", output);
+    }
+
+    fn held_metro() -> MetroResource {
+        MetroResource {
+            port: 8081,
+            endpoint: "http://127.0.0.1:8081".into(),
+            spawned: crate::exec::Spawned { pid: 5000, pgid: 5000 },
+            identity: Some(PidIdentity {
+                pid: 5000,
+                started_at: BIRTH.into(),
+                command: crate::redact::OutputText::from_output("node pnpm"),
+            }),
+            log: "/tmp/metro.log".into(),
+        }
+    }
+
+    // A held Metro: leader 5000 alive at entry and owning port 8081 through member 6001; TERM sent; at the
+    // KILL step `lstart` finds no leader, so the group is listed (`at_kill`).
+    fn held_metro_to_kill_step(runner: &mut MockRunner, at_kill: CmdOutput) -> MetroResource {
+        runner.expect_run("lstart=", CmdOutput::success(BIRTH));
+        runner.expect_run("stat=", CmdOutput::success("S"));
+        runner.expect_run("lsof", CmdOutput::success("6001\n"));
+        runner.expect_run("pgid=", CmdOutput::success("5000"));
+        runner.expect_run("lstart=", CmdOutput::success(BIRTH));
+        runner.expect_run("stat=", CmdOutput::success("S"));
+        runner.expect_run("/bin/kill -TERM -- -5000", CmdOutput::success(""));
+        runner.expect_run("lstart=", CmdOutput::failed(1, ""));
+        runner.expect_run("ps -A", at_kill);
+        held_metro()
+    }
+
+    const PRESENT: &str = "1 1 Ss\n6001 5000 S\n";
+    const ABSENT: &str = "1 1 Ss\n";
+
+    fn kills(runner: &MockRunner) -> Vec<String> {
+        runner
+            .calls
+            .iter()
+            .filter(|c| c.program == "/bin/kill")
+            .map(|c| c.args.join(" "))
+            .collect()
+    }
+
+    // M-1
+    #[test]
+    fn a_draining_metro_group_is_removed_once_absent_without_another_signal() {
+        let mut runner = MockRunner::new();
+        let metro = held_metro_to_kill_step(&mut runner, CmdOutput::success(PRESENT));
+        runner.expect_run("ps -p 5000 -o pid=", CmdOutput::failed(1, ""));
+        runner.expect_run("ps -A", CmdOutput::success(PRESENT));
+        runner.expect_run("ps -A", CmdOutput::failed(1, "ps: temporarily unavailable"));
+        runner.expect_run("ps -A", CmdOutput::success(ABSENT));
+        runner.expect_run("lstart=", CmdOutput::failed(1, ""));
+        runner.expect_run("lsof", CmdOutput::failed(1, ""));
+        runner.expect_run("ps -A", CmdOutput::success(ABSENT));
+        let started = runner.monotonic_ms();
+        assert_eq!(cleanup_metro_group(&mut runner, &metro), Outcome::Removed);
+        assert_eq!(kills(&runner), vec!["-TERM -- -5000"]);
+        assert_eq!(runner.monotonic_ms() - started, 1500 + 3 * 250 + 300);
+        assert_eq!(runner.remaining(), 0);
+    }
+
+    // M-2 (and unknown listings count as not proven, M-7)
+    #[test]
+    fn a_metro_group_not_proven_gone_within_the_wait_stays_unresolved_and_unsignalled() {
+        let timed_out = CmdOutput { timed_out: true, ..Default::default() };
+        for listing in [CmdOutput::success(PRESENT), CmdOutput::failed(1, "ps: busy"), timed_out] {
+            let mut runner = MockRunner::new();
+            let metro = held_metro_to_kill_step(&mut runner, CmdOutput::success(PRESENT));
+            runner.expect_run("ps -p 5000 -o pid=", CmdOutput::failed(1, ""));
+            for _ in 0..76 {
+                runner.expect_run("ps -A", listing.clone());
+            }
+            let started = runner.monotonic_ms();
+            assert_eq!(
+                cleanup_metro_group(&mut runner, &metro),
+                Outcome::Unresolved("process group not proven gone within a 20 s wait after its leader exited; nothing more is signalled without a proven leader".into())
+            );
+            assert_eq!(kills(&runner), vec!["-TERM -- -5000"]);
+            // The wait stops once less than one poll and a one-second listing fit in 20 s.
+            assert_eq!(runner.monotonic_ms() - started, 1500 + 76 * 250);
+            assert_eq!(runner.remaining(), 0);
+        }
+    }
+
+    // M-3
+    #[test]
+    fn every_listing_in_the_wait_is_capped_to_the_seconds_left() {
+        let mut runner = MockRunner::new();
+        let metro = held_metro_to_kill_step(&mut runner, CmdOutput::success(PRESENT));
+        runner.expect_run("ps -p 5000 -o pid=", CmdOutput::failed(1, ""));
+        runner.advance_on = Some(("ps -A".into(), 4_000));
+        for _ in 0..5 {
+            runner.expect_run("ps -A", CmdOutput::success(PRESENT));
+        }
+        let outcome = cleanup_metro_group(&mut runner, &metro);
+        assert!(matches!(outcome, Outcome::Unresolved(ref why) if why.starts_with("process group not proven gone within a 20 s wait")), "{outcome:?}");
+        // The wait starts after the KILL-step listing; each later listing asks for at most the whole seconds left.
+        let waits: Vec<u64> = runner
+            .calls
+            .iter()
+            .filter(|c| c.label == "ps-groups")
+            .skip(1)
+            .map(|c| c.timeout_seconds)
+            .collect();
+        assert_eq!(waits, vec![10, 10, 10, 7, 2]);
+        assert_eq!(kills(&runner), vec!["-TERM -- -5000"]);
+        assert_eq!(runner.remaining(), 0);
+    }
+
+    // M-4
+    #[test]
+    fn only_a_proven_gone_leader_opens_the_wait() {
+        // A foreign birth or an unreadable probe at the KILL step withholds the KILL exactly as before.
+        for changed in [CmdOutput::success("foreign birth"), CmdOutput::failed(1, "unknown")] {
+            let mut runner = MockRunner::new();
+            runner.expect_run("lstart=", CmdOutput::success(BIRTH));
+            runner.expect_run("stat=", CmdOutput::success("S"));
+            runner.expect_run("lsof", CmdOutput::success("6001\n"));
+            runner.expect_run("pgid=", CmdOutput::success("5000"));
+            runner.expect_run("lstart=", CmdOutput::success(BIRTH));
+            runner.expect_run("stat=", CmdOutput::success("S"));
+            runner.expect_run("/bin/kill -TERM -- -5000", CmdOutput::success(""));
+            runner.expect_run("lstart=", changed);
+            assert_eq!(
+                cleanup_metro_group(&mut runner, &held_metro()),
+                Outcome::Unresolved("process group signal withheld: current leader ownership is unproven".into())
+            );
+            assert_eq!(kills(&runner), vec!["-TERM -- -5000"]);
+            assert_eq!(runner.remaining(), 0);
+        }
+    }
+
+    // M-5
+    #[test]
+    fn an_ambiguous_leader_row_check_never_opens_the_wait() {
+        for check in [
+            CmdOutput::success("5000\n"),
+            CmdOutput::failed(1, "ps: permission denied"),
+            CmdOutput { exit_code: Some(1), stdout: "5000\n".into(), ..Default::default() },
+        ] {
+            let mut runner = MockRunner::new();
+            let metro = held_metro_to_kill_step(&mut runner, CmdOutput::success(PRESENT));
+            runner.expect_run("ps -p 5000 -o pid=", check);
+            assert_eq!(
+                cleanup_metro_group(&mut runner, &metro),
+                Outcome::Unresolved("process group signal withheld: current leader ownership is unproven".into())
+            );
+            assert_eq!(kills(&runner), vec!["-TERM -- -5000"]);
+            assert_eq!(runner.remaining(), 0);
+        }
+    }
+
+    // M-6: an already-absent Metro group still needs the port proof; other callers keep today's shortcut.
+    #[test]
+    fn an_absent_metro_group_is_released_only_with_the_port_proof() {
+        let mut runner = MockRunner::new();
+        let metro = held_metro_to_kill_step(&mut runner, CmdOutput::success(ABSENT));
+        runner.expect_run("lstart=", CmdOutput::failed(1, ""));
+        runner.expect_run("lsof", CmdOutput::failed(2, "lsof: unavailable"));
+        assert_eq!(
+            cleanup_metro_group(&mut runner, &metro),
+            Outcome::Unresolved("port 8081 state could not be determined at final verification".into())
+        );
+        assert_eq!(runner.remaining(), 0);
+        let mut runner = MockRunner::new();
+        let metro = held_metro_to_kill_step(&mut runner, CmdOutput::success(ABSENT));
+        assert_eq!(
+            cleanup_process_group(&mut runner, metro.identity.as_ref(), 5000, Some(8081)),
+            Outcome::Removed
+        );
+        assert_eq!(runner.remaining(), 0);
+    }
+
+    // M-8: a drained group whose port is then owned by the group again is not released.
+    #[test]
+    fn a_drained_metro_group_still_needs_its_port_and_presence_proofs() {
+        let mut runner = MockRunner::new();
+        let metro = held_metro_to_kill_step(&mut runner, CmdOutput::success(PRESENT));
+        runner.expect_run("ps -p 5000 -o pid=", CmdOutput::failed(1, ""));
+        runner.expect_run("ps -A", CmdOutput::success(ABSENT));
+        runner.expect_run("lstart=", CmdOutput::failed(1, ""));
+        runner.expect_run("lsof", CmdOutput::success("6002\n"));
+        runner.expect_run("pgid=", CmdOutput::success("5000"));
+        assert_eq!(
+            cleanup_metro_group(&mut runner, &metro),
+            Outcome::Unresolved("port 8081 still owned by the group at final verification".into())
+        );
+        assert_eq!(kills(&runner), vec!["-TERM -- -5000"]);
+        assert_eq!(runner.remaining(), 0);
+    }
+
+    // The leader matched at entry, then exited and was reaped before the TERM probe.
+    fn held_metro_gone_before_term(runner: &mut MockRunner, at_term: CmdOutput) -> MetroResource {
+        runner.expect_run("lstart=", CmdOutput::success(BIRTH));
+        runner.expect_run("stat=", CmdOutput::success("S"));
+        runner.expect_run("lsof", CmdOutput::success("6001\n"));
+        runner.expect_run("pgid=", CmdOutput::success("5000"));
+        runner.expect_run("lstart=", CmdOutput::failed(1, ""));
+        runner.expect_run("ps -A", at_term);
+        held_metro()
+    }
+
+    // M-9: absent already at TERM still needs the port proof on the Metro path; other callers keep today's shortcut.
+    #[test]
+    fn a_metro_group_gone_before_term_is_released_only_with_the_port_proof() {
+        let mut runner = MockRunner::new();
+        let metro = held_metro_gone_before_term(&mut runner, CmdOutput::success(ABSENT));
+        // No second decision: straight to the leader and port proofs.
+        runner.expect_run("lstart=", CmdOutput::failed(1, ""));
+        runner.expect_run("lsof", CmdOutput::failed(2, "lsof: unavailable"));
+        let started = runner.monotonic_ms();
+        assert_eq!(
+            cleanup_metro_group(&mut runner, &metro),
+            Outcome::Unresolved("port 8081 state could not be determined at final verification".into())
+        );
+        assert!(kills(&runner).is_empty());
+        assert_eq!(runner.monotonic_ms(), started, "no grace or settle after an absent group");
+        assert_eq!(runner.remaining(), 0);
+        let mut runner = MockRunner::new();
+        let metro = held_metro_gone_before_term(&mut runner, CmdOutput::success(ABSENT));
+        assert_eq!(
+            cleanup_process_group(&mut runner, metro.identity.as_ref(), 5000, Some(8081)),
+            Outcome::Removed
+        );
+        assert_eq!(runner.remaining(), 0);
+    }
+
+    // M-10: a group whose leader is gone before TERM is waited on and released without any signal.
+    #[test]
+    fn a_metro_group_draining_before_term_is_released_without_any_signal() {
+        let mut runner = MockRunner::new();
+        let metro = held_metro_gone_before_term(&mut runner, CmdOutput::success(PRESENT));
+        runner.expect_run("ps -p 5000 -o pid=", CmdOutput::failed(1, ""));
+        runner.expect_run("ps -A", CmdOutput::success(ABSENT));
+        // No second decision after the drain: straight to the leader, port and final-listing proofs.
+        runner.expect_run("lstart=", CmdOutput::failed(1, ""));
+        runner.expect_run("lsof", CmdOutput::failed(1, ""));
+        runner.expect_run("ps -A", CmdOutput::success(ABSENT));
+        let started = runner.monotonic_ms();
+        assert_eq!(cleanup_metro_group(&mut runner, &metro), Outcome::Removed);
+        assert!(kills(&runner).is_empty());
+        assert_eq!(runner.monotonic_ms() - started, 250, "one wait poll, no grace or settle");
+        assert_eq!(runner.remaining(), 0);
+    }
+
+    // M-11: a positive absence is proof even when its listing finished after the budget ran out.
+    #[test]
+    fn a_late_absent_listing_still_counts_as_proof() {
+        let mut runner = MockRunner::new();
+        let metro = held_metro_to_kill_step(&mut runner, CmdOutput::success(PRESENT));
+        runner.expect_run("ps -p 5000 -o pid=", CmdOutput::failed(1, ""));
+        runner.advance_on = Some(("ps -A".into(), 6_000));
+        for _ in 0..3 {
+            runner.expect_run("ps -A", CmdOutput::success(PRESENT));
+        }
+        runner.expect_run("ps -A", CmdOutput::success(ABSENT));
+        runner.expect_run("lstart=", CmdOutput::failed(1, ""));
+        runner.expect_run("lsof", CmdOutput::failed(1, ""));
+        runner.expect_run("ps -A", CmdOutput::success(ABSENT));
+        let started = runner.monotonic_ms();
+        assert_eq!(cleanup_metro_group(&mut runner, &metro), Outcome::Removed);
+        // The KILL-step listing (6 s) precedes the budget; the fourth wait listing ends at 25 s into it.
+        assert!(runner.monotonic_ms() - started > 1500 + 6_000 + 20_000);
+        assert_eq!(kills(&runner), vec!["-TERM -- -5000"]);
+        assert_eq!(runner.remaining(), 0);
     }
 
     #[test]

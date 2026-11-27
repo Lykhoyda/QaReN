@@ -95,6 +95,21 @@ fn check_budgets() -> Budgets {
     }
 }
 
+// Plain output is written and flushed here, so a lost last line is reported instead of dropped at exit.
+fn deliver(verb: &str, text: &str, code: ExitCode) -> ExitCode {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    if out.write_all(text.as_bytes()).and_then(|()| out.flush()).is_ok() {
+        return code;
+    }
+    if verb == "update" {
+        eprintln!("qaren update: the update finished but its output could not be written; qaren --version shows the version now selected");
+    } else {
+        eprintln!("qaren {verb}: could not write its output; run it again with its output going somewhere writable");
+    }
+    ExitCode::from(1)
+}
+
 fn failed_receipt(verb: &str, failure: Failure, runner: &dyn Runner) -> Receipt {
     let mut receipt = Receipt::new(
         verb,
@@ -136,6 +151,8 @@ fn actions(args: &[String], json: bool) -> ExitCode {
                     "{}\n",
                     serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
                 )
+            } else if entries.is_empty() {
+                "no saved blocks in this app's .qaren/actions\n".to_string()
             } else {
                 qaren::actions::render(&entries)
             }
@@ -147,10 +164,11 @@ fn actions(args: &[String], json: bool) -> ExitCode {
         }
     };
     match result {
-        Ok(text) => {
-            print!("{}", qaren::redact::redact_inputs(&text));
-            ExitCode::from(0)
-        }
+        Ok(text) => deliver(
+            "actions",
+            &qaren::redact::redact_inputs(&text),
+            ExitCode::from(0),
+        ),
         Err(detail) => {
             eprintln!("qaren actions: {detail}");
             ExitCode::from(1)
@@ -168,11 +186,16 @@ fn plans(json: bool) -> ExitCode {
                     "{}\n",
                     serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
                 )
+            } else if entries.is_empty() {
+                "no saved plans in this app's .qaren/plans\n".to_string()
             } else {
                 qaren::recipes::render(&entries)
             };
-            print!("{}", qaren::redact::redact_inputs(&text));
-            ExitCode::from(0)
+            deliver(
+                "plans",
+                &qaren::redact::redact_inputs(&text),
+                ExitCode::from(0),
+            )
         }
         Err(detail) => {
             eprintln!("qaren plans: {detail}");
@@ -182,11 +205,14 @@ fn plans(json: bool) -> ExitCode {
 }
 
 fn main() -> ExitCode {
+    // First: a stop signal leaves one line from here on (cancel.rs).
+    qaren::cancel::install_stop_line();
     let raw_args: Vec<_> = std::env::args_os().skip(1).collect();
     if raw_args
         .first()
         .is_some_and(|arg| arg == qaren::volume::HELPER_ARG)
     {
+        qaren::cancel::restore_stop_defaults();
         return ExitCode::from(match raw_args.as_slice() {
             [_, root] => qaren::volume::run_helper(std::path::Path::new(root)),
             _ => 2,
@@ -196,6 +222,7 @@ fn main() -> ExitCode {
         .first()
         .is_some_and(|arg| arg == qaren::process_observation::HELPER_ARG)
     {
+        qaren::cancel::restore_stop_defaults();
         return ExitCode::from(qaren::process_observation::run_helper(&raw_args));
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -203,6 +230,7 @@ fn main() -> ExitCode {
         .first()
         .is_some_and(|arg| arg == qaren::exec::log::HELPER_ARG)
     {
+        qaren::cancel::restore_stop_defaults();
         let paired = args.iter().any(|arg| arg == qaren::exec::log::PAIRED_ARG);
         return ExitCode::from(u8::from(qaren::exec::log::run_helper(paired).is_err()));
     }
@@ -212,8 +240,7 @@ fn main() -> ExitCode {
 
 fn main_inner(args: Vec<String>) -> ExitCode {
     if args == ["--version"] {
-        println!("qaren {}", qaren::VERSION);
-        return ExitCode::SUCCESS;
+        return deliver("--version", &format!("qaren {}\n", qaren::VERSION), ExitCode::SUCCESS);
     }
     if args.first().is_some_and(|verb| verb == "watch") {
         return watch(&args[1..]);
@@ -408,10 +435,7 @@ fn main_inner(args: Vec<String>) -> ExitCode {
         };
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         return match update::update(&cwd, &home) {
-            Ok(text) => {
-                println!("{text}");
-                ExitCode::SUCCESS
-            }
+            Ok(text) => deliver("update", &format!("{text}\n"), ExitCode::SUCCESS),
             Err((code, message)) => {
                 eprintln!("{message}");
                 ExitCode::from(code)
@@ -459,15 +483,12 @@ fn main_inner(args: Vec<String>) -> ExitCode {
                 .checks
                 .push(doctor::android_target_row(&runner, serial));
         }
-        print!(
-            "{}",
-            if json {
-                format!("{}\n", report.to_json())
-            } else {
-                report.render()
-            }
-        );
-        return ExitCode::from(report.exit_code());
+        let text = if json {
+            format!("{}\n", report.to_json())
+        } else {
+            report.render()
+        };
+        return deliver("doctor", &text, ExitCode::from(report.exit_code()));
     }
     let mut runner = RealRunner::new();
     let receipt = match verb.as_str() {
@@ -623,7 +644,11 @@ fn main_inner(args: Vec<String>) -> ExitCode {
         writeln!(std::io::stdout(), "{}", receipt.to_json()).is_ok()
     };
     if !receipt_delivered {
-        eprintln!("qaren: could not write the receipt to stdout");
+        // Fixed text: the run id is not echoed, since the receipt may name a run that was never saved.
+        eprintln!(
+            "qaren {}: could not write its receipt to stdout; if it started or changed a run, check that run with qaren status before running it again with its output going somewhere writable",
+            receipt.verb
+        );
         return ExitCode::from(1);
     }
     eprintln!(

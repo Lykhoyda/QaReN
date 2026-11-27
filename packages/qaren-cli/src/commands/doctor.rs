@@ -555,7 +555,7 @@ pub fn held_note(lock_root: &Path, runs_root: &Path, udid: &str) -> Option<Strin
         return None;
     };
     Some(format!(
-        " ({} since {}, run {}; {} releases it)",
+        " ({} since {}, run {}; {} can retry the release once the resources that gate the lease are accounted for)",
         held.reason,
         held.since,
         holder.run_id,
