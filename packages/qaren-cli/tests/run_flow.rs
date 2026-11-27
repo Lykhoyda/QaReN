@@ -4480,6 +4480,74 @@ fn every_core_refusal_code_ends_through_teardown() {
     }
 }
 
+// AI-515: a walk-time runner-down refusal from the core child reaches the receipt with the ordered
+// recovery ladder naming QaReN's runner; an open-time runner-start refusal under the same code keeps
+// the generic next step.
+#[test]
+fn a_walk_time_runner_down_refusal_carries_the_recovery_ladder_on_the_receipt() {
+    let walk_time = "QaReN's own device runner stopped answering before this step sent anything, and QaReN could not bring it back; nothing was sent to the app, and neither the app nor the plan is the cause";
+    for (code, message, ladder, device_rung) in [
+        ("RN_FAST_RUNNER_DOWN", walk_time, true, "restart the simulator"),
+        ("RN_ANDROID_RUNNER_DOWN", walk_time, true, "restart it ("),
+        (
+            "RN_FAST_RUNNER_DOWN",
+            "Failed to start device runner: iOS runner did not become ready",
+            false,
+            "",
+        ),
+        (
+            "RN_ANDROID_RUNNER_DOWN",
+            "Failed to start device runner: qaren-android-runner source build failed",
+            false,
+            "",
+        ),
+    ] {
+        let (repo, app) = app_repo();
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        script_provision(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let refusal = serde_json::json!({ "verdict": "REFUSED", "code": code, "message": message });
+        let stdout = format!(
+            "{}\n{}\n",
+            envelope(2, "admitted", "{}"),
+            envelope(3, "result", &refusal.to_string())
+        );
+        mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(4));
+        script_core_identity(&mut mock);
+        script_teardown(&mut mock);
+
+        let receipt = run(&mut mock, &request(&repo, &app, 30));
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{code}");
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!(failure.detail, format!("{code}: {message}"), "{code}");
+        let next = failure.next_action.as_str();
+        if ladder {
+            assert!(next.starts_with("QaReN's own"), "{code}: {next}");
+            let rungs = [
+                "re-run once",
+                device_rung,
+                "rebuilding the app does not help",
+                "qaren cleanup",
+            ];
+            let positions: Vec<usize> = rungs
+                .iter()
+                .map(|rung| {
+                    next.find(rung)
+                        .unwrap_or_else(|| panic!("{code}: missing {rung:?} in {next}"))
+                })
+                .collect();
+            assert!(positions.windows(2).all(|w| w[0] < w[1]), "{code}: {next}");
+            assert!(next.contains("ask the user first"), "{code}");
+        } else {
+            assert_eq!(next, "resolve the refusal, then re-run", "{code}");
+        }
+        assert_eq!(receipt.cleanup["device_lease"], "removed", "{code}");
+        assert_eq!(mock.remaining(), 0, "{code}");
+    }
+}
+
 #[test]
 fn an_unresolved_metro_group_retains_the_device_lease_for_cleanup() {
     let (repo, app) = app_repo();
