@@ -35,8 +35,29 @@ impl AsRef<std::ffi::OsStr> for TempRepo {
     }
 }
 
+// A test may have left a directory it made unreadable or read-only; removal needs it open again.
+fn unlock(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if !meta.is_dir() {
+        return;
+    }
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700));
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            unlock(&entry.path());
+        }
+    }
+}
+
 impl Drop for TempRepo {
     fn drop(&mut self) {
+        if std::fs::remove_dir_all(&self.0).is_ok() {
+            return;
+        }
+        unlock(&self.0);
         match std::fs::remove_dir_all(&self.0) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                 eprintln!("cannot remove {}: {e}", self.0.display())
@@ -46,21 +67,51 @@ impl Drop for TempRepo {
     }
 }
 
-pub fn temp_repo() -> TempRepo {
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+// Creates `<temp>/<prefix>-<pid>-<n>-<nanos>` and fails if that name exists, so the folder is this
+// owner's alone. Fill it through the returned owner; it is removed when the owner drops.
+pub fn temp_dir(prefix: &str) -> TempRepo {
+    use std::os::unix::fs::DirBuilderExt;
     // A recycled PID must not reopen a leftover tree that already contains runs.
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
     let dir = std::env::temp_dir().canonicalize().unwrap().join(format!(
-        "qaren-test-{}-{}-{}",
+        "{prefix}-{}-{}-{}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::SeqCst),
         nonce
     ));
     std::fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
-    let dir = TempRepo(dir);
+    TempRepo(dir)
+}
+
+// Renames `from` to `to` now and back again when the returned value drops, so a panic while the
+// path is away leaves no stray sibling of an owned folder.
+pub struct RenamedAway {
+    from: PathBuf,
+    to: PathBuf,
+}
+
+pub fn rename_away(from: &Path, to: &Path) -> RenamedAway {
+    std::fs::rename(from, to).unwrap();
+    RenamedAway {
+        from: from.to_path_buf(),
+        to: to.to_path_buf(),
+    }
+}
+
+impl Drop for RenamedAway {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::rename(&self.to, &self.from) {
+            eprintln!("cannot move {} back: {e}", self.to.display());
+        }
+    }
+}
+
+pub fn temp_repo() -> TempRepo {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = temp_dir("qaren-test");
     std::fs::create_dir_all(dir.join("test-app")).unwrap();
     std::fs::write(dir.join("test-app").join("package.json"), "{}").unwrap();
     std::fs::create_dir_all(dir.join("test-app/node_modules/.bin")).unwrap();

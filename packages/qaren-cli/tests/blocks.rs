@@ -1,14 +1,15 @@
+mod common;
+
 use qaren::actions;
 use qaren::exec::RealRunner;
 use qaren::run::{app_root_for, worktree_drift, worktree_status};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("qaren-blocks-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn temp_dir(name: &str) -> common::TempRepo {
+    let dir = common::temp_dir(&format!("qaren-blocks-{name}"));
     std::fs::create_dir_all(dir.join(".qaren/actions")).unwrap();
-    dir.canonicalize().unwrap()
+    dir
 }
 
 fn block(slug: &str, platform: &str, hash: &str) -> String {
@@ -230,15 +231,15 @@ fn external_config_never_writes_into_its_project() {
     let tree = temp_dir("tree");
     assert_eq!(
         app_root_for(&root.join(".qaren/config.yaml"), &tree).unwrap(),
-        tree
+        &*tree
     );
     assert_eq!(
         app_root_for(&root.join("qa/external.yaml"), &tree).unwrap(),
-        tree
+        &*tree
     );
     assert_eq!(
         app_root_for(&tree.join(".qaren/config.yaml"), &tree).unwrap(),
-        tree
+        &*tree
     );
     let action = root.join(".qaren/actions/login.yaml");
     std::fs::write(&action, "project B action").unwrap();
@@ -360,7 +361,8 @@ fn worktree_drift_excludes_saved_blocks_and_reports_other_changed_paths() {
 #[test]
 fn actions_refuse_a_symlinked_action_file_instead_of_skipping_it() {
     let root = temp_dir("filelink");
-    let outside = temp_dir("outside").join("secret.yaml");
+    let outside_dir = temp_dir("outside");
+    let outside = outside_dir.join("secret.yaml");
     std::fs::write(&outside, "# id: secret\n# intent: outside\n").unwrap();
     std::os::unix::fs::symlink(&outside, root.join(".qaren/actions/linked.yaml")).unwrap();
     assert!(actions::show(&mut RealRunner::new(), &root, "linked").is_err());

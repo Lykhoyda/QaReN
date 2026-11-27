@@ -8,6 +8,7 @@
 // - maestro_run appends -e KEY=VALUE args to the maestro-runner argv
 // - cdp_run_action forwards params to the first maestro_run call
 // - cdp_run_action forwards params to the post-repair retry maestro_run call
+import '../helpers/private-tmp.ts';
 import { test, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 

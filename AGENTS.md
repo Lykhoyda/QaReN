@@ -170,12 +170,14 @@ bash scripts/sync-versions.sh
 corepack yarn build && corepack yarn test
 corepack yarn test:integration
 corepack yarn workspace qaren-core test:contract
-cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked
+node scripts/test-tmp-guard.mts -- cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked
 bash scripts/check-public-runner-assets.sh
 for t in scripts/test/*.test.sh; do bash "$t"; done
-node --test scripts/test/check-document-ownership.test.ts scripts/test/assert-qaren-check.test.ts scripts/test/gate-qaren-check.test.ts scripts/test/native-ios-command.test.ts
+node --test scripts/test/check-document-ownership.test.ts scripts/test/assert-qaren-check.test.ts scripts/test/gate-qaren-check.test.ts scripts/test/native-ios-command.test.ts scripts/test/test-tmp-guard.test.ts
 corepack yarn build:docs
 ```
+
+A new test owns its temp folder. In `packages/qaren-cli` create it with `crate::test_tmp::TestDir::new` (`src`) or `common::temp_dir` (`tests`) and keep the returned owner bound until the test ends; in `packages/qaren-core` a test file that writes under `os.tmpdir()` imports `test/helpers/private-tmp.ts` first. `scripts/test-tmp-guard.mts` runs a command in an empty temp folder and fails a passing run that leaves an entry there (`TEST_TMP_LEFTOVER`; two tool caches are exempt); the core test scripts and CI's `cargo test` step run through it.
 
 Jev unit tests are hermetic. `corepack yarn jev:evals` requires `TYPESAFE_API_KEY` and makes live calls; run it before changing the pinned model. The device-bound `gate:qaren-check` follows the [plan readiness contract](packages/qaren-cli/README.md#check-a-plan) and uninstalls the selected test app through `qaren check --fresh-install` under the CLI's device lease; coordinate external device ownership before running it. It accepts `--plan-file` for the phrase fixture under `packages/qaren-core/test/fixtures/plans/`.
 

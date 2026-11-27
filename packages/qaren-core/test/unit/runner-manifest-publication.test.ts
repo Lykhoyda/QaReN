@@ -9,6 +9,7 @@
 // real local git remote and a recording `gh` double, then asserting the
 // resulting refs, releases, tags, uploads and CLI call sequence.
 
+import '../helpers/private-tmp.ts';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';

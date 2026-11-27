@@ -11,6 +11,7 @@
 //   - a forced mirror failure never breaks the authoritative sidecar write
 //     and never throws into the authoritative path
 //   - the #101 pair-write + #117 CAS semantics are not regressed by the mirror
+import '../../helpers/private-tmp.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';

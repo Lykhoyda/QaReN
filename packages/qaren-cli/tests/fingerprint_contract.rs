@@ -145,14 +145,8 @@ fn default_expo_backend_keeps_the_legacy_cache_key() {
     assert_eq!(prior.clone().with_ios_workspace(None), prior);
 }
 
-fn plugin_project(plugin: &str) -> std::path::PathBuf {
-    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let root = std::env::temp_dir().join(format!(
-        "qaren-fp-scan-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+fn plugin_project(plugin: &str) -> common::TempRepo {
+    let root = common::temp_dir("qaren-fp-scan");
     std::fs::create_dir_all(root.join("plugins")).unwrap();
     std::fs::create_dir_all(root.join("config")).unwrap();
     std::fs::write(
@@ -529,7 +523,7 @@ fn symlinked_plugin_seeds_dependencies_and_parent_directories_forbid_reuse() {
     }
 }
 
-fn local_dependency_project(spec: &str) -> std::path::PathBuf {
+fn local_dependency_project(spec: &str) -> common::TempRepo {
     let root = plugin_project("module.exports = (c) => c;");
     std::fs::write(
         root.join("package.json"),
@@ -661,7 +655,7 @@ fn optional_local_dependencies_bind_native_inputs_and_unresolved_workspaces() {
     }
 }
 
-fn package_project() -> std::path::PathBuf {
+fn package_project() -> common::TempRepo {
     let root = plugin_project(
         "import { type ConfigPlugin, withAppDelegate } from 'expo/config-plugins';\n\
          import path from 'path';\n\
@@ -715,7 +709,7 @@ fn package_fingerprint(root: &Path) -> NativeFingerprint {
     compute(&mut runner, root, root, "ios").unwrap()
 }
 
-fn local_package_plugin(spec: &str, section: &str, bare_import: bool) -> std::path::PathBuf {
+fn local_package_plugin(spec: &str, section: &str, bare_import: bool) -> common::TempRepo {
     let root = local_dependency_project(spec);
     std::fs::write(
         root.join("package.json"),
@@ -1078,7 +1072,7 @@ mod common;
 const EXPO_H: &str = "562e2ce413075778e281d21d5d710ac72e76cb12";
 const XCODE: &str = "Xcode 27.0\nBuild version 27A266a\n";
 
-fn dynamic_project() -> std::path::PathBuf {
+fn dynamic_project() -> common::TempRepo {
     let root = plugin_project("module.exports = c => c;");
     std::fs::remove_file(root.join("app.json")).unwrap();
     std::fs::write(
@@ -1608,7 +1602,7 @@ fn android_dynamic_config_binds_both_build_environments() {
         assert_eq!(calls.len(), 3, "resolve once, evaluate twice");
         for call in &calls {
             assert_eq!(call.timeout_seconds, 120);
-            assert_eq!(call.cwd.as_deref(), Some(root.as_path()));
+            assert_eq!(call.cwd.as_deref(), Some(&*root));
         }
         assert!(calls[1].unset.contains(&"CI".into()));
         assert!(calls[2].env.contains(&("CI".into(), "1".into())));

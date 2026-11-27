@@ -4,6 +4,7 @@
 //   1. storeMode() returns one of the allowed literals for a fresh temp root.
 //   2. Calling storeMode() does NOT create the DB file (read-only contract).
 //   3. storeMode() returns 'degraded:sqlite-unavailable' when the ctor is forced null.
+import '../helpers/private-tmp.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync } from 'node:fs';

@@ -62,7 +62,7 @@ corepack yarn format:check
 corepack yarn lint
 bash scripts/check-typescript-only.sh
 corepack yarn build && corepack yarn test
-cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked
+node scripts/test-tmp-guard.mts -- cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked
 ```
 
 The commands above need no simulator. For a docs site change, run

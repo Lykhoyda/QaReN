@@ -592,11 +592,8 @@ mod tests {
     use crate::failure::{Failure, FailureCode};
     use crate::receipt::{Receipt, ReceiptResult};
 
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("qaren-events-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp(name: &str) -> crate::test_tmp::TestDir {
+        crate::test_tmp::TestDir::new(&format!("qaren-events-{name}"))
     }
 
     fn lines(path: &Path) -> Vec<Envelope> {

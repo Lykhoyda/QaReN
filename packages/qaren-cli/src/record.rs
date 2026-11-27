@@ -877,16 +877,9 @@ pub fn publication_copy(
 mod tests {
     use super::*;
     use crate::exec::{CmdOutput, MockRunner, Spawned};
-    use std::sync::atomic::{AtomicU32, Ordering};
 
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-    pub(super) fn temp_run_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "qaren-record-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::SeqCst)
-        ));
+    pub(super) fn temp_run_dir() -> crate::test_tmp::TestDir {
+        let dir = crate::test_tmp::TestDir::new("qaren-record");
         std::fs::create_dir_all(media_dir(&dir)).unwrap();
         dir
     }

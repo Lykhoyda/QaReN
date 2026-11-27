@@ -7377,9 +7377,13 @@ fn plant_member(repo: &std::path::Path, udid: &str) {
     .unwrap();
 }
 
-// A real data directory shared by the tests that do not look at the log store: its store is absent.
+// A real data directory for a test that does not look at the log store: its store is absent.
+// One per test thread, removed when that thread ends.
 fn sims_root() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("qaren-prepare-flow-sims-{}", std::process::id()))
+    thread_local! {
+        static ROOT: common::TempRepo = common::temp_dir("qaren-prepare-flow-sims");
+    }
+    ROOT.with(|root| root.to_path_buf())
 }
 
 fn sim_data(root: &std::path::Path, udid: &str) -> std::path::PathBuf {

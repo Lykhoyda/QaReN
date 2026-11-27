@@ -344,7 +344,7 @@ mod tests {
 
     const FREEZE: &str = "[freezedetect @ 0x123] lavfi.freezedetect.freeze_start: 2.5\n[freezedetect @ 0x123] lavfi.freezedetect.freeze_duration: 8\n[freezedetect @ 0x123] lavfi.freezedetect.freeze_end: 10.5\n";
 
-    fn fixture() -> (PathBuf, Ledger) {
+    fn fixture() -> (crate::test_tmp::TestDir, Ledger) {
         let dir = super::super::tests::temp_run_dir();
         std::fs::create_dir_all(dir.join("screenshots")).unwrap();
         for name in ["a", "b"] {
