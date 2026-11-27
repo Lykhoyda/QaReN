@@ -8,7 +8,8 @@ import { join as joinScreen, type Element, type Screen } from '../../../dist/qa/
 import { capturePrivateScreen, MASK, ObservedPrivacy } from '../../../dist/qa/privacy.js';
 import { APP_TEXT_OPEN, APP_TEXT_CLOSE } from '../../../dist/qa/untrusted.js';
 import { decideScreen } from '../../../dist/qa/resolve.js';
-import { runPlan } from '../../../dist/qa/walker.js';
+import { readBlock, serializeBlock } from '../../../dist/qa/blocks.js';
+import { loginBlock, runPlan } from '../../../dist/qa/walker.js';
 import type { LedgerRow } from '../../../dist/qa/ledger.js';
 import { element, screen as fixtureScreen, scriptedJudge, walker } from './judgment-fixtures.ts';
 
@@ -259,63 +260,81 @@ test('app-controlled private values cannot mask the fixed provenance frame', asy
   assert.doesNotMatch(JSON.stringify(ledger), /[\uE0F0\uE0F1]/u);
 });
 
-for (const order of ['before', 'after'] as const) {
-  test(`private-use target labels are masked when the value is observed ${order} the refusal`, async () => {
+for (const policy of ['strict', 'non-strict'] as const) {
+  test(`a saved login Press carries only fixed terminal detail through ${policy} parent recovery`, async () => {
     const value = 'account\uE123canary';
     const input = element('@input', 'Name', { kind: 'input', testID: 'name', value });
-    const screens = [700, 700, 702, 704, 706, 708].map((y) =>
-      fixtureScreen([
-        element('@go', value, { testID: 'go', rect: { x: 20, y, width: 300, height: 44 } }),
-        ...(order === 'before' ? [input] : []),
-      ]),
+    const wall = element('@wall', 'Welcome', { testID: 'login-screen' });
+    const saved = parsePlan('### Login\n1. Tap "go"').blocks![0];
+    const stored = serializeBlock(
+      saved,
+      [
+        {
+          block: saved.slug,
+          line: saved.items[0].line,
+          outcome: 'pass',
+          selector: { id: 'go' },
+        },
+      ],
+      { appId: 'com.test', platform: 'ios' },
     );
+    assert.ok('yaml' in stored);
+    const loaded = readBlock(stored.yaml);
+    assert.ok(!('invalid' in loaded));
     const f = walker(
-      screens,
+      [],
       scriptedJudge(() => assert.fail('exact target needs no Jev')),
-      {
-        ok: false,
-        proven: false,
-        mutation: 'none',
-        error: 'TARGET_MOVED_BEFORE_DISPATCH: target moved before dispatch; no tap was performed',
-      },
     );
-    let later = false;
-    if (order === 'after') {
-      let captures = 0;
-      f.deps.captureScreen = async () =>
-        fixtureScreen([
-          element('@wall', 'Welcome', { testID: 'login-screen' }),
-          element('@go', value, {
-            testID: 'go',
-            rect: { x: 20, y: 700 + captures++ * 2, width: 300, height: 44 },
-          }),
-          ...(later ? [input] : []),
-        ]);
-      f.deps.row = (row) => {
-        if (row.outcome === 'fail') later = true;
-      };
-      f.deps.hideDevMenu = async () => ({ ok: true, proven: true });
-      f.deps.login = {
-        marker: { id: 'login-screen' },
-        block: parsePlan('### Login\n1. Tap "go"').blocks![0],
-      };
-    }
-    const ledger = await runPlan(
-      parsePlan(order === 'before' ? '1. Tap "go"' : '1. Tap "Settings"').blocks!,
-      f.deps,
-    );
-    assert.equal(ledger.verdict, 'FAIL');
-    assert.equal(ledger.jev.calls, 0);
-    if (order === 'after')
-      assert.equal(later, true, 'the login fails before the value is observed');
-    for (const reason of [ledger.steps.at(-1)?.reason, ledger.failure?.seen]) {
-      assert.ok(
-        reason?.includes(`${APP_TEXT_OPEN}button "${MASK}", testID "go"${APP_TEXT_CLOSE}`),
-        reason,
+    f.deps.videoPolicy = policy;
+    f.deps.hideDevMenu = async () => ({ ok: true, proven: true });
+    f.deps.login = { marker: { id: 'login-screen' }, block: loginBlock(saved.slug, loaded) };
+    f.deps.press = async (ref, context) => {
+      context.authorize();
+      f.actions.push(ref);
+      return { ok: false, proven: false, mutation: 'none', error: 'TARGET_MOVED_BEFORE_DISPATCH' };
+    };
+    let afterFailure = false;
+    let lateReads = 0;
+    f.deps.row = (row) => {
+      if (row.outcome === 'fail') afterFailure = true;
+    };
+    f.deps.screenshot = async () => {
+      assert.fail('fixed login failure must omit screenshots');
+    };
+    f.deps.captureScreen = async (options) => {
+      assert.equal(
+        afterFailure,
+        false,
+        'parent recovery must not capture after the nested failure',
       );
-      assert.doesNotMatch(reason ?? '', /account|canary|\uFFFD|[\uE0F0\uE0F1]/u);
-    }
-    assert.doesNotMatch(JSON.stringify(ledger), /account|canary|[\uE0F0\uE0F1]/u);
+      if (options?.pressGuardRead) lateReads++;
+      const button = element('@go', value, {
+        testID: 'go',
+        rect: { x: 20, y: lateReads ? 702 : 700, width: 300, height: 44 },
+      });
+      const screen = fixtureScreen([wall, button, ...(lateReads ? [input] : [])]);
+      if (lateReads)
+        capturePrivateScreen(screen, [
+          { values: [value], secure: false, elements: [input], associationUnique: true },
+        ]);
+      return screen;
+    };
+    const ledger = await runPlan(parsePlan('1. Tap "Settings"').blocks!, f.deps);
+    assert.equal(ledger.verdict, 'FAIL');
+    assert.deepEqual(f.actions, ['@go']);
+    assert.ok(lateReads > 0);
+    assert.equal(ledger.failure?.subreason, 'press-retry-screen-changed');
+    const detail =
+      'ACTION_OUTCOME_UNCERTAIN: The screen changed without proving the planned transition. The original action was never sent.';
+    const outer = `the login block did not pass: ${detail}`;
+    assert.equal(ledger.failure?.seen, outer);
+    const failures = ledger.steps.filter((row) => row.outcome === 'fail');
+    assert.deepEqual(
+      failures.map((row) => row.reason),
+      [detail, outer],
+    );
+    assert.notEqual(failures[0].operationId, failures[1].operationId);
+    assert.doesNotMatch(JSON.stringify(ledger), /account|canary|702|\uFFFD|[\uE0F0\uE0F1]/u);
   });
 }
 
@@ -412,12 +431,12 @@ for (const value of [
   });
 }
 
-test('a private value first observed after a failed attempt masks its earlier reason', async () => {
+test('a private value first observed in the Press window stays out of its fixed failure', async () => {
   const value = 'later</app-text>canary';
   const button = element('@go', 'Go', { testID: 'go' });
   const input = element('@input', 'Name', { kind: 'input', value });
   const f = walker(
-    [view([button])],
+    [],
     scriptedJudge(() => assert.fail('literal only')),
     {
       ok: false,
@@ -426,18 +445,22 @@ test('a private value first observed after a failed attempt masks its earlier re
       error: `The handler could not use ${value}`,
     },
   );
-  let later = false;
-  f.deps.captureScreen = async () => view(later ? [button, input] : [button]);
-  f.deps.row = (row) => {
-    if (row.outcome === 'retry') later = true;
+  let observed = false;
+  f.deps.captureScreen = async (options) => {
+    if (!options?.pressGuardRead) return view([button]);
+    observed = true;
+    const screen = view([button, input]);
+    capturePrivateScreen(screen, [
+      { values: [value], secure: false, elements: [input], associationUnique: true },
+    ]);
+    return screen;
   };
   const ledger = await runPlan(parsePlan('1. Tap "go"').blocks!, f.deps);
   assert.equal(ledger.verdict, 'FAIL');
-  assert.equal(later, true);
-  assert.equal(
-    ledger.steps.find((row) => row.outcome === 'retry')?.reason,
-    `The handler could not use ${MASK}; the screen did not change; retrying once`,
-  );
+  assert.equal(observed, true);
+  assert.equal(ledger.steps.length, 1);
+  assert.equal(ledger.steps[0].reason, ledger.failure?.seen);
+  assert.match(ledger.failure?.seen ?? '', /The original action was never sent/);
   assert.doesNotMatch(JSON.stringify(ledger), /later|canary|[\uE0F0\uE0F1]/u);
 });
 

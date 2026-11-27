@@ -1,5 +1,12 @@
 import { cleanProvenanceReadDiagnostic } from './label-provenance.js';
-import { NATIVE_CODES, REFUSAL_STAGES } from '../domain/qa-dispatch.js';
+import {
+  NATIVE_CODES,
+  PRESS_DISPOSITIONS,
+  PRESS_RETRY_REASONS,
+  REFUSAL_STAGES,
+  type PressDisposition,
+} from '../domain/qa-dispatch.js';
+import { PRESS_RETRY_READS } from './press-retry.js';
 import { cleanTimingEvent } from './timing.js';
 import {
   MEDIA_KINDS,
@@ -12,6 +19,84 @@ import {
 import { isRecord } from './questions.js';
 import { cleanTargetMiss } from './target-miss.js';
 import { INTERRUPTION_VETOES, type InterruptionDiagnostic } from './recover.js';
+
+const PRESS_RETRY_OUTCOMES = [
+  ...PRESS_RETRY_REASONS,
+  'passed-late',
+  'dialog-interrupted',
+  'capture-refused',
+  'process-ended',
+  'render-error',
+] as const;
+type PressRetryOutcome = (typeof PRESS_RETRY_OUTCOMES)[number];
+
+export interface PressRetryDiagnostic {
+  kind: 'press-retry';
+  line: number;
+  operationId: number;
+  outcome: PressRetryOutcome;
+  readsStarted: number;
+  readsAdmitted: number;
+  proofReads: number;
+  screenChanged: boolean;
+  targetChanged: boolean;
+  initialUnchanged: boolean;
+  initialDialog: boolean;
+  readOverran: boolean;
+  firstDisposition: PressDisposition;
+  networkIdle: 'unknown';
+}
+
+function cleanPressRetry(value: Record<string, unknown>): Record<string, unknown> | undefined {
+  const { line, operationId, readsStarted, readsAdmitted, proofReads } = value;
+  if (
+    Object.keys(value).length !== 14 ||
+    typeof line !== 'number' ||
+    !Number.isSafeInteger(line) ||
+    line <= 0 ||
+    typeof operationId !== 'number' ||
+    !Number.isSafeInteger(operationId) ||
+    operationId <= 0 ||
+    typeof readsStarted !== 'number' ||
+    !Number.isSafeInteger(readsStarted) ||
+    readsStarted < 0 ||
+    readsStarted > PRESS_RETRY_READS ||
+    typeof readsAdmitted !== 'number' ||
+    !Number.isSafeInteger(readsAdmitted) ||
+    readsAdmitted < 0 ||
+    readsAdmitted > readsStarted ||
+    typeof proofReads !== 'number' ||
+    !Number.isSafeInteger(proofReads) ||
+    proofReads < 0 ||
+    proofReads > 2 ||
+    proofReads > readsAdmitted ||
+    (value.outcome === 'passed-late' && proofReads !== 2) ||
+    !PRESS_RETRY_OUTCOMES.includes(value.outcome as never) ||
+    !PRESS_DISPOSITIONS.includes(value.firstDisposition as never) ||
+    value.networkIdle !== 'unknown' ||
+    !['screenChanged', 'targetChanged', 'initialUnchanged', 'initialDialog', 'readOverran'].every(
+      (key) => typeof value[key] === 'boolean',
+    )
+  )
+    return;
+  const clean = {
+    kind: 'press-retry',
+    line,
+    operationId,
+    readsStarted,
+    readsAdmitted,
+    proofReads,
+    outcome: value.outcome,
+    screenChanged: value.screenChanged,
+    targetChanged: value.targetChanged,
+    initialUnchanged: value.initialUnchanged,
+    initialDialog: value.initialDialog,
+    readOverran: value.readOverran,
+    firstDisposition: value.firstDisposition,
+    networkIdle: 'unknown',
+  };
+  return Object.keys(clean).every((key) => Object.hasOwn(value, key)) ? clean : undefined;
+}
 
 export interface FillPrivacyDiagnostic {
   kind: 'fill-privacy';
@@ -99,6 +184,7 @@ export function cleanDiagnostic(value: unknown): Record<string, unknown> | undef
         }
       : undefined;
   }
+  if (value.kind === 'press-retry') return cleanPressRetry(value);
   if (value.kind === 'target-miss') return cleanTargetMiss(value);
   const number = (key: string): boolean =>
     typeof value[key] === 'number' &&

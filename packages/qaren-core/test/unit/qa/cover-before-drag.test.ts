@@ -728,7 +728,12 @@ for (const kind of ['press', 'fill'] as const) {
     assert.equal(r.result.verdict, 'FAIL');
     assert.deepEqual(scrolls(r.acts), [], r.log.join(','));
     assert.equal(dispatches(r.acts).length, 2);
-    assert.match(r.reason, /TARGET_MOVED_BEFORE_DISPATCH.*did not settle/);
+    assert.match(
+      r.reason,
+      kind === 'press'
+        ? /The original action was never sent/
+        : /TARGET_MOVED_BEFORE_DISPATCH.*did not settle/,
+    );
   });
 }
 

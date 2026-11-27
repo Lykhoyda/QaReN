@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
+import type { SpawnSyncReturns } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -12,6 +14,22 @@ const kotlin = join(
   runner,
   'app/src/androidTest/java/dev/lykhoyda/rndevagent/androidrunner/CommandDispatcher.kt',
 );
+
+const TRANSIENT_RESOLUTION =
+  /Received status code (?:408|429|5\d\d)|Connect(?:ion)? (?:timed out|refused|reset)|Read timed out|Remote host terminated the handshake/;
+
+async function runGradle(scratch: string): Promise<SpawnSyncReturns<string>> {
+  for (let attempt = 1; ; attempt++) {
+    const result = spawnSync(
+      join(runner, 'gradlew'),
+      ['--project-dir', scratch, '--console=plain', '--quiet', 'run', '--no-daemon'],
+      { encoding: 'utf8', timeout: 600_000, maxBuffer: 2_000_000 },
+    );
+    if (result.status === 0 || attempt === 3 || !TRANSIENT_RESOLUTION.test(result.stderr ?? ''))
+      return result;
+    await delay(attempt * 15_000);
+  }
+}
 
 function section(source: string, start: string, end: string): string {
   const from = source.indexOf(start),
@@ -138,15 +156,7 @@ fun main() {
 }
 `,
     );
-    const result = spawnSync(
-      join(runner, 'gradlew'),
-      ['--project-dir', scratch, '--console=plain', '--quiet', 'run', '--no-daemon'],
-      {
-        encoding: 'utf8',
-        timeout: 600_000,
-        maxBuffer: 2_000_000,
-      },
-    );
+    const result = await runGradle(scratch);
     assert.equal(result.status, 0, result.stderr || String(result.error));
     const rows = result.stdout
       .trim()

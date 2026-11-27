@@ -616,12 +616,27 @@ test('ANT-848: a planned press accepted despite a handler error protects its con
   }
 });
 
+function showPromptDuringPressReadback(f: ReturnType<typeof app>) {
+  const capture = f.deps.captureScreen;
+  let shown = false;
+  f.deps.captureScreen = async (options) => {
+    if (options?.pressGuardRead && !shown) {
+      shown = true;
+      f.show({
+        ...screen([
+          element('@prompt-title', 'Notifications', { kind: 'text' }),
+          element('@allow', 'Allow'),
+        ]),
+        front: 'dialog',
+      });
+    }
+    return { ...(await capture(options)), appProcessIdentifier: 123 };
+  };
+}
+
 test('a planned press accepted through a delayed system dialog protects its destination', async () => {
   const f = app(opener(), { '@close': ready });
-  f.deps.row = (row) => {
-    if (row.line === 1 && row.outcome === 'retry')
-      f.show({ ...screen([element('@allow', 'Allow')]), front: 'dialog' });
-  };
+  showPromptDuringPressReadback(f);
   f.deps.dialog = async (action) => {
     f.actions.push(`dialog ${action}`);
     f.show(destination());
@@ -1205,10 +1220,7 @@ test('a declined opt-in that returns is never tapped again, on a later item or a
 
 test('the press record is the original dispatch capture through a delayed dialog and after its own recovery', async () => {
   const dialogFirst = app(opener(), { '@decline': ready });
-  dialogFirst.deps.row = (row) => {
-    if (row.line === 1 && row.outcome === 'retry')
-      dialogFirst.show({ ...screen([element('@allow', 'Allow')]), front: 'dialog' });
-  };
+  showPromptDuringPressReadback(dialogFirst);
   dialogFirst.deps.dialog = async (action) => {
     dialogFirst.actions.push(`dialog ${action}`);
     dialogFirst.show(permission());

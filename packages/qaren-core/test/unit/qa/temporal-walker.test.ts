@@ -583,7 +583,7 @@ test('one freshness allowance spans both sides of resolution scrolling', async (
   assert.equal(judge.calls.length, 3);
 });
 
-test('second ordinary mutation attempt receives fresh capture but no expiry refresh', async () => {
+test('an unconfirmed Press observes without a fresh resolution', async () => {
   let now = 0;
   const judge = scriptedJudge((questions, index) => {
     if (index === 1) now += 10_000;
@@ -595,15 +595,15 @@ test('second ordinary mutation attempt receives fresh capture but no expiry refr
   assert.equal(result.verdict, 'FAIL');
   assert.deepEqual(
     result.steps.map((s) => s.outcome),
-    ['retry', 'fail'],
+    ['fail'],
   );
   assert.deepEqual(
     result.steps.map((s) => s.attempt),
-    [1, 2],
+    [1],
   );
   assert.deepEqual(f.actions, ['press @one']);
-  assert.equal(f.captures(), 3);
-  assert.equal(judge.calls.length, 2);
+  assert.equal(f.captures(), 10);
+  assert.equal(judge.calls.length, 1);
 });
 
 test('pre-dispatch expiration refreshes once, but lifecycle invalidation never refreshes', async () => {

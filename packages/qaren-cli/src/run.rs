@@ -5826,6 +5826,43 @@ mod uncertain_ladder_tests {
     }
 
     #[test]
+    fn press_retry_details_and_guidance_survive_the_final_receipt() {
+        for reason in [
+            "press-retry-screen-changed",
+            "press-retry-target-changed",
+            "press-retry-no-effect",
+            "press-retry-evidence-unavailable",
+        ] {
+            let detail = "ACTION_OUTCOME_UNCERTAIN: No effect was observed within the window. The original action may have taken effect.";
+            let seen: core::LedgerFailure = serde_json::from_value(json!({
+                "step": 7, "seen": detail, "subreason": reason
+            })).unwrap();
+            for kept in [
+                Kept { clean: true, ..Kept::default() },
+                Kept { held: true, metro: true, simulator: true, lease: true, ..Kept::default() },
+                Kept { android: true, metro: true, lease: true, ..Kept::default() },
+            ] {
+                let root = runs_root(reason);
+                let record = final_record(&root, kept);
+                let failure = walk_failure(None, &|| plan_step_failure(Some(&seen)), Some(&seen), &root, &record, false);
+                let receipt = settled(failure, &record, kept.clean);
+                let printed: Value = serde_json::from_str(&receipt.to_json()).unwrap();
+                assert_eq!(printed["result"], "fail");
+                assert_eq!(printed["failure"]["step"], 7);
+                assert_eq!(printed["failure"]["detail"], format!("line 7: {detail}"));
+                assert_eq!(printed["failure"]["subreason"], reason);
+                let (next, recovery) = parts(&receipt);
+                assert!(next.contains(REVIEW) && next.ends_with(STOP), "{next}");
+                assert!(!next.contains("re-run"), "{next}");
+                assert_eq!(next.contains("qaren cleanup"), !kept.clean);
+                assert_eq!(recovery["own_cleanup_required"], !kept.clean);
+                assert_eq!(recovery["ladder"].as_array().unwrap().len(), 5);
+                let _ = std::fs::remove_dir_all(&root);
+            }
+        }
+    }
+
+    #[test]
     fn every_state_has_one_true_next_action_and_recovery() {
         let k = Kept::default();
         // An iOS check keeps its simulator identity; a held or unclean one keeps the lease; Metro stays when held or when

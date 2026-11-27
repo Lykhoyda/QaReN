@@ -707,14 +707,14 @@ test('a refused action retains its outcome and measured settle on the same ledge
   const timed = await run(true);
   const plain = await run(false);
   assert.equal(timed.verdict, 'FAIL');
-  assert.ok(timed.steps.length > 0);
+  assert.equal(timed.steps.length, 1);
   assert.deepEqual(timed.failure, plain.failure);
   assert.deepEqual(
     timed.steps.map(({ timing: _timing, ...row }) => row),
     plain.steps,
   );
   for (const row of timed.steps) {
-    assert.match(row.reason ?? '', /the action did not execute/);
+    assert.match(row.reason ?? '', /The original action was never sent/);
     assert.equal(row.timing?.settleMethod, 'snapshot-eq');
     assert.equal(row.timing?.settleMs, 12);
   }

@@ -174,8 +174,10 @@ for (const changed of [false, true]) {
       scriptedJudge(() => assert.fail('quoted press must be model-free')),
     );
     const modes: boolean[] = [];
+    const guardModes: boolean[] = [];
     f.deps.captureScreen = (options) => {
-      modes.push(options?.platformPresence === true);
+      const reads = options?.pressGuardRead ? guardModes : modes;
+      reads.push(options?.platformPresence === true);
       return read(options);
     };
     f.deps.press = async (ref) => {
@@ -185,15 +187,14 @@ for (const changed of [false, true]) {
     };
     const result = await runPlan(parsePlan('1. Tap "Add coverage"').blocks!, f.deps);
     assert.equal(result.verdict, changed ? 'PASS' : 'FAIL', JSON.stringify(result));
-    assert.deepEqual(
-      modes,
-      changed ? [false, true, false] : [false, true, false, false, true, false],
-    );
-    assert.deepEqual(f.actions, changed ? ['press @e3'] : ['press @e3', 'press @e3']);
+    assert.deepEqual(modes, [false, true, false]);
+    assert.deepEqual(f.actions, ['press @e3']);
     assert.deepEqual(
       result.steps.map((row) => row.outcome),
-      changed ? ['pass'] : ['retry', 'fail'],
+      changed ? ['pass'] : ['fail'],
     );
+    if (changed) assert.deepEqual(guardModes, []);
+    else assert.ok(guardModes.length > 0 && guardModes.every((presence) => !presence));
   });
 }
 

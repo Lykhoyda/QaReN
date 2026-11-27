@@ -408,6 +408,10 @@ pub(crate) fn uncertain_words(subreason: &str) -> Option<&'static str> {
         "context-unverified" => "QaReN could no longer validate the dispatch context after the action was authorized",
         "deadline-expired" => "The time allowed for the action ran out after it was authorized",
         "scroll-unverified" => "A scroll towards the target was not confirmed and the capture after it could not be used",
+        "press-retry-screen-changed" => "The screen changed without proving the planned transition",
+        "press-retry-target-changed" => "The original target changed without proving the planned transition",
+        "press-retry-no-effect" => "No effect was observed within the window",
+        "press-retry-evidence-unavailable" => "The observation window did not provide enough evidence",
         "unknown" => "QaReN recorded no classified reason for the uncertain outcome",
         _ => return None,
     })

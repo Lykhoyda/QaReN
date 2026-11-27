@@ -354,12 +354,17 @@ for (const [name, keyboardHidden, drags] of [
         return { ok: true, proven: true };
       };
       const run = await runPlan(parsePlan('1. Tap "Close"').blocks!, w.deps);
-      assert.equal(run.verdict, terminal === 'refuse' ? 'FAIL' : 'PASS');
-      assert.equal(presses, terminal === 'retry' ? 3 : 2);
+      assert.equal(run.verdict, terminal === 'pass' ? 'PASS' : 'FAIL');
+      assert.equal(presses, 2);
       assert.equal(w.actions.filter((action) => action.startsWith('scroll ')).length, drags);
       const rows = ('steps' in run ? run.steps : []).filter((row) => row.line === 1);
       assert.ok(rows.length > 0);
-      if (terminal === 'retry') assert.ok(rows.some((row) => row.outcome === 'retry'));
+      if (terminal === 'retry') {
+        assert.ok(rows.every((row) => row.outcome !== 'retry'));
+        assert.match(run.failure?.seen ?? '', /The original action was never sent/);
+        assert.ok(rows.every((row) => !row.collapsed && !row.candidateExclusions));
+        return;
+      }
       for (const row of rows) {
         assert.deepEqual(row.collapsed, [
           { ref: '@e2', kind: 'button', frame: OUTER, into: '@e3' },

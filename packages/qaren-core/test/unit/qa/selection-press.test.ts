@@ -108,8 +108,8 @@ test('a press on an already selected control passes with the evidence already se
 test('a selected control found under a different ref after the tap is not the same control and does not pass on that attempt', async () => {
   const f = fake([chips('Male'), chips('Male', '@new-')]);
   const outcome = await walkBlock(block('1. Tap "gender_m"\n'), f.deps);
-  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
-  assert.equal(outcome.rows[0].outcome, 'retry');
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
+  assert.equal(outcome.rows[0].outcome, 'fail');
 });
 
 test('a press that deselects the chip passes on its first attempt', async () => {
@@ -119,7 +119,7 @@ test('a press that deselects the chip passes on its first attempt', async () => 
   assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
 });
 
-test('a not-ok press on an already selected chip still fails with its selection before and after', async () => {
+test('a not-ok press on an already selected chip still fails without another press', async () => {
   const f = fake(
     [chips('Male')],
     [
@@ -129,14 +129,14 @@ test('a not-ok press on an already selected chip still fails with its selection 
   );
   const outcome = await walkBlock(block('1. Tap "gender_m"\n'), f.deps);
   assert.equal(outcome.block.outcome, 'fail');
-  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 2);
+  assert.equal(f.calls.filter((c) => c.startsWith('press')).length, 1);
   assert.match(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /the target stayed selected/,
+    /^ACTION_OUTCOME_UNCERTAIN:/,
   );
 });
 
-test('a press with a runner error on an already selected chip still fails with its selection before and after', async () => {
+test('a press with a runner error on an already selected chip still fails without another press', async () => {
   const error = 'RUNNER_TIMEOUT: the tap was not confirmed';
   const f = fake(
     [chips('Male')],
@@ -149,7 +149,7 @@ test('a press with a runner error on an already selected chip still fails with i
   assert.equal(outcome.block.outcome, 'fail');
   assert.match(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /the target stayed selected/,
+    /^ACTION_OUTCOME_UNCERTAIN:/,
   );
 });
 
@@ -734,7 +734,7 @@ test('a native-incomplete press readback reconstructs its refusal without app te
   assert.equal(count, 2);
 });
 
-test('proven no-mutation refusals retain their existing outcome without selection evidence', async () => {
+test('proven no-mutation refusals stop without selection evidence', async () => {
   const f = rowFake(
     [rowChips()],
     Array.from({ length: 2 }, () => ({
@@ -749,7 +749,7 @@ test('proven no-mutation refusals retain their existing outcome without selectio
   assert.equal(outcome.pressEvidence, undefined);
   assert.match(
     renderReason(outcome.failure!.seen, (text) => text),
-    /OWNERSHIP_UNPROVEN/,
+    /The original action was never sent/,
   );
 });
 

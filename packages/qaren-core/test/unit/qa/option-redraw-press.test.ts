@@ -85,10 +85,10 @@ function fake(screens: Screen[], shots: (Uint8Array | undefined)[], proven = fal
 async function expectFailure(f: ReturnType<typeof fake>) {
   const outcome = await walkBlock(tap, f.deps, 0, [], f.deps.privacy);
   assert.equal(outcome.block.outcome, 'fail', JSON.stringify(outcome));
-  assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 2);
+  assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 1);
   assert.match(
     renderReason(outcome.failure?.seen ?? '', (text) => text),
-    /the screen did not change after two attempts/,
+    /^ACTION_OUTCOME_UNCERTAIN:/,
   );
 }
 
@@ -127,7 +127,7 @@ test('a recovered native Wait withholds later ledger and comparison screenshots'
     );
     assert.equal(result.verdict, 'FAIL', policy);
     assert.equal(result.videoPublication, 'unknown', policy);
-    assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 2, policy);
+    assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 1, policy);
     assert.equal(f.calls.includes('pixel shot'), false, policy);
     assert.equal(f.calls.includes('ledger shot'), false, policy);
     assert.ok(
@@ -174,7 +174,7 @@ for (const policy of [undefined, 'strict', 'non-strict'] as const) {
   }
 }
 
-test('an unchanged chip still fails after two attempts', async () => {
+test('an unchanged chip fails after one press and a read-only window', async () => {
   const before = fixture('chip-before'),
     after = fixture('chip-after');
   await expectFailure(fake([option(before)], [before, after, after, after, after]));
@@ -289,22 +289,20 @@ test('withheld, failed, missing and unsupported comparison shots offer no proof'
   }
 });
 
-test('a retry keeps the first baseline when a toggle is undone', async () => {
+test('an unstable pixel change ends before the read-only window', async () => {
   const before = fixture('toggle1-before'),
     after = fixture('toggle1-after');
   const f = fake([option(before)], [before, after, before, before, before]);
   await expectFailure(f);
-  assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 5);
+  assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 3);
 });
 
-test('a later stable change can pass against the first baseline without another before-shot', async () => {
+test('the read-only window does not take more comparison shots', async () => {
   const before = fixture('toggle1-before'),
     after = fixture('toggle1-after');
   const f = fake([option(before)], [before, before, before, after, after]);
-  const outcome = await walkBlock(tap, f.deps);
-  assert.equal(outcome.block.outcome, 'pass', JSON.stringify(outcome));
-  assert.equal(f.calls.filter((call) => call.startsWith('press')).length, 2);
-  assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 5);
+  await expectFailure(f);
+  assert.equal(f.calls.filter((call) => call === 'pixel shot').length, 3);
 });
 
 test('proven presses and changed screen signatures do not take after-shots', async () => {

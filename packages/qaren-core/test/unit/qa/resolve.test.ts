@@ -452,7 +452,7 @@ test('preliminary scrolling requires a fresh target question before any press', 
   );
 });
 
-test('phrase mutation retries obey the unchanged-screen rule, never a timeout alone', async () => {
+test('phrase Press uses readback evidence after one request', async () => {
   for (const changed of [true, false]) {
     const judge = scriptedJudge((q) =>
       Object.fromEntries(Object.entries(q).map(([id, question]) => [id, choice(question)])),
@@ -464,8 +464,8 @@ test('phrase mutation retries obey the unchanged-screen rule, never a timeout al
     });
     const ledger = await runPlan(parsePlan('1. Tap Save').blocks!, f.deps);
     assert.equal(ledger.verdict, changed ? 'PASS' : 'FAIL');
-    assert.equal(f.actions.length, changed ? 1 : 2);
-    assert.equal(judge.requests.length, changed ? 1 : 2);
+    assert.equal(f.actions.length, 1);
+    assert.equal(judge.requests.length, 1);
     assert.equal(ledger.recoveries, 0);
     assert.equal(ledger.escapes, 0);
   }

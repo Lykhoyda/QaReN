@@ -1319,6 +1319,33 @@ may resolve live to that control: it agrees only when the same-type,
 same-label owning ancestor in the retained snapshot contains the label and the
 live frame equals that owner's frame; the tap goes to the unchanged point. A later
 screen change cannot turn a proven no-mutation refusal into a passing action.
+
+For a planned Tap whose first readback leaves its effect unproven, QaReN can
+observe the screen for up to four seconds and eight extra captures within the
+remaining run budget. The generic path sends one Tap request. This includes a
+runner refusal that proved the target moved before it tapped. If the Tap could
+have taken effect, two consecutive observations of the immediate next plan
+item's marker can pass the original Tap with “The planned transition appeared
+after the first readback.” The marker can be a newly visible literal Check or
+quoted Wait, an eligible exact native testID for a quoted Tap or Fill, or a
+stable planned system dialog with positive app-process continuity. The next
+item takes its own observation and runs independently. A proven Tap, or a Tap
+that could have taken effect and whose first readback already shows a new
+system dialog, does not enter this window; that dialog reaches the next item's
+interruption handling. When the Tap could have taken effect, an unplanned
+system dialog that first appears during the window ends it the same way: the
+Tap passes without another send. In a saved login block replayed by
+[recovery](#step-recovery), the step that recovery retries is the next item for
+the block's last Tap.
+
+If the window ends without that proof, the failure stays on the original Tap
+line with one of the four `press-retry-*` reasons below. In a saved login
+block, the retried step reports that detail after
+`the login block did not pass:`. The receipt records whether the first action
+could have taken effect or the runner confirmed it never sent the action. Review the evidence before deciding whether the action
+took effect. The `press-retry` diagnostic contains closed outcomes, counts,
+and evidence flags. Network idle is recorded as unknown.
+
 For an iOS native-backed button outside an alert, not reported selected, inside
 a scroll container no taller than three times the target's height and with a visible enabled button
 beside it on the same row, QaReN requires the target to be re-identified as
@@ -1423,24 +1450,27 @@ original baseline; an unchanged selected chip or an unstable animation supplies
 no pixel proof. The [pixel comparator](../qaren-core/src/qa/tap-pixels.ts) owns
 the thresholds and supported PNG formats, and the
 [press regression tests](../qaren-core/test/unit/qa/option-redraw-press.test.ts)
-cover the retry and withholding boundaries.
+cover the pixel-proof and withholding boundaries.
 
 Comparison screenshots obey the [selected media policy](#video-publication).
 Metadata-only capture or active screenshot withholding prevents them. They use
 temporary files under the run directory that are removed after reading, and are
 not retained with ledger screenshots. Missing, failed or unsupported captures,
-ineligible targets and insufficient pixel change provide no proof; the existing
-retry and failure behavior remains. A press without pixel proof that leaves a
+ineligible targets and insufficient pixel change provide no proof; the Tap then
+follows the bounded observation window under
+[occluded taps and focus](#occluded-taps-and-focus). A press without pixel proof that leaves a
 control not reported selected unchanged still fails, naming whether the target
 was reported selected before and after.
 
-For presses outside the selection heuristic, before its one retry the walker
+After a Fill refused with `TARGET_MOVED_BEFORE_DISPATCH`, before its one retry the walker
 re-captures until the same target (resolved
 through the same exact-identity rules as the step) holds one native frame
 across two captures, within the
 existing settle readbacks, and the retry dispatches only that target at its
 settled frame; a target that never settles, stops resolving, or is replaced by
 another resolution is not dispatched again and fails with its observed frames.
+A Tap refused that way is not sent again; it enters the bounded observation
+window under [occluded taps and focus](#occluded-taps-and-focus).
 When the runner instead refuses a sent tap or type because its retained target
 is gone or stale (`NO_TEXT_INPUT_TARGET`, `KEYBOARD_TARGET_STALE`, or an Android
 `exact-target-*` reason) and attests mutation `none`, the step fails as
@@ -1578,7 +1608,7 @@ change the result.
 <a id="uncertain-outcome-reasons"></a>
 When a step ends `ACTION_OUTCOME_UNCERTAIN`, including in nested login replays
 and interruption dismissals, the core sets the existing `failure.subreason` to
-one of seven fixed words. Each word has a fixed explanation:
+one of the fixed reasons below.
 
 | `subreason` | When | Explanation |
 | --- | --- | --- |
@@ -1588,6 +1618,10 @@ one of seven fixed words. Each word has a fixed explanation:
 | `context-unverified` | the dispatch context could no longer be validated after the action was authorized | QaReN could no longer validate the dispatch context after the action was authorized |
 | `deadline-expired` | the action's deadline passed after it was authorized | The time allowed for the action ran out after it was authorized |
 | `scroll-unverified` | a scroll towards the target was not confirmed and the capture after it was unusable | A scroll towards the target was not confirmed and the capture after it could not be used |
+| `press-retry-screen-changed` | the surface changed without forward proof | The screen changed without proving the planned transition |
+| `press-retry-target-changed` | the original target changed without forward proof | The original target changed without proving the planned transition |
+| `press-retry-no-effect` | the window ended with admitted stillness evidence | No effect was observed within the window |
+| `press-retry-evidence-unavailable` | the window ended without enough usable evidence | The observation window did not provide enough evidence |
 | `unknown` | no classified reason; any other value is recorded as `unknown` | QaReN recorded no classified reason for the uncertain outcome |
 
 The first refusal of an action decides the reason; a cancellation keeps
@@ -1694,9 +1728,9 @@ Once either clearance starts, scroll recovery is forbidden for the rest of the
 step, including across recovery retries: a target that moves out of reach
 refuses instead. A named cover also refuses; an overlay inferred only from
 capture order uses the existing press that the runner must prove hittable.
-These paths add no press of their own; the ordinary retry after a press with no
-observable effect remains unchanged. Fill, Android, hidden keyboards and runs
-without the keyboard guard retain their existing paths. The
+These clearance paths prepare the target for its Tap. A Tap whose effect is
+unproven enters the bounded read-only window described above. The keyboard
+guard continues to apply to the iOS paths described here. The
 [keyboard-margin regressions](../qaren-core/test/unit/qa/keyboard-margin-clearance.test.ts)
 cover these boundaries.
 
@@ -2172,7 +2206,7 @@ carry `failure.screen` from the newest admitted observation, without target-miss
 [recovery suggestion](#step-recovery). Other non-target causes, including render
 errors and scroll dispatches that returned a failed result, carry none of these three
 failure fields. A step that ended `ACTION_OUTCOME_UNCERTAIN`, a scroll included, adds
-only `subreason`, one of the seven [uncertain-outcome reasons](#uncertain-outcome-reasons);
+only `subreason`, one of the [uncertain-outcome reasons](#uncertain-outcome-reasons);
 its `screen` and `suggestion` keep their existing sources (a rejected check's screen
 and the interruption-ownership suggestion). The exception is
 `check --installed-app`: there every `PLAN_STEP_FAILED` other than a
@@ -2189,7 +2223,7 @@ the walk's `next_action`, subject to the [cleanup precedence](#ios-admission-and
 It describes what was observed and never
 proposes a Wait for an enabled state, because a quoted Wait passes on a disabled control.
 Repeat matching applies only to target-class failures carrying a `subreason`; a
-failure with one of the seven uncertain-outcome reasons is not target-class and is
+failure with one of the uncertain-outcome reasons is not target-class and is
 not matched as a repeat.
 When one of the last 20 `check` runs failed the same plan line with the same code and
 subreason on the same platform, app, recorded Git revision, worktree fingerprint
@@ -4529,7 +4563,9 @@ capture, still fails the current step immediately, including during login
 replay, and never triggers recovery. The regressions are in
 [`dev-error-overlay.test.ts`](../qaren-core/test/unit/qa/dev-error-overlay.test.ts).
 
-An action without success evidence after its one retry, a step target that
+An action other than a Tap without success evidence after its one retry (a
+Tap instead ends in the bounded observation window under
+[occluded taps and focus](#occluded-taps-and-focus)), a step target that
 does not resolve, a definite failed check, an unmet quoted wait, or a phrase check still
 unsure after its re-ask gets a deterministic recovery, subject to the
 [quoted-wait deadline limits](#plan-checks-and-screen-evidence), then the step runs once more from a fresh

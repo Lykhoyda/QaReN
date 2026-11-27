@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { inspect } from 'node:util';
-import { ObservedPrivacy, SHORT } from './privacy.js';
+import { matchPrivate, ObservedPrivacy, SHORT } from './privacy.js';
 
 export const validInputName = (name: unknown): name is string =>
   typeof name === 'string' && /^[A-Z][A-Z0-9_]{0,31}$/.test(name);
@@ -112,6 +112,17 @@ export class RunInputs {
   }
   redact(text: string): string {
     return this.#privacy.redact(text);
+  }
+  redactDeclared(text: string): string {
+    const values = [...this.#values.values()];
+    return matchPrivate(
+      text,
+      {
+        fragments: values,
+        values: values.map((value) => ({ text: value, provenance: 'input' })),
+      },
+      'durable',
+    ).text;
   }
   assertHashSafe(text: string): void {
     if (this.#terminal) throw this.#terminal;

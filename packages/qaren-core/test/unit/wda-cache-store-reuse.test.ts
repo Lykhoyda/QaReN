@@ -12,6 +12,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -212,7 +213,7 @@ test('isCompleteWdaBuild requires runnable WDA host and bundle executables', () 
     renameSync(testBundle, linkedTestBundle);
     symlinkSync(relative(dirname(testBundle), linkedTestBundle), testBundle);
     assert.equal(isCompleteWdaBuild(keyDir), false, 'the test bundle must be a real directory');
-    rmSync(testBundle);
+    unlinkSync(testBundle);
     renameSync(linkedTestBundle, testBundle);
     assert.equal(isCompleteWdaBuild(keyDir), true);
 
@@ -249,7 +250,7 @@ test('isCompleteWdaBuild requires runnable WDA host and bundle executables', () 
     renameSync(app, externalApp);
     symlinkSync(externalApp, app);
     assert.equal(isCompleteWdaBuild(keyDir), false, 'the test-host app cannot escape the key');
-    rmSync(app);
+    unlinkSync(app);
     renameSync(externalApp, app);
     assert.equal(isCompleteWdaBuild(keyDir), true);
 

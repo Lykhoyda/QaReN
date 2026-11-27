@@ -323,6 +323,40 @@ test('a later recovery-disabled block retains the recurrence cause without dispa
   assert.deepEqual(f.actions, ['@next', '@dismiss']);
 });
 
+test('a recurring RedBox in the late window records one failure for the Tap', async () => {
+  const f = fixture();
+  const sequence: WalkSequence = { observation: 0 };
+  const first = await walkBlock(plan()[0], f.deps, 0, [], undefined, sequence);
+  assert.equal(first.block.outcome, 'pass');
+  assert.equal(sequence.devOverlayAccepted, true);
+  const before = screen([element('@next', 'Next')]);
+  let readbacks = 0;
+  f.deps.captureScreen = async () => {
+    if (f.actions.at(-1) !== '@next' || f.actions.length < 3) return before;
+    return readbacks++ === 0 ? before : overlay();
+  };
+  const rowsBefore = f.rows.length;
+  const result = await walkBlock(
+    parsePlan('1. Tap "Next"').blocks![0],
+    f.deps,
+    0,
+    [],
+    undefined,
+    sequence,
+    { singleAttempt: true },
+  );
+  assert.equal(result.refusal?.code, 'DEV_REDBOX_ACTION_UNCERTAIN');
+  assert.match(
+    result.refusal!.message,
+    /appeared again after one was already dismissed in this run/,
+  );
+  assert.deepEqual(
+    f.rows.slice(rowsBefore).map((row) => [row.line, row.outcome]),
+    [[1, 'fail']],
+  );
+  assert.deepEqual(f.actions, ['@next', '@dismiss', '@next']);
+});
+
 test('recovery disabled keeps the existing refusal', async () => {
   const f = fixture();
   const result = await walkBlock(plan()[0], f.deps, 0, [], undefined, undefined, {
@@ -350,6 +384,25 @@ test('an overlay first seen by recovery passes the press without retrying it', a
   assert.equal(result.rows[0].devError?.afterAction, true);
   assert.deepEqual(result.rows[0].selector, { text: 'Next' });
   assert.deepEqual(f.actions, ['@next', '@dismiss']);
+});
+
+test('an incomplete guard read does not consume the first admitted RedBox recovery', async () => {
+  const before = screen([element('@next', 'Next')]);
+  const f = fixture({ before });
+  const capture = f.deps.captureScreen;
+  let readbacks = 0;
+  f.deps.captureScreen = async (options) => {
+    if (f.actions.at(-1) !== '@next') return capture(options);
+    if (readbacks++ === 0) return before;
+    if (readbacks === 2) throw new NativeSnapshotIncomplete(0, ['unattested']);
+    return capture(options);
+  };
+  const result = await walkBlock(plan()[0], f.deps, 0, [], undefined, undefined, {
+    singleAttempt: true,
+  });
+  assert.equal(result.block.outcome, 'pass');
+  assert.deepEqual(f.actions, ['@next', '@dismiss']);
+  assert.equal(result.rows[0].devError?.afterAction, true);
 });
 
 for (const repeatedTarget of [false, true]) {

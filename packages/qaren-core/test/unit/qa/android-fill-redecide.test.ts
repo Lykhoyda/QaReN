@@ -559,13 +559,17 @@ test("R6b: an input hidden in place: the refusal's own period is dropped before 
 });
 
 test('R7: a refusal decided on an alert the next step answers is not decided again', async () => {
-  await expectRow(DIALOG_NEXT, app(afterTapN(() => alertOf())), (r) => [
-    ok(r.verdict === 'FAIL', 'FAIL'),
-    ok((r.reason ?? '').startsWith('TARGET_NOT_FOUND'), 'a target refusal'),
-    exactActions(r, ['press @e2']),
-    noPause(r),
-    ...untouched(r),
-  ]);
+  await expectRow(
+    DIALOG_NEXT,
+    app(afterTapN((k) => (k === 1 ? mid('placeholder') : alertOf()))),
+    (r) => [
+      ok(r.verdict === 'FAIL', 'FAIL'),
+      ok((r.reason ?? '').startsWith('TARGET_NOT_FOUND'), 'a target refusal'),
+      exactActions(r, ['press @e2']),
+      noPause(r),
+      ...untouched(r),
+    ],
+  );
 });
 
 // After the dismissal the app shows the field hidden in place, so the final refusal is visibly the ordinary decision

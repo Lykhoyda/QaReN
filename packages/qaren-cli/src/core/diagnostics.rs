@@ -342,9 +342,39 @@ const ADMISSION_KEYS: &[&str] = &[
     "remainingMs",
 ];
 
+fn clean_press_retry(fields: &Map<String, Value>) -> Option<Value> {
+    if fields.len() != 14
+        || !(1..=MAX_NUMBER as u64).contains(&fields.get("line")?.as_u64()?)
+        || !(1..=MAX_NUMBER as u64).contains(&fields.get("operationId")?.as_u64()?)
+    {
+        return None;
+    }
+    let started = fields.get("readsStarted")?.as_u64()?;
+    let admitted = fields.get("readsAdmitted")?.as_u64()?;
+    let proof = fields.get("proofReads")?.as_u64()?;
+    let outcome = fields.get("outcome")?.as_str()?;
+    if started > 8 || admitted > started || proof > admitted || proof > 2
+        || (outcome == "passed-late" && proof != 2)
+        || !matches!(outcome, "passed-late" | "dialog-interrupted" | "capture-refused" | "process-ended" | "render-error"
+            | "press-retry-screen-changed" | "press-retry-target-changed"
+            | "press-retry-no-effect" | "press-retry-evidence-unavailable")
+        || !matches!(fields.get("firstDisposition")?.as_str()?, "none" | "possible" | "observed" | "unknown")
+        || fields.get("networkIdle")?.as_str()? != "unknown"
+    {
+        return None;
+    }
+    for key in ["screenChanged", "targetChanged", "initialUnchanged", "initialDialog", "readOverran"] {
+        fields.get(key)?.as_bool()?;
+    }
+    Some(Value::Object(fields.clone()))
+}
+
 fn clean(value: &Value) -> Option<Value> {
     let fields = value.as_object()?;
     let raw_kind = fields.get("kind")?.as_str()?;
+    if raw_kind == "press-retry" {
+        return clean_press_retry(fields);
+    }
     if raw_kind == "fill-privacy" {
         if fields
             .keys()
@@ -697,7 +727,7 @@ impl Sink {
             && (matches!(
                 event["kind"].as_str(),
                 Some(
-                    "target-miss" | "media-withheld" | "label-provenance" | "interruption-rejected"
+                    "target-miss" | "media-withheld" | "label-provenance" | "interruption-rejected" | "press-retry"
                 )
             ) || (event["kind"] == "metric"
                 && matches!(
@@ -753,6 +783,37 @@ fn private_file(path: &Path) -> Option<File> {
 mod tests {
     use super::clean;
     use serde_json::json;
+
+    #[test]
+    fn press_retry_is_closed_and_reaches_the_no_input_sink() {
+        let event = json!({
+            "kind": "press-retry", "line": 1, "operationId": 1, "outcome": "passed-late",
+            "readsStarted": 3, "readsAdmitted": 2, "proofReads": 2, "screenChanged": true,
+            "targetChanged": false, "initialUnchanged": true, "initialDialog": false,
+            "readOverran": false, "firstDisposition": "possible", "networkIdle": "unknown"
+        });
+        assert_eq!(clean(&event), Some(event.clone()));
+        let mut interrupted = event.clone();
+        interrupted["outcome"] = json!("dialog-interrupted");
+        interrupted["proofReads"] = json!(0);
+        assert_eq!(clean(&interrupted), Some(interrupted.clone()));
+        for (key, value) in [
+            ("line", json!(0)), ("operationId", json!(0)), ("readsStarted", json!(1.5)),
+            ("readsStarted", json!(9)), ("readsAdmitted", json!(4)), ("proofReads", json!(1)),
+            ("initialDialog", json!("false")), ("outcome", json!("retry")), ("extra", json!("data")),
+        ] {
+            let mut invalid = event.clone();
+            invalid[key] = value;
+            assert_eq!(clean(&invalid), None);
+        }
+        let dir = std::env::temp_dir().join(format!("qaren-press-retry-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut sink = super::Sink::new(&dir.join("core.log"));
+        sink.accept(&event);
+        let text = std::fs::read_to_string(dir.join("core-diagnostics.jsonl")).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(text.trim()).unwrap(), event);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn admission_metric_keeps_only_the_closed_blocked_words() {

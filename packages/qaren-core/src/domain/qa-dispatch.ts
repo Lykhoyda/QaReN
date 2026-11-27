@@ -97,7 +97,43 @@ function measuredSettle(meta: unknown) {
 
 export type QaDispatchDiagnostic = ReturnType<typeof refusalDiagnostic>;
 
+export const PRESS_RETRY_REASONS = [
+  'press-retry-screen-changed',
+  'press-retry-target-changed',
+  'press-retry-no-effect',
+  'press-retry-evidence-unavailable',
+] as const;
+export type PressRetryReason = (typeof PRESS_RETRY_REASONS)[number];
+
+export function asPressRetryReason(value: unknown): PressRetryReason | undefined {
+  return allowed(value, PRESS_RETRY_REASONS) ?? undefined;
+}
+
+export const PRESS_DISPOSITIONS = ['none', 'possible', 'observed', 'unknown'] as const;
+export type PressDisposition = (typeof PRESS_DISPOSITIONS)[number];
+
+export function pressDisposition(result: {
+  ok: boolean;
+  proven: boolean;
+  executed?: boolean;
+  mutation?: 'none' | 'observed' | 'possible';
+}): PressDisposition {
+  if (result.executed === false || result.mutation === 'none') {
+    return result.ok ||
+      result.proven ||
+      result.executed === true ||
+      result.mutation === 'observed' ||
+      result.mutation === 'possible'
+      ? 'unknown'
+      : 'none';
+  }
+  if (result.proven || result.executed === true || result.mutation === 'observed')
+    return 'observed';
+  return result.ok || result.mutation === 'possible' ? 'possible' : 'unknown';
+}
+
 const UNCERTAIN_REASONS = [
+  ...PRESS_RETRY_REASONS,
   'keyboard-visible',
   'alert-blocked',
   'dispatch-unconfirmed',
