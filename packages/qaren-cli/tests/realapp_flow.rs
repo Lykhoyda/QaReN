@@ -1680,6 +1680,14 @@ fn android_reuse_path_records_install_provenance_after_a_successful_adb_install(
             ..CmdOutput::success("")
         },
     );
+    mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+    mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+    mock.expect_run(
+        "run-as",
+        CmdOutput::success(
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n",
+        ),
+    );
     mock.expect_run("am start", CmdOutput::success("Starting: Intent\n"));
     // wait_ready
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));

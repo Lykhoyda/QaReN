@@ -132,7 +132,7 @@ async function run(t: TestContext, kind: Kind) {
         : {}),
       ...(restart
         ? {
-            androidLaunchUrl: `exp+${kind === 'T3' ? 't3canary' : 'synthetic'}://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A${port}%2F%3FdisableOnboarding%3D1`,
+            androidLaunchUrl: `exp+${kind === 'T3' ? 't3canary' : 'synthetic'}://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A${port}%2F%3FdisableOnboarding%3D1&disableFab=1&__expo_disable_fab=1&__expo_disable_auto_launch=1`,
           }
         : {}),
     },
@@ -526,7 +526,7 @@ test(
       'EXDevMenuDisableAutoLaunch',
       'true',
       '-d',
-      `exp+synthetic://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A${r.port}%2F%3FdisableOnboarding%3D1`,
+      `'exp+synthetic://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A${r.port}%2F%3FdisableOnboarding%3D1&disableFab=1&__expo_disable_fab=1&__expo_disable_auto_launch=1'`,
       'com.example.synthetic',
     ]);
     assert.equal(named(r.adbCalls, 'pidof').length, 7);

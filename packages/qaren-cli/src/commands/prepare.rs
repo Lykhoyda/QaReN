@@ -3956,6 +3956,7 @@ pub(crate) fn run_reuse_path(ctx: &mut Ctx, plan: &BuildPlan, t: u64) -> Result<
             ctx.android_launch_url = Some(url.clone());
             let (adb, serial, server_port) =
                 ctx.record.resources.adb_endpoint().expect("allocated");
+            hide_android_dev_button(ctx, &adb, server_port, &serial, deadline)?;
             android::am_start_deeplink_spec(
                 &adb,
                 server_port,
@@ -7034,6 +7035,44 @@ fn dry_run_receipt(
                 ));
                 planned.push(android_request_probe_spec(port));
                 planned.push(metro::manifest_spec(port, "android"));
+                planned.push(android::devmenu_current_user_spec(adb, server_port, &serial));
+                planned.push(android::devmenu_pidof_spec(
+                    adb,
+                    server_port,
+                    &serial,
+                    &cand.app_id,
+                ));
+                planned.push(android::devmenu_prefs_read_spec(
+                    adb,
+                    server_port,
+                    &serial,
+                    &cand.app_id,
+                ));
+                planned.push(android::devmenu_pidof_spec(
+                    adb,
+                    server_port,
+                    &serial,
+                    &cand.app_id,
+                ));
+                planned.push(android::devmenu_prefs_write_spec(
+                    adb,
+                    server_port,
+                    &serial,
+                    &cand.app_id,
+                    115,
+                ));
+                planned.push(android::devmenu_prefs_read_spec(
+                    adb,
+                    server_port,
+                    &serial,
+                    &cand.app_id,
+                ));
+                planned.push(android::devmenu_pidof_spec(
+                    adb,
+                    server_port,
+                    &serial,
+                    &cand.app_id,
+                ));
                 planned.push(android::am_start_deeplink_spec(
                     adb,
                     server_port,
@@ -7067,6 +7106,112 @@ fn dry_run_receipt(
 // Android arms Metro's request count before launch only with this much warm-up left, with a short limit.
 const ANDROID_REQUEST_PROBE_MIN_LEFT_MS: u64 = 15_000;
 const ANDROID_REQUEST_PROBE_SECONDS: u64 = 5;
+// 70 s for at most seven 10 s preference commands, leaving 80 s for the start itself.
+const ANDROID_DEVMENU_HIDE_MIN_LEFT_MS: u64 = 150_000;
+
+fn hide_android_dev_button(
+    ctx: &mut Ctx,
+    adb: &Path,
+    server_port: u16,
+    serial: &str,
+    deadline: u64,
+) -> Result<(), Failure> {
+    let record_unconfirmed = |ctx: &mut Ctx, step: &str| {
+        ctx.notes.push((
+            "dev_menu_defaults".to_string(),
+            format!("unconfirmed ({step})"),
+        ));
+    };
+    let app_id = ctx.record.candidate.app_id.clone();
+    if app_id.is_empty()
+        || !app_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
+    {
+        record_unconfirmed(ctx, "app id");
+        return Ok(());
+    }
+    if deadline.saturating_sub(ctx.runner.monotonic_ms()) < ANDROID_DEVMENU_HIDE_MIN_LEFT_MS {
+        record_unconfirmed(ctx, "budget");
+        return Ok(());
+    }
+    ensure_running(ctx.runner, "build")?;
+    let user = ctx
+        .runner
+        .run(&android::devmenu_current_user_spec(adb, server_port, serial));
+    if !user.ok() || user.stdout.trim() != "0" {
+        record_unconfirmed(ctx, "user");
+        return Ok(());
+    }
+    let pidof_spec = android::devmenu_pidof_spec(adb, server_port, serial, &app_id);
+    ensure_running(ctx.runner, "build")?;
+    match android::devmenu_process_read(&ctx.runner.run(&pidof_spec)) {
+        android::ProcessRead::Absent => {}
+        android::ProcessRead::Running => {
+            record_unconfirmed(ctx, "app running");
+            return Ok(());
+        }
+        android::ProcessRead::Unreadable => {
+            record_unconfirmed(ctx, "process unreadable");
+            return Ok(());
+        }
+    }
+    let read_spec = android::devmenu_prefs_read_spec(adb, server_port, serial, &app_id);
+    ensure_running(ctx.runner, "build")?;
+    let read = ctx.runner.run_private(&read_spec, &[]);
+    let existing = match (read.timed_out(), read.exit_code()) {
+        (false, Some(3)) if read.stdout().is_empty() => None,
+        (false, Some(0)) => Some(read.stdout()),
+        (false, Some(5)) => {
+            record_unconfirmed(ctx, "backup");
+            return Ok(());
+        }
+        _ => {
+            record_unconfirmed(ctx, "read");
+            return Ok(());
+        }
+    };
+    let content = match android::devmenu_prefs_hide_fab(existing) {
+        android::DevMenuPrefs::Hidden => return Ok(()),
+        android::DevMenuPrefs::Unrecognised => {
+            record_unconfirmed(ctx, "file");
+            return Ok(());
+        }
+        android::DevMenuPrefs::Write(content) => content,
+    };
+    ensure_running(ctx.runner, "build")?;
+    match android::devmenu_process_read(&ctx.runner.run(&pidof_spec)) {
+        android::ProcessRead::Absent => {}
+        android::ProcessRead::Running => {
+            record_unconfirmed(ctx, "app running");
+            return Ok(());
+        }
+        android::ProcessRead::Unreadable => {
+            record_unconfirmed(ctx, "process unreadable");
+            return Ok(());
+        }
+    }
+    let write_spec =
+        android::devmenu_prefs_write_spec(adb, server_port, serial, &app_id, content.len());
+    ensure_running(ctx.runner, "build")?;
+    let write = ctx.runner.run_private(&write_spec, content.as_bytes());
+    ensure_running(ctx.runner, "build")?;
+    let readback = ctx.runner.run_private(&read_spec, &[]);
+    if readback.timed_out()
+        || readback.exit_code() != Some(0)
+        || !android::devmenu_prefs_fab_hidden(readback.stdout())
+    {
+        record_unconfirmed(ctx, if write.timed_out() { "write" } else { "readback" });
+        return Ok(());
+    }
+    ensure_running(ctx.runner, "build")?;
+    match android::devmenu_process_read(&ctx.runner.run(&pidof_spec)) {
+        android::ProcessRead::Absent => {}
+        android::ProcessRead::Running => record_unconfirmed(ctx, "app running"),
+        android::ProcessRead::Unreadable => record_unconfirmed(ctx, "process unreadable"),
+    }
+    Ok(())
+}
 
 fn android_request_probe_spec(port: u16) -> CmdSpec {
     let mut probe = metro::request_probe_spec(port);

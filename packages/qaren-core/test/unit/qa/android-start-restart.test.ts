@@ -31,7 +31,7 @@ const PROVEN = {
 const APP = 'com.example.synthetic';
 const SERIAL = 'synthetic-android';
 const URL_8081 =
-  'exp+synthetic://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081%2F%3FdisableOnboarding%3D1';
+  'exp+synthetic://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081%2F%3FdisableOnboarding%3D1&disableFab=1&__expo_disable_fab=1&__expo_disable_auto_launch=1';
 const RESTARTED = '; QaReN stopped the app and issued one recovery start command';
 type Outcome = { value?: unknown; error?: any; done: boolean };
 type Reader = 'loading' | 'loaded' | 'unknown';

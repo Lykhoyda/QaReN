@@ -4995,8 +4995,25 @@ fn script_android_launch(mock: &mut MockRunner, no_pid_ticks: usize) {
     script_android_install_launch(mock, no_pid_ticks);
 }
 
+// The dev-client button is already off: the user read, one process read, one preference read, no write.
+fn script_android_dev_button_hidden(mock: &mut MockRunner) {
+    mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+    mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+    mock.expect_run(
+        "run-as",
+        CmdOutput::success(
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n",
+        ),
+    );
+}
+
 fn script_android_install_launch(mock: &mut MockRunner, no_pid_ticks: usize) {
-    script_android_install_launch_probe(mock, no_pid_ticks, Some(CmdOutput::success("")));
+    script_android_install_launch_probe(
+        mock,
+        no_pid_ticks,
+        Some(CmdOutput::success("")),
+        script_android_dev_button_hidden,
+    );
 }
 
 // `probe` answers Metro's request probe before the manifest request; `None` when none is issued.
@@ -5004,6 +5021,7 @@ fn script_android_install_launch_probe(
     mock: &mut MockRunner,
     no_pid_ticks: usize,
     probe: Option<CmdOutput>,
+    dev_button: impl FnOnce(&mut MockRunner),
 ) {
     mock.expect_run(
         "install -r -d",
@@ -5031,6 +5049,7 @@ fn script_android_install_launch_probe(
         mock.expect_run("qaren-request-probe", probe);
     }
     mock.expect_run("expo-platform", CmdOutput::success(""));
+    dev_button(mock);
     mock.expect_run("am start", CmdOutput::success("Starting: Intent"));
     for _ in 0..no_pid_ticks {
         script_android_app_tick(mock, CmdOutput::failed(1, ""));
@@ -5203,6 +5222,9 @@ fn android_check_prebuilds_an_absent_android_dir_before_gradle() {
             "gradle-assemble",
             "adb-install",
             "adb-reverse",
+            "adb-devmenu-user",
+            "adb-devmenu-pidof",
+            "adb-devmenu-prefs-read",
             "adb-am-start",
         ],
     );
@@ -13205,6 +13227,7 @@ fn script_android_pr_ready(mock: &mut MockRunner) {
     mock.expect_run("curl", CmdOutput::success("packager-status:running"));
     mock.expect_run("qaren-request-probe", CmdOutput::success(""));
     mock.expect_run("expo-platform", CmdOutput::success(""));
+    script_android_dev_button_hidden(mock);
     mock.expect_run("am start", CmdOutput::success("Starting: Intent"));
     mock.expect_run("ps", CmdOutput::success(&format!("{LSTART}\n")));
     mock.expect_run("ps", CmdOutput::success("S\n"));
@@ -15468,7 +15491,7 @@ fn android_check_passes_its_own_launch_url_to_the_core() {
     let request: serde_json::Value = serde_json::from_str(mock.piped_stdin_text(0).trim()).unwrap();
     assert_eq!(
         request["payload"]["target"]["androidLaunchUrl"],
-        "rndatest://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8791%2F%3FdisableOnboarding%3D1"
+        "rndatest://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8791%2F%3FdisableOnboarding%3D1&disableFab=1&__expo_disable_fab=1&__expo_disable_auto_launch=1"
     );
 }
 
@@ -15492,6 +15515,7 @@ fn android_request_probe_runs_only_with_fifteen_seconds_of_warm_up_left() {
                 duration_ms: 5_000,
                 ..Default::default()
             }),
+            |_| {},
         );
         script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
         script_android_walk_release(&mut mock, false);
@@ -15500,6 +15524,10 @@ fn android_request_probe_runs_only_with_fifteen_seconds_of_warm_up_left() {
 
         assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
         assert_eq!(mock.remaining(), 0);
+        assert_eq!(
+            receipt.outcomes.get("dev_menu_defaults").map(String::as_str),
+            Some("unconfirmed (budget)")
+        );
         let labels = labels(&mock);
         let probes: Vec<_> = mock
             .calls
@@ -15531,6 +15559,331 @@ fn android_request_probe_runs_only_with_fifteen_seconds_of_warm_up_left() {
         assert!(!labels
             .iter()
             .any(|label| label.contains("watchman") || label.contains("volume")));
+    }
+}
+
+fn android_private_inputs_without_devmenu() -> usize {
+    let (req, mut mock, _repo) = android_reuse_check();
+    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+    script_android_install_launch_probe(&mut mock, 0, Some(CmdOutput::success("")), |mock| {
+        mock.expect_run("get-current-user", CmdOutput::success("10\n"));
+    });
+    script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+    script_android_walk_release(&mut mock, false);
+    let receipt = run(&mut mock, &req);
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    mock.private_inputs.len()
+}
+
+#[test]
+fn android_check_writes_and_reads_back_dev_menu_preferences_before_start() {
+    let written = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n";
+    assert_eq!(written.len(), 115);
+    let baseline = android_private_inputs_without_devmenu();
+
+    let (req, mut mock, _repo) = android_reuse_check();
+    script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+    script_android_install_launch_probe(&mut mock, 0, Some(CmdOutput::success("")), |mock| {
+        mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+        mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+        mock.expect_run("run-as", CmdOutput::failed(3, ""));
+        mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+        mock.expect_run("run-as", CmdOutput::success(""));
+        mock.expect_run("run-as", CmdOutput::success(written));
+        mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+    });
+    script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+    script_android_walk_release(&mut mock, false);
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Pass, "{:?}", receipt.failure);
+    assert_eq!(mock.remaining(), 0);
+    let labels = labels(&mock);
+    assert_subsequence(
+        &labels,
+        &[
+            "adb-install",
+            "adb-devmenu-user",
+            "adb-devmenu-pidof",
+            "adb-devmenu-prefs-read",
+            "adb-devmenu-pidof",
+            "adb-devmenu-prefs-write",
+            "adb-devmenu-prefs-read",
+            "adb-devmenu-pidof",
+            "adb-am-start",
+        ],
+    );
+    let am_start = labels.iter().position(|l| l == "adb-am-start").unwrap();
+    assert_eq!(
+        &labels[am_start - 7..=am_start],
+        &[
+            "adb-devmenu-user",
+            "adb-devmenu-pidof",
+            "adb-devmenu-prefs-read",
+            "adb-devmenu-pidof",
+            "adb-devmenu-prefs-write",
+            "adb-devmenu-prefs-read",
+            "adb-devmenu-pidof",
+            "adb-am-start",
+        ]
+    );
+    assert_eq!(mock.private_inputs.len(), baseline + 3);
+    assert_eq!(
+        &mock.private_inputs[baseline..],
+        &[
+            Vec::<u8>::new(),
+            written.as_bytes().to_vec(),
+            Vec::<u8>::new(),
+        ]
+    );
+    let write = mock
+        .calls
+        .iter()
+        .find(|c| c.label == "adb-devmenu-prefs-write")
+        .unwrap();
+    assert!(write.rendered().contains("-eq 115"), "{}", write.rendered());
+    assert!(
+        !receipt.outcomes.contains_key("dev_menu_defaults"),
+        "{:?}",
+        receipt.outcomes
+    );
+}
+
+#[test]
+fn android_check_records_unconfirmed_read_and_continues_launch() {
+    for (case, read_output) in [
+        (
+            "not-debuggable",
+            CmdOutput::failed(1, "run-as: package not debuggable\n"),
+        ),
+        ("not-regular-file", CmdOutput::failed(4, "")),
+    ] {
+        let (req, mut mock, _repo) = android_reuse_check();
+        script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+        script_android_install_launch_probe(&mut mock, 0, Some(CmdOutput::success("")), |mock| {
+            mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+            mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+            mock.expect_run("run-as", read_output);
+        });
+        script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+        script_android_walk_release(&mut mock, false);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Pass,
+            "{case}: {:?}",
+            receipt.failure
+        );
+        assert_eq!(mock.remaining(), 0, "{case}");
+        let devmenu: Vec<&str> = mock
+            .calls
+            .iter()
+            .filter(|c| c.label.starts_with("adb-devmenu-"))
+            .map(|c| c.label.as_str())
+            .collect();
+        assert_eq!(
+            devmenu,
+            [
+                "adb-devmenu-user",
+                "adb-devmenu-pidof",
+                "adb-devmenu-prefs-read"
+            ],
+            "{case}"
+        );
+        assert!(
+            mock.calls.iter().any(|c| c.label == "adb-am-start"),
+            "{case}"
+        );
+        assert_eq!(
+            receipt.outcomes.get("dev_menu_defaults").map(String::as_str),
+            Some("unconfirmed (read)"),
+            "{case}"
+        );
+        assert!(
+            !mock.private_inputs.iter().any(|b| b.starts_with(b"<?xml")),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn android_check_dev_menu_preference_guards_record_unconfirmed_notes_without_failing() {
+    let prefs_false = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n";
+    let prefs_true = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"showFab\" value=\"true\" />\n</map>\n";
+    let prefs_with_string = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <string name=\"other\">value</string>\n    <boolean name=\"showFab\" value=\"true\" />\n</map>\n";
+    let timed_out = || CmdOutput {
+        timed_out: true,
+        duration_ms: 10_000,
+        ..Default::default()
+    };
+
+    type Case<'a> = (&'a str, Option<&'a str>, bool, Box<dyn FnOnce(&mut MockRunner) + 'a>);
+    let cases: Vec<Case<'_>> = vec![
+        (
+            "first-pidof-running",
+            Some("unconfirmed (app running)"),
+            false,
+            Box::new(|mock| {
+                mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+                mock.expect_run("shell pidof", CmdOutput::success("4242\n"));
+            }),
+        ),
+        (
+            "first-pidof-unreadable",
+            Some("unconfirmed (process unreadable)"),
+            false,
+            Box::new(|mock| {
+                mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, "error: device offline\n"));
+            }),
+        ),
+        (
+            "second-pidof-running",
+            Some("unconfirmed (app running)"),
+            false,
+            Box::new(|mock| {
+                mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+                mock.expect_run("run-as", CmdOutput::success(prefs_true));
+                mock.expect_run("shell pidof", CmdOutput::success("4242\n"));
+            }),
+        ),
+        (
+            "string-entry-in-file",
+            Some("unconfirmed (file)"),
+            false,
+            Box::new(|mock| {
+                mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+                mock.expect_run("run-as", CmdOutput::success(prefs_with_string));
+            }),
+        ),
+        (
+            "sentinel-text-is-not-absent",
+            Some("unconfirmed (file)"),
+            false,
+            Box::new(|mock| {
+                mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+                mock.expect_run("run-as", CmdOutput::success("QAREN_NO_DEVMENU_PREFS\n"));
+            }),
+        ),
+        (
+            "write-timeout-confirmed-by-readback",
+            None,
+            true,
+            Box::new(|mock| {
+                mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+                mock.expect_run("run-as", CmdOutput::success(prefs_true));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+                mock.expect_run("run-as", timed_out());
+                mock.expect_run("run-as", CmdOutput::success(prefs_false));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+            }),
+        ),
+        (
+            "write-ok-readback-still-true",
+            Some("unconfirmed (readback)"),
+            true,
+            Box::new(|mock| {
+                mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+                mock.expect_run("run-as", CmdOutput::success(prefs_true));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+                mock.expect_run("run-as", CmdOutput::success(""));
+                mock.expect_run("run-as", CmdOutput::success(prefs_true));
+            }),
+        ),
+        (
+            "write-timeout-readback-still-true",
+            Some("unconfirmed (write)"),
+            true,
+            Box::new(|mock| {
+                mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+                mock.expect_run("run-as", CmdOutput::success(prefs_true));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+                mock.expect_run("run-as", timed_out());
+                mock.expect_run("run-as", CmdOutput::success(prefs_true));
+            }),
+        ),
+        (
+            "secondary-user-10",
+            Some("unconfirmed (user)"),
+            false,
+            Box::new(|mock| {
+                mock.expect_run("get-current-user", CmdOutput::success("10\n"));
+            }),
+        ),
+        (
+            "backup-file-present",
+            Some("unconfirmed (backup)"),
+            false,
+            Box::new(|mock| {
+                mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+                mock.expect_run("run-as", CmdOutput::failed(5, ""));
+            }),
+        ),
+        (
+            "third-pidof-running-after-readback",
+            Some("unconfirmed (app running)"),
+            true,
+            Box::new(|mock| {
+                mock.expect_run("get-current-user", CmdOutput::success("0\n"));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+                mock.expect_run("run-as", CmdOutput::success(prefs_true));
+                mock.expect_run("shell pidof", CmdOutput::failed(1, ""));
+                mock.expect_run("run-as", CmdOutput::success(""));
+                mock.expect_run("run-as", CmdOutput::success(prefs_false));
+                mock.expect_run("shell pidof", CmdOutput::success("4242\n"));
+            }),
+        ),
+    ];
+
+    let baseline = android_private_inputs_without_devmenu();
+    for (case, expected_note, expects_write, script) in cases {
+        let (req, mut mock, _repo) = android_reuse_check();
+        script_lock_read(&mut mock, POWER, WINDOW_POLICY);
+        script_android_install_launch_probe(&mut mock, 0, Some(CmdOutput::success("")), script);
+        script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+        script_android_walk_release(&mut mock, false);
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(
+            receipt.result,
+            ReceiptResult::Pass,
+            "{case}: {:?}",
+            receipt.failure
+        );
+        assert_eq!(mock.remaining(), 0, "{case}");
+        assert!(
+            mock.calls.iter().any(|c| c.label == "adb-am-start"),
+            "{case}"
+        );
+        assert_eq!(
+            receipt.outcomes.get("dev_menu_defaults").map(String::as_str),
+            expected_note,
+            "{case}: {:?}",
+            receipt.outcomes
+        );
+        let has_xml_write = mock.private_inputs.iter().any(|b| b.starts_with(b"<?xml"));
+        assert_eq!(has_xml_write, expects_write, "{case}");
+        if case == "secondary-user-10" {
+            let devmenu: Vec<&str> = mock
+                .calls
+                .iter()
+                .filter(|c| c.label.starts_with("adb-devmenu-"))
+                .map(|c| c.label.as_str())
+                .collect();
+            assert_eq!(devmenu, ["adb-devmenu-user"]);
+            assert_eq!(mock.private_inputs.len(), baseline);
+        }
     }
 }
 

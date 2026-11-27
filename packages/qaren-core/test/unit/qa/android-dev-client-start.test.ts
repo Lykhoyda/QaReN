@@ -4,6 +4,7 @@ import { test, type TestContext } from 'node:test';
 import { syncBuiltinESMExports } from 'node:module';
 import { promisify } from 'node:util';
 import {
+  buildAndroidDevClientStartArgv,
   isAndroidDevClientLaunchUrl,
   startAndroidDevClient,
 } from '../../../dist/handlers/app-lifecycle.js';
@@ -11,8 +12,9 @@ import { withCancellation } from '../../../dist/domain/cancellation.js';
 
 const APP = 'com.example.synthetic';
 const SERIAL = 'synthetic-android';
-const URL_8081 =
+const OLD_URL_8081 =
   'exp+synthetic://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081%2F%3FdisableOnboarding%3D1';
+const URL_8081 = `${OLD_URL_8081}&disableFab=1&__expo_disable_fab=1&__expo_disable_auto_launch=1`;
 
 // The promisified execFile of android-app-process.test.ts, answering each adb call in turn.
 function adb(t: TestContext, answers: ((args: string[], options: any) => unknown)[]) {
@@ -55,7 +57,7 @@ test('P2: the dev-client start is the CLI argv, sent once', async (t) => {
     'EXDevMenuDisableAutoLaunch',
     'true',
     '-d',
-    URL_8081,
+    `'${URL_8081}'`,
     APP,
   ];
   for (const [name, answer, expected] of [
@@ -96,14 +98,19 @@ test('P2: the dev-client start is the CLI argv, sent once', async (t) => {
       { name: 'AbortError' },
     );
   });
-  await t.test('a bad app id or serial runs no command', async (t) => {
+  await t.test('a bad app id, serial, or launch URL quote runs no command', async (t) => {
     const calls = adb(t, []);
-    for (const [appId, serial] of [
-      ['com.example;rm', SERIAL],
-      [APP, ''],
-      [APP, 'a b'],
+    for (const [appId, serial, url] of [
+      ['com.example;rm', SERIAL, URL_8081],
+      [APP, '', URL_8081],
+      [APP, 'a b', URL_8081],
+      [APP, SERIAL, `${URL_8081}'`],
     ])
-      await assert.rejects(startAndroidDevClient(appId, serial, URL_8081));
+      await assert.rejects(startAndroidDevClient(appId, serial, url));
+    assert.throws(
+      () => buildAndroidDevClientStartArgv(APP, SERIAL, `${URL_8081}'`),
+      /the dev-client start needs a launch URL without a quote/,
+    );
     assert.deepEqual(calls, []);
   });
   for (const [url, port, ok] of [
@@ -112,8 +119,13 @@ test('P2: the dev-client start is the CLI argv, sent once', async (t) => {
     [URL_8081.replace('exp+synthetic', '1bad'), 8081, false],
     [URL_8081.replace('127.0.0.1', '10.0.2.2'), 8081, false],
     [URL_8081 + '%26x%3D1', 8081, false],
+    [OLD_URL_8081, 8081, false],
+    [`${OLD_URL_8081}&__expo_disable_fab=1&disableFab=1&__expo_disable_auto_launch=1`, 8081, false],
+    [`${OLD_URL_8081}&disableFab=1&__expo_disable_fab=1`, 8081, false],
+    [`${OLD_URL_8081}&disableFab=1&__expo_disable_auto_launch=1`, 8081, false],
+    [`${OLD_URL_8081}&__expo_disable_fab=1&__expo_disable_auto_launch=1`, 8081, false],
     [
-      'rndatest://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8791%2F%3FdisableOnboarding%3D1',
+      'rndatest://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8791%2F%3FdisableOnboarding%3D1&disableFab=1&__expo_disable_fab=1&__expo_disable_auto_launch=1',
       8791,
       true,
     ],

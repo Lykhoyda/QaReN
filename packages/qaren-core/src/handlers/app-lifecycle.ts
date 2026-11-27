@@ -111,11 +111,11 @@ export function isAndroidDevClientLaunchUrl(url: unknown, metroPort: number): ur
   return (
     /^[A-Za-z][A-Za-z0-9+.-]{0,127}$/.test(scheme) &&
     url ===
-      `${scheme}://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A${metroPort}%2F%3FdisableOnboarding%3D1`
+      `${scheme}://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A${metroPort}%2F%3FdisableOnboarding%3D1&disableFab=1&__expo_disable_fab=1&__expo_disable_auto_launch=1`
   );
 }
 
-// The CLI's own Android launch (cli/adapters/android.rs:866-895); the app id and serial are checked before any command.
+// The CLI's own Android launch (cli/adapters/android.rs:865-903); the app id, serial and URL are checked before any command.
 export function buildAndroidDevClientStartArgv(
   appId: string,
   serial: string,
@@ -123,6 +123,7 @@ export function buildAndroidDevClientStartArgv(
 ): string[] {
   if (!/^[A-Za-z0-9._]+$/.test(appId))
     throw new Error('the dev-client start needs an exact Android app id');
+  if (url.includes("'")) throw new Error('the dev-client start needs a launch URL without a quote');
   return [
     ...resolveAndroidLifecycleTarget(serial),
     'shell',
@@ -134,7 +135,7 @@ export function buildAndroidDevClientStartArgv(
     'EXDevMenuDisableAutoLaunch',
     'true',
     '-d',
-    url,
+    `'${url}'`,
     appId,
   ];
 }
