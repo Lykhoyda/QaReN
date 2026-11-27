@@ -69,13 +69,28 @@ jobs:
       # runner bytes public (release.yml publishes them before the Version
       # Packages PR may merge; this step is what its merge job waits for).
       # Offline unless the version or root manifest differs from the base.
+      # The Version Packages pull request's own run starts when release.yml
+      # pushes the release head, before that head's release is public. Only
+      # that run (this repository's changeset-release/main into main, compared
+      # in the shell because the comparison must be exact) gets a polling
+      # budget of 30 minutes to ask again instead of failing early. Every other
+      # run fails at once on an unpublished release.
       - name: Published runner assets match the trust root
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           BASE_REF: ${{ github.base_ref }}
           EVENT_BEFORE: ${{ github.event.before }}
-        run: bash scripts/check-public-runner-assets.sh
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ] && [ "$BASE_REF" = main ] \
+            && [ "$HEAD_REF" = changeset-release/main ] && [ "$HEAD_REPO" = "$GH_REPO" ]; then
+            export PUBLICATION_WAIT_SECONDS=1800
+          fi
+          echo "publication polling budget: ${PUBLICATION_WAIT_SECONDS:-0}s"
+          bash scripts/check-public-runner-assets.sh
 
       - name: Documentation ownership gate
         run: node scripts/check-document-ownership.ts

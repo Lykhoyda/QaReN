@@ -12,6 +12,16 @@
 # Usage: check-public-runner-assets.sh [--repair]
 #   --repair  re-upload a MISSING runner-manifest.json asset from the trust
 #             root (needs contents: write). A divergent asset is never repaired.
+#
+# PUBLICATION_WAIT_SECONDS (default 0) is a polling budget: while it lasts, a
+# release that is not readable as published is asked for again instead of
+# failing this check. ci.yml sets it only for the Version Packages pull
+# request, whose run starts when release.yml pushes the release head and so
+# before release.yml has published that head's release. It bounds the pauses
+# between lookups, not a lookup that is under way. A refusal after a spent
+# budget carries a code: RELEASE_UNPUBLISHED_AFTER_WAIT,
+# RELEASE_DRAFT_AFTER_WAIT or RELEASE_UNREADABLE_AFTER_WAIT.
+# PUBLICATION_POLL_SECONDS (default 15) is the pause between two lookups.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -54,16 +64,67 @@ fi
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-# Only the API's own 404 means "not published": a by-tag lookup never sees a
-# draft, and a failed listing must never read as anything at all.
-if ! gh api "repos/{owner}/{repo}/releases/tags/v$V" > "$TMP/release.json" 2> "$TMP/release.err"; then
-  if [ "$(jq -r '.status // empty' "$TMP/release.json" 2>/dev/null)" = "404" ]; then
-    fail "release v$V is not published, so the trust root this checkout advertises has no public bytes"
-  fi
-  cat "$TMP/release.err" >&2
-  fail "could not determine whether release v$V is published — refusing to guess"
+# Only the API's own 404 means "not published", and only an answer that says
+# draft: false means "published". A by-tag lookup normally answers 404 for a
+# draft; a credential that is shown the draft gets draft: true instead. Any
+# other answer is unreadable and never read as anything at all. While the
+# polling budget lasts, each of the three "not published yet" states is asked
+# for again; when it is spent, each fails as itself.
+WAIT_SECONDS=${PUBLICATION_WAIT_SECONDS:-0}
+POLL_SECONDS=${PUBLICATION_POLL_SECONDS:-15}
+case "$WAIT_SECONDS" in '' | *[!0-9]*) fail "PUBLICATION_WAIT_SECONDS must be a whole number of seconds, not '$WAIT_SECONDS'; next: correct it in the step that calls this script" ;; esac
+case "$POLL_SECONDS" in '' | *[!0-9]*) fail "PUBLICATION_POLL_SECONDS must be a whole number of seconds, not '$POLL_SECONDS'; next: correct it in the step that calls this script" ;; esac
+DEADLINE=$(( $(date +%s) + WAIT_SECONDS ))
+# With a budget, a refusal names its code, the budget and the next step.
+UNPUBLISHED="" DRAFT="" UNREADABLE="" ONCE_PUBLISHED="" CHECK_API="" WAITED=""
+if [ "$WAIT_SECONDS" -gt 0 ]; then
+  WAITED=" (asked again for ${WAIT_SECONDS}s)"
+  UNPUBLISHED="RELEASE_UNPUBLISHED_AFTER_WAIT: "
+  DRAFT="RELEASE_DRAFT_AFTER_WAIT: "
+  UNREADABLE="RELEASE_UNREADABLE_AFTER_WAIT: "
+  ONCE_PUBLISHED=" (asked again for ${WAIT_SECONDS}s); next: once the Release workflow run has published v$V, re-run this job"
+  CHECK_API=" (asked again for ${WAIT_SECONDS}s); next: check that the GitHub API answers and whether release v$V is public, then re-run this job"
 fi
-jq -e '.draft == false' "$TMP/release.json" >/dev/null || fail "release v$V is still a draft"
+ANNOUNCED=false
+while :; do
+  if gh api "repos/{owner}/{repo}/releases/tags/v$V" > "$TMP/release.json" 2> "$TMP/release.err"; then
+    # An answer that says nothing readable about draft is malformed, never a draft.
+    STATE=$(jq -r 'if .draft == false then "published" elif .draft == true then "draft" else "malformed" end' "$TMP/release.json" 2>/dev/null) || STATE=malformed
+    [ -n "$STATE" ] || STATE=malformed
+    [ "$STATE" != published ] || break
+  elif [ "$(jq -r '.status // empty' "$TMP/release.json" 2>/dev/null)" = "404" ]; then
+    STATE=unpublished
+  else
+    STATE=unreadable
+  fi
+  REMAINING=$(( DEADLINE - $(date +%s) ))
+  if [ "$REMAINING" -le 0 ]; then
+    case "$STATE" in
+      draft)
+        fail "${DRAFT}release v$V is still a draft$ONCE_PUBLISHED"
+        ;;
+      unpublished)
+        fail "${UNPUBLISHED}release v$V is not published, so the trust root this checkout advertises has no public bytes$ONCE_PUBLISHED"
+        ;;
+      malformed)
+        fail "${UNREADABLE}could not determine whether release v$V is published: the API answered without a readable draft field — refusing to guess${WAITED}; next: look at the answer of the GitHub API for release v$V, then re-run this job"
+        ;;
+      *)
+        cat "$TMP/release.err" >&2
+        fail "${UNREADABLE}could not determine whether release v$V is published — refusing to guess$CHECK_API"
+        ;;
+    esac
+  fi
+  if [ "$ANNOUNCED" = false ]; then
+    ANNOUNCED=true
+    echo "release v$V is not readable as published yet ($STATE) — asking again for up to ${WAIT_SECONDS}s while release.yml publishes it"
+  fi
+  if [ "$POLL_SECONDS" -gt "$REMAINING" ]; then
+    sleep "$REMAINING"
+  else
+    sleep "$POLL_SECONDS"
+  fi
+done
 
 # Every asset the trust root names: both runner zips, plus the qaren tarballs
 # once the root lists them (runner-manifest-publication.mts requires them for a release).

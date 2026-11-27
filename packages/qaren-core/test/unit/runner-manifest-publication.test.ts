@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -37,12 +38,14 @@ import {
   ghCommands,
   installGhStub,
   loadWorkflow,
+  executableLines,
   resolveExpressions,
   runJobSteps,
   shellCommands,
   type GhCheckRun,
   type GhPullRequest,
   type GhSeedRelease,
+  type GhState,
   type GhStub,
   type JobRun,
   type Workflow,
@@ -693,6 +696,15 @@ function baseEnv(fixture: Fixture): Record<string, string> {
   };
 }
 
+// The expressions the workflow reads the release App's state through.
+const APP_CONFIGURED_EXPR = "vars.RELEASE_APP_CLIENT_ID != ''";
+const APP_MINTED_EXPR =
+  "steps.app-token.outcome == 'success' && steps.app-token.outputs.token != ''";
+const APP_TOKEN_OR_GITHUB_EXPR =
+  "steps.app-token.outcome == 'success' && steps.app-token.outputs.token || github.token";
+const SYNC_PR_TOKEN_EXPR =
+  "steps.app-token.outcome == 'success' && steps.app-token.outputs.token || ''";
+
 const HEAD_EXPR =
   "needs.version.outputs.resume == 'true' && needs.version.outputs.head-sha || needs.finalize.outputs.head-sha";
 
@@ -707,6 +719,11 @@ function releaseCtx(
     'github.repository': REPO,
     'github.sha': fixture.base,
     'github.run_id': '4242',
+    'github.server_url': 'https://github.com',
+    // The release App is not configured unless a test says so.
+    [APP_CONFIGURED_EXPR]: 'false',
+    [APP_MINTED_EXPR]: 'false',
+    [SYNC_PR_TOKEN_EXPR]: '',
     'needs.version.outputs.candidate-sha': fixture.candidate,
     'needs.version.outputs.version': VERSION,
     'needs.version.outputs.advertised-version': ADVERTISED,
@@ -995,6 +1012,93 @@ test('finalize generates root + plugin copy from the retained bytes and pins H o
   }
 });
 
+const MINT_WARNING_STEP = 'Warn when the release App is configured but gave no token';
+
+test('a configured release App that gave no token is a warning with its next step, never a stopped release; otherwise the step is silent', () => {
+  const cases: Array<[Record<string, string>, RegExp]> = [
+    [{}, /^$/],
+    [{ [APP_CONFIGURED_EXPR]: 'true', [APP_MINTED_EXPR]: 'true' }, /^$/],
+    [
+      { [APP_CONFIGURED_EXPR]: 'true', [APP_MINTED_EXPR]: 'false' },
+      /^::warning::RELEASE_APP_TOKEN_UNAVAILABLE: .* goes on with GITHUB_TOKEN; if it then pushes to or opens a pull request.* Next: check that the App is installed/,
+    ],
+  ];
+  for (const [ctx, expected] of cases) {
+    const fixture = createFixture();
+    try {
+      const { run } = runFinalize(fixture, { ctx });
+      assert.ok(run.ok, run.failed?.stderr);
+      assert.match(stepStdout(run, MINT_WARNING_STEP), expected);
+      // H is pushed either way.
+      assert.equal(originRef(fixture, 'refs/heads/changeset-release/main'), run.outputs.commit.sha);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('the App token is selected only after a successful mint with a non-empty token, by the push and by the sync PR alike', () => {
+  const expr = (value: unknown) => String(value).replace(/^\$\{\{\s*|\s*\}\}$/g, '');
+  const checkoutStep = steps(release, 'finalize').find((s) =>
+    s.uses?.startsWith('actions/checkout@'),
+  )!;
+  const open = steps(release, 'sync-develop').find((s) => s.id === 'open')!;
+  assert.equal(expr(checkoutStep.with!.token), APP_TOKEN_OR_GITHUB_EXPR);
+  assert.equal(expr(open.env!.SYNC_PR_TOKEN), SYNC_PR_TOKEN_EXPR);
+  for (const jobId of ['finalize', 'sync-develop']) {
+    const warn = steps(release, jobId).find((s) => s.name === MINT_WARNING_STEP)!;
+    assert.equal(expr(warn.env!.APP_CONFIGURED), APP_CONFIGURED_EXPR, jobId);
+    assert.equal(expr(warn.env!.APP_TOKEN_MINTED), APP_MINTED_EXPR, jobId);
+  }
+  // Only ==, !=, && and || on fixed lower-case words, where JavaScript and Actions agree.
+  // The step id is not a JavaScript name, so it is spelled appToken for the evaluation.
+  const evaluate = (expression: string, outcome: string, token: string) =>
+    runInNewContext(expression.replaceAll('steps.app-token.', 'steps.appToken.'), {
+      steps: { appToken: { outcome, outputs: { token } } },
+      github: { token: 'workflow-token' },
+    });
+  const cases: Array<[string, string, boolean]> = [
+    ['success', 'app-token', true],
+    ['success', '', false],
+    // A failed or skipped step never lends its output, whatever it left behind.
+    ['failure', 'app-token', false],
+    ['skipped', '', false],
+  ];
+  for (const [outcome, token, minted] of cases) {
+    const label = `${outcome}/${token}`;
+    assert.equal(
+      evaluate(APP_TOKEN_OR_GITHUB_EXPR, outcome, token),
+      minted ? 'app-token' : 'workflow-token',
+      label,
+    );
+    assert.equal(evaluate(SYNC_PR_TOKEN_EXPR, outcome, token), minted ? 'app-token' : '', label);
+    assert.equal(Boolean(evaluate(APP_MINTED_EXPR, outcome, token)), minted, label);
+  }
+});
+
+test('a push of the release head that landed although git reported failure is read back and accepted, never reported as refused', () => {
+  const fixture = createFixture();
+  try {
+    // A git whose push reaches the remote and then reports failure, as a lost answer would.
+    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    writeFileSync(
+      join(fixture.root, 'bin', 'git'),
+      `#!/bin/sh\nif [ "$1" = push ]; then ${JSON.stringify(realGit)} "$@" >/dev/null 2>&1; echo "fatal: the remote end hung up unexpectedly" >&2; exit 1; fi\nexec ${JSON.stringify(realGit)} "$@"\n`,
+    );
+    chmodSync(join(fixture.root, 'bin', 'git'), 0o755);
+    const { run } = runFinalize(fixture);
+    assert.ok(run.ok, run.failed?.stderr);
+    const head = run.outputs.commit.sha;
+    assert.equal(originRef(fixture, 'refs/heads/changeset-release/main'), head);
+    assert.match(
+      run.steps.at(-1)!.stdout,
+      /git push reported a failure, but changeset-release\/main is at [0-9a-f]{40} — going on/,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('a retained zip that does not match the producer identity stops finalize before anything is generated', () => {
   const fixture = createFixture();
   try {
@@ -1079,6 +1183,11 @@ test('finalize refuses to land on a version branch that moved away from its cand
     });
     assert.equal(run.ok, false);
     assert.match(run.failed!.stderr, /stale info|rejected/);
+    // The refusal of git is followed by the workflow's own: its code and the next step.
+    assert.match(
+      run.failed!.stderr,
+      /::error::RELEASE_HEAD_PUSH_REFUSED: the push of the release head failed and changeset-release\/main is at [0-9a-f]{40}, not at [0-9a-f]{40}, so nothing of v0\.76\.7 is published\. Next: read the git error above\. If the branch is at another commit, a newer push to main owns it/,
+    );
     assert.equal(originRef(fixture, 'refs/heads/changeset-release/main'), moved);
   } finally {
     fixture.cleanup();
@@ -1605,6 +1714,94 @@ function check(conclusion: string | null, status = 'completed'): GhCheckRun {
   };
 }
 
+// The three checks main and develop require, each concluded as given.
+const REQUIRED_CHECKS = ['Build & Test', 'Lint & format', 'Require changeset'];
+
+function requiredChecks(conclusions: Record<string, string | null> = {}): GhCheckRun[] {
+  return REQUIRED_CHECKS.map((name) => {
+    const conclusion = name in conclusions ? conclusions[name] : 'success';
+    return { ...check(conclusion, conclusion === null ? 'in_progress' : 'completed'), name };
+  });
+}
+
+// A CI run GitHub parked for approval: listed as completed/action_required, no check run.
+const CI_RUN_URL = 'https://github.com/x/actions/runs/7';
+function ciRunRecord(status: string, conclusion: string | null) {
+  return { event: 'pull_request', status, conclusion, html_url: CI_RUN_URL };
+}
+const PARKED_RUN = ciRunRecord('completed', 'action_required');
+
+function seed(fixture: Fixture, change: (state: GhState) => void): void {
+  const state = fixture.gh.state();
+  change(state);
+  writeFileSync(join(fixture.root, 'gh-state', 'state.json'), JSON.stringify(state));
+}
+
+const WAIT_MERGE_STEP = "Wait for main's required checks on the candidate";
+
+// A controlled clock for one fixture: `sleep N` returns at once and moves the
+// clock N seconds on, `date +%s` reads it. Every pause is recorded, so a test
+// can assert what was waited for without waiting and without racing the host.
+function fakeClock(fixture: Fixture): { sleeps: () => string[] } {
+  const bin = join(fixture.root, 'bin');
+  const now = join(fixture.root, 'clock');
+  const log = join(fixture.root, 'sleeps');
+  writeFileSync(now, '1000000\n');
+  writeFileSync(log, '');
+  writeFileSync(join(bin, 'date'), `#!/bin/sh\ncat ${JSON.stringify(now)}\n`);
+  writeFileSync(
+    join(bin, 'sleep'),
+    `#!/bin/sh\necho "$1" >> ${JSON.stringify(log)}\necho $(( $(cat ${JSON.stringify(now)}) + $1 )) > ${JSON.stringify(now)}\n`,
+  );
+  chmodSync(join(bin, 'date'), 0o755);
+  chmodSync(join(bin, 'sleep'), 0o755);
+  return { sleeps: () => readFileSync(log, 'utf8').split('\n').filter(Boolean) };
+}
+
+function checkReads(fixture: Fixture): number {
+  return ghCalls(fixture).filter((c) => c.includes('/check-runs?')).length;
+}
+
+function runListings(fixture: Fixture): number {
+  return ghCalls(fixture).filter((c) => c.includes('/actions/workflows/ci.yml/runs')).length;
+}
+
+const KEEP_VERSION_PR =
+  /Keep the Version PR open and its head unchanged: never close it, push to it or resolve a conflict on it\. If it cannot land as it is, report it; changed content ships as a new version/;
+
+// A job with its default polling budget and poll interval, on the controlled
+// clock: for a state the double changes while the job polls.
+function runWaiting(
+  fixture: Fixture,
+  jobId: 'merge' | 'sync-develop',
+  { env = {}, ctx = {} }: { env?: Record<string, string>; ctx?: Record<string, string> } = {},
+) {
+  const clock = fakeClock(fixture);
+  const run = runJobSteps({
+    workflow: release,
+    jobId,
+    cwd: fixture.root,
+    ctx: releaseCtx(fixture, ctx),
+    env: { ...baseEnv(fixture), ...env },
+  });
+  return { run, pauses: clock.sleeps() };
+}
+
+function runMergeWaiting(fixture: Fixture, env: Record<string, string> = {}) {
+  return runWaiting(fixture, 'merge', { env }).run;
+}
+
+// The three required contexts, asked for by name on the server, newest run of each.
+const CHECK_QUERIES = ['Build%20%26%20Test', 'Lint%20%26%20format', 'Require%20changeset'].map(
+  (name) => `check_name=${name}&filter=latest`,
+);
+
+function checkQueries(fixture: Fixture): string[] {
+  return ghCalls(fixture)
+    .filter((c) => c.includes('/check-runs?'))
+    .map((c) => c.slice(c.indexOf('/check-runs?') + '/check-runs?'.length).split(' ')[0]);
+}
+
 function runMerge(fixture: Fixture, ctx: Record<string, string> = {}) {
   return runJobSteps({
     workflow: release,
@@ -1638,14 +1835,15 @@ function publishedFixture(options: FixtureOptions = {}): Fixture {
   return fixture;
 }
 
-test('with the release public and Build & Test green on H, exactly H lands as a merge commit', () => {
+test("with the release public and main's required checks green on H, exactly H lands as a merge commit", () => {
   const fixture = publishedFixture();
   try {
-    const state = fixture.gh.state();
-    state.checks[fixture.head!] = [check('success')];
-    writeFileSync(join(fixture.root, 'gh-state', 'state.json'), JSON.stringify(state));
+    seed(fixture, (state) => {
+      state.checks[fixture.head!] = requiredChecks();
+    });
     const run = runMerge(fixture);
     assert.ok(run.ok, run.failed?.stderr);
+    assert.equal(fixture.gh.state().prs[0].mergedWith, 'stub-token');
     assert.equal(fixture.gh.state().prs[0].state, 'MERGED');
     assert.ok(ghCalls(fixture).includes(`pr merge --merge --match-head-commit ${fixture.head} 11`));
     assert.ok(!ghCalls(fixture).some((c) => c.includes('--auto')), 'never auto-merge');
@@ -1654,13 +1852,32 @@ test('with the release public and Build & Test green on H, exactly H lands as a 
   }
 });
 
-test('a bot-opened PR whose CI still awaits approval fails with the approve/rerun instruction and merges nothing', () => {
+const PR_URL = /https:\/\/github\.com\/Lykhoyda\/QaReN\/pull\/11/;
+
+test('a bot-opened PR whose CI run is parked refuses as RELEASE_CI_APPROVAL_REQUIRED with both ways out, and merges nothing', () => {
   const fixture = publishedFixture();
   try {
+    seed(fixture, (state) => {
+      state.runs[fixture.head!] = [PARKED_RUN];
+    });
     const run = runMerge(fixture);
     assert.equal(run.ok, false);
-    assert.match(run.failed!.stderr, /Approve and run/);
-    assert.match(run.failed!.stderr, /re-run this workflow's failed jobs/);
+    assert.equal(run.failed!.name, WAIT_MERGE_STEP);
+    assert.match(
+      run.failed!.stderr,
+      /^::error::RELEASE_CI_APPROVAL_REQUIRED: PR #11 has no required check on .* a CI run on that commit waits for approval \(https:\/\/github\.com\/x\/actions\/runs\/7\)/,
+    );
+    assert.match(run.failed!.stderr, PR_URL);
+    // The run is listed by commit: the named pull request may or may not be the one that offers the approval.
+    assert.match(
+      run.failed!.stderr,
+      /If it offers "Approve workflows to run", select it, wait until its checks are green, then re-run this workflow's failed jobs\. If it offers no approval, re-run this workflow's failed jobs once and, if nothing changes, report the pull request, [0-9a-f]{40} and this run/,
+    );
+    assert.match(
+      run.failed!.stderr,
+      /A fresh release needs no approval once the release App is configured and mints its token/,
+    );
+    assert.match(run.failed!.stderr, KEEP_VERSION_PR);
     assert.equal(fixture.gh.state().prs[0].state, 'OPEN');
     assert.ok(!ghCalls(fixture).some((c) => c.startsWith('pr merge')));
   } finally {
@@ -1668,44 +1885,334 @@ test('a bot-opened PR whose CI still awaits approval fails with the approve/reru
   }
 });
 
-test('a queued or running check is waited for, not treated as failure', () => {
+test('a head with no check and no parked run refuses as RELEASE_CI_PENDING: every way out keeps the Version PR open and unchanged', () => {
+  const cases: Array<[string, (state: GhState, head: string) => void]> = [
+    ['no CI run at all', () => {}],
+    [
+      'a CI run under way with no check listed yet',
+      (s, h) => (s.runs[h] = [ciRunRecord('queued', null)]),
+    ],
+    [
+      'a CI run that ended with no check listed',
+      (s, h) => (s.runs[h] = [ciRunRecord('completed', 'cancelled')]),
+    ],
+  ];
+  for (const [label, change] of cases) {
+    const fixture = publishedFixture();
+    try {
+      seed(fixture, (state) => change(state, fixture.head!));
+      const run = runMerge(fixture);
+      assert.equal(run.ok, false, label);
+      assert.match(
+        run.failed!.stderr,
+        /^::error::RELEASE_CI_PENDING: PR #11 has no successful/,
+        label,
+      );
+      assert.match(run.failed!.stderr, /Build & Test: no check run; Lint & format: no check run/);
+      assert.match(run.failed!.stderr, PR_URL);
+      assert.match(
+        run.failed!.stderr,
+        /If it shows no CI run at all, re-run this workflow's failed jobs once and, if nothing changes, report the pull request, [0-9a-f]{40} and this run/,
+      );
+      assert.match(run.failed!.stderr, KEEP_VERSION_PR);
+      assert.doesNotMatch(run.failed!.stderr, /reopen/i);
+      assert.ok(!ghCalls(fixture).some((c) => c.startsWith('pr merge')), label);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('a parked run on the same commit is not taken for this pull request once any of its required checks exists', () => {
   const fixture = publishedFixture();
   try {
-    const state = fixture.gh.state();
-    state.checks[fixture.head!] = [check(null, 'in_progress')];
-    writeFileSync(join(fixture.root, 'gh-state', 'state.json'), JSON.stringify(state));
+    seed(fixture, (state) => {
+      // The listing is by commit: this parked run may belong to another pull request.
+      state.runs[fixture.head!] = [PARKED_RUN];
+      state.checks[fixture.head!] = requiredChecks({ 'Build & Test': null });
+    });
     const run = runMerge(fixture);
     assert.equal(run.ok, false);
-    assert.match(run.failed!.stderr, /no successful Build & Test check on .* yet \(in_progress/);
+    assert.match(
+      run.failed!.stderr,
+      /^::error::RELEASE_CI_PENDING: .* \(Build & Test: in_progress/,
+    );
+    assert.equal(runListings(fixture), 0, 'the run listing is not consulted while a check exists');
   } finally {
     fixture.cleanup();
   }
 });
 
-test('a failed Build & Test on H refuses and names the rerun, never a bypass', () => {
+test('an unreadable run listing is never taken for an approval to give or a reason to stop, even when the failed call prints a body', () => {
+  const failing = {
+    GH_STUB_FAIL: 'api repos/{owner}/{repo}/actions/workflows',
+    GH_STUB_FAIL_BODY: '{"message":"Service Unavailable","status":"503"}',
+  };
+  const refused = publishedFixture();
+  try {
+    seed(refused, (state) => {
+      state.runs[refused.head!] = [PARKED_RUN];
+    });
+    const run = runJobSteps({
+      workflow: release,
+      jobId: 'merge',
+      cwd: refused.root,
+      ctx: releaseCtx(refused),
+      env: {
+        ...baseEnv(refused),
+        READINESS_WAIT_MINUTES: '0',
+        READINESS_POLL_SECONDS: '0',
+        ...failing,
+      },
+    });
+    assert.equal(run.ok, false);
+    assert.equal(run.failed!.name, WAIT_MERGE_STEP);
+    assert.match(run.failed!.stderr, /^::error::RELEASE_CI_PENDING: /);
+    assert.doesNotMatch(run.failed!.stderr, /Service Unavailable|waits for approval/);
+  } finally {
+    refused.cleanup();
+  }
+  const merged = publishedFixture();
+  try {
+    seed(merged, (state) => {
+      state.approveAfterReads = { [merged.head!]: { reads: 6, checks: requiredChecks() } };
+    });
+    const run = runMergeWaiting(merged, failing);
+    assert.ok(run.ok, run.failed?.stderr);
+    assert.doesNotMatch(
+      stepStdout(run, WAIT_MERGE_STEP),
+      /RELEASE_CI_APPROVAL_REQUIRED|Service Unavailable/,
+    );
+    assert.ok(runListings(merged) >= 2, 'asked on each poll that found no check');
+    assert.equal(merged.gh.state().prs[0].state, 'MERGED');
+  } finally {
+    merged.cleanup();
+  }
+});
+
+test('an approval given while the merge job waits needs no re-run: the job announces it once, then merges H', () => {
   const fixture = publishedFixture();
   try {
-    const state = fixture.gh.state();
-    state.checks[fixture.head!] = [check('failure')];
-    writeFileSync(join(fixture.root, 'gh-state', 'state.json'), JSON.stringify(state));
+    seed(fixture, (state) => {
+      state.runs[fixture.head!] = [PARKED_RUN];
+      // Two full polls of the three checks see nothing, then the run is approved and green.
+      state.approveAfterReads = { [fixture.head!]: { reads: 6, checks: requiredChecks() } };
+    });
+    const { run, pauses } = runWaiting(fixture, 'merge');
+    assert.ok(run.ok, run.failed?.stderr);
+    assert.deepEqual(pauses, ['60', '60'], 'two pauses of the default poll interval');
+    assert.deepEqual(checkQueries(fixture), [...CHECK_QUERIES, ...CHECK_QUERIES, ...CHECK_QUERIES]);
+    const waited = stepStdout(run, WAIT_MERGE_STEP);
+    assert.equal(waited.match(/::notice::RELEASE_CI_APPROVAL_REQUIRED: /g)?.length, 1);
+    assert.match(waited, PR_URL);
+    assert.match(waited, /goes on by itself if the required checks turn green in that time/);
+    assert.equal(fixture.gh.state().prs[0].state, 'MERGED');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a check list that cannot be read is asked for again, not taken for a verdict', () => {
+  const fixture = publishedFixture();
+  try {
+    seed(fixture, (state) => {
+      state.checks[fixture.head!] = requiredChecks();
+      state.unreadableCheckLists = { [fixture.head!]: 4 };
+    });
+    const run = runMergeWaiting(fixture);
+    assert.ok(run.ok, run.failed?.stderr);
+    assert.equal(fixture.gh.state().prs[0].state, 'MERGED');
+  } finally {
+    fixture.cleanup();
+  }
+  const never = publishedFixture();
+  try {
+    seed(never, (state) => {
+      state.checks[never.head!] = requiredChecks();
+      state.unreadableCheckLists = { [never.head!]: 1000 };
+    });
+    const run = runMerge(never);
+    assert.equal(run.ok, false);
+    assert.match(run.failed!.stderr, /^::error::RELEASE_CI_PENDING: .*Build & Test: unreadable/);
+    assert.ok(!ghCalls(never).some((c) => c.startsWith('pr merge')));
+  } finally {
+    never.cleanup();
+  }
+});
+
+test('a queued or running check is waited for, not treated as failure', () => {
+  const fixture = publishedFixture();
+  try {
+    seed(fixture, (state) => {
+      state.checks[fixture.head!] = requiredChecks({ 'Build & Test': null });
+    });
     const run = runMerge(fixture);
     assert.equal(run.ok, false);
-    assert.match(run.failed!.stderr, /concluded failure .* rerun that CI run/);
+    assert.match(
+      run.failed!.stderr,
+      /^::error::RELEASE_CI_PENDING: PR #11 has no successful required checks on .* yet \(Build & Test: in_progress/,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a green check of the same name from another app never counts: only GitHub Actions reports the required checks', () => {
+  const fixture = publishedFixture();
+  try {
+    seed(fixture, (state) => {
+      state.checks[fixture.head!] = requiredChecks().map((run) => ({
+        ...run,
+        app: { slug: 'some-other-app' },
+      }));
+    });
+    const run = runMerge(fixture);
+    assert.equal(run.ok, false);
+    assert.match(run.failed!.stderr, /^::error::RELEASE_CI_PENDING: .*Build & Test: no check run/);
     assert.ok(!ghCalls(fixture).some((c) => c.startsWith('pr merge')));
   } finally {
     fixture.cleanup();
   }
 });
 
+test('Build & Test green while a sibling required check is still running is waited for: no merge is sent for GitHub to refuse', () => {
+  const pending = publishedFixture();
+  try {
+    seed(pending, (state) => {
+      state.checks[pending.head!] = requiredChecks({ 'Lint & format': null });
+    });
+    const run = runMerge(pending);
+    assert.equal(run.ok, false);
+    assert.equal(run.failed!.name, WAIT_MERGE_STEP);
+    assert.match(
+      run.failed!.stderr,
+      /^::error::RELEASE_CI_PENDING: .* yet \(Lint & format: in_progress/,
+    );
+    assert.ok(!ghCalls(pending).some((c) => c.startsWith('pr merge')));
+  } finally {
+    pending.cleanup();
+  }
+  const late = publishedFixture();
+  try {
+    seed(late, (state) => {
+      state.checks[late.head!] = requiredChecks({ 'Require changeset': null });
+      state.approveAfterReads = { [late.head!]: { reads: 6, checks: requiredChecks() } };
+    });
+    const run = runMergeWaiting(late);
+    assert.ok(run.ok, run.failed?.stderr);
+    assert.equal(late.gh.state().prs[0].state, 'MERGED');
+  } finally {
+    late.cleanup();
+  }
+});
+
+test('a failed required check on H refuses at once as RELEASE_CI_FAILED and names the rerun, never a bypass', () => {
+  for (const [index, name] of REQUIRED_CHECKS.entries()) {
+    const fixture = publishedFixture();
+    try {
+      seed(fixture, (state) => {
+        state.checks[fixture.head!] = requiredChecks({ [name]: 'failure' });
+      });
+      // A long wait: the refusal must not depend on the deadline.
+      const run = runMergeWaiting(fixture);
+      assert.equal(run.ok, false, name);
+      assert.match(
+        run.failed!.stderr,
+        new RegExp(
+          `^::error::RELEASE_CI_FAILED: ${name} on PR #11 .* concluded failure .* Next: rerun that CI run`,
+        ),
+      );
+      assert.match(run.failed!.stderr, KEEP_VERSION_PR);
+      assert.equal(checkReads(fixture), index + 1, 'refused on the first read of that check');
+      assert.deepEqual(checkQueries(fixture), CHECK_QUERIES.slice(0, index + 1));
+      assert.equal(runListings(fixture), 0);
+      assert.ok(!ghCalls(fixture).some((c) => c.startsWith('pr merge')), name);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('a merge that does not happen only states what is — the pull request, the head, the tag and the run — and tells nobody what to do', () => {
+  const ADVICE =
+    /\b(next|re-run|rerun|retry|sync|push|close|reopen|resolve|approve|open the|report)\b/i;
+  // GitHub refuses the merge request.
+  const refused = publishedFixture();
+  try {
+    seed(refused, (state) => {
+      state.checks[refused.head!] = requiredChecks();
+    });
+    const run = runJobSteps({
+      workflow: release,
+      jobId: 'merge',
+      cwd: refused.root,
+      ctx: releaseCtx(refused),
+      env: {
+        ...baseEnv(refused),
+        READINESS_WAIT_MINUTES: '0',
+        READINESS_POLL_SECONDS: '0',
+        GITHUB_RUN_ID: '4242',
+        GH_STUB_FAIL: 'pr merge',
+      },
+    });
+    assert.equal(run.ok, false);
+    assert.equal(run.failed!.name, 'Merge exactly the candidate');
+    const line = run.failed!.stderr.split('\n').find((l) => l.startsWith('::error::'))!;
+    assert.equal(
+      line,
+      `::error::gh pr merge did not succeed for PR #11: head ${refused.head}, tag v0.76.7, run 4242 — v0.76.7 is published but not advertised`,
+    );
+    assert.doesNotMatch(line, ADVICE);
+    assert.equal(refused.gh.state().prs[0].state, 'OPEN');
+  } finally {
+    refused.cleanup();
+  }
+  // The request is accepted, but the pull request is read back as not merged.
+  const closed = publishedFixture();
+  try {
+    seed(closed, (state) => {
+      state.checks[closed.head!] = requiredChecks();
+    });
+    const real = join(closed.root, 'bin', 'gh');
+    const wrapped = join(closed.root, 'bin', 'gh-real');
+    writeFileSync(wrapped, readFileSync(real, 'utf8'));
+    chmodSync(wrapped, 0o755);
+    writeFileSync(
+      real,
+      `#!/bin/sh\ncase "$1 $2" in "pr merge") exit 0;; esac\nexec ${JSON.stringify(wrapped)} "$@"\n`,
+    );
+    const run = runJobSteps({
+      workflow: release,
+      jobId: 'merge',
+      cwd: closed.root,
+      ctx: releaseCtx(closed),
+      env: { ...baseEnv(closed), GITHUB_RUN_ID: '4242' },
+      only: ['Merge exactly the candidate'],
+    });
+    assert.equal(run.ok, false);
+    const line = run.failed!.stderr.split('\n').find((l) => l.startsWith('::error::'))!;
+    assert.equal(
+      line,
+      `::error::PR #11 did not merge (OPEN ): head ${closed.head}, tag v0.76.7, run 4242 — v0.76.7 is published but not advertised`,
+    );
+    assert.doesNotMatch(line, ADVICE);
+  } finally {
+    closed.cleanup();
+  }
+});
+
 test('a check that passed on another head never counts for H', () => {
   const fixture = publishedFixture();
   try {
-    const state = fixture.gh.state();
-    state.checks[fixture.candidate] = [check('success')];
-    writeFileSync(join(fixture.root, 'gh-state', 'state.json'), JSON.stringify(state));
+    seed(fixture, (state) => {
+      state.checks[fixture.candidate] = requiredChecks();
+    });
     const run = runMerge(fixture);
     assert.equal(run.ok, false);
-    assert.match(run.failed!.stderr, /no successful Build & Test check/);
+    assert.match(
+      run.failed!.stderr,
+      /no successful required checks on .* \(Build & Test: no check run/,
+    );
   } finally {
     fixture.cleanup();
   }
@@ -1720,7 +2227,7 @@ test('a PR head that moved after publication voids readiness before any check is
     git(other, 'commit', '--quiet', '-am', 'rebase');
     git(other, 'push', '--quiet', 'origin', 'changeset-release/main');
     const state = fixture.gh.state();
-    state.checks[originRef(fixture, 'refs/heads/changeset-release/main')!] = [check('success')];
+    state.checks[originRef(fixture, 'refs/heads/changeset-release/main')!] = requiredChecks();
     writeFileSync(join(fixture.root, 'gh-state', 'state.json'), JSON.stringify(state));
     const run = runMerge(fixture);
     assert.equal(run.ok, false);
@@ -1741,7 +2248,7 @@ test('publication order: a draft or absent release never merges even with a gree
   });
   try {
     const state = draft.gh.state();
-    state.checks[draft.head!] = [check('success')];
+    state.checks[draft.head!] = requiredChecks();
     writeFileSync(join(draft.root, 'gh-state', 'state.json'), JSON.stringify(state));
     const run = runMerge(draft);
     assert.equal(run.ok, false);
@@ -1765,7 +2272,7 @@ test('a tag that no longer points at H refuses the merge', () => {
   try {
     const state = fixture.gh.state();
     state.tags[TAG] = SHA_B;
-    state.checks[fixture.head!] = [check('success')];
+    state.checks[fixture.head!] = requiredChecks();
     writeFileSync(join(fixture.root, 'gh-state', 'state.json'), JSON.stringify(state));
     const run = runMerge(fixture);
     assert.equal(run.ok, false);
@@ -1776,15 +2283,6 @@ test('a tag that no longer points at H refuses the merge', () => {
 });
 
 // --- sync-develop: the main -> develop sync lands as a merge commit ---
-
-const REQUIRED_CHECKS = ['Build & Test', 'Lint & format', 'Require changeset'];
-
-function requiredChecks(conclusions: Record<string, string> = {}): GhCheckRun[] {
-  return REQUIRED_CHECKS.map((name) => ({
-    ...check(conclusions[name] ?? 'success'),
-    name,
-  }));
-}
 
 // main carries the merged release H; develop is still at the release base.
 function syncFixture({
@@ -1939,7 +2437,7 @@ test('a red required check on the sync PR fails naming the PR and merges nothing
     assert.equal(run.ok, false);
     assert.match(
       run.failed!.stderr,
-      /::error::Lint & format on sync PR https:\/\/github\.com\/Lykhoyda\/QaReN\/pull\/\d+ .* concluded failure/,
+      /::error::RELEASE_CI_FAILED: Lint & format on sync PR https:\/\/github\.com\/Lykhoyda\/QaReN\/pull\/\d+ .* concluded failure/,
     );
     assert.ok(!ghCalls(fixture).some((c) => c.startsWith('pr merge')));
   } finally {
@@ -1947,17 +2445,201 @@ test('a red required check on the sync PR fails naming the PR and merges nothing
   }
 });
 
-test('a sync PR whose CI awaits approval times out with the approve/rerun instruction', () => {
+// GitHub's rule for a pull request a workflow opens, as the gh double models it:
+// opened with the workflow's own token its CI is parked for approval, opened
+// with the App token a CI run exists and reports the required checks, and any
+// other credential is refused.
+const APP_TOKEN = 'app-installation-token';
+
+function ciOnOpen(fixture: Fixture): void {
+  seed(fixture, (state) => {
+    state.ciOnOpen = {
+      workflowToken: 'stub-token',
+      appToken: APP_TOKEN,
+      checks: requiredChecks(),
+    };
+  });
+}
+
+const APP_CTX = {
+  [APP_CONFIGURED_EXPR]: 'true',
+  [APP_MINTED_EXPR]: 'true',
+  [SYNC_PR_TOKEN_EXPR]: APP_TOKEN,
+};
+
+test('without the release App the sync PR is opened with GITHUB_TOKEN, its CI parks, and the job refuses as RELEASE_CI_APPROVAL_REQUIRED naming the PR', () => {
+  const fixture = syncFixture({ headChecks: [] });
+  try {
+    ciOnOpen(fixture);
+    const run = runSync(fixture);
+    assert.equal(run.ok, false);
+    assert.match(
+      run.failed!.stderr,
+      /^::error::RELEASE_CI_APPROVAL_REQUIRED: sync PR https:\/\/github\.com\/.*\/pull\/\d+ has no required check on/,
+    );
+    assert.match(
+      run.failed!.stderr,
+      /open https:\/\/github\.com\/.*\/pull\/\d+\. If it offers "Approve workflows to run", select it.* If it offers no approval, re-run this workflow's failed jobs once/,
+    );
+    assert.equal(syncPr(fixture)!.createdWith, 'stub-token');
+    assert.ok(!ghCalls(fixture).some((c) => c.startsWith('pr merge')));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('with the release App the sync PR is opened with the App token, a CI run exists unparked, and the merge stays on GITHUB_TOKEN', () => {
+  const fixture = syncFixture({ headChecks: [] });
+  try {
+    ciOnOpen(fixture);
+    const run = runJobSteps({
+      workflow: release,
+      jobId: 'sync-develop',
+      cwd: fixture.root,
+      ctx: releaseCtx(fixture, APP_CTX),
+      env: { ...baseEnv(fixture), READINESS_WAIT_MINUTES: '0', READINESS_POLL_SECONDS: '0' },
+    });
+    assert.ok(run.ok, run.failed?.stderr);
+    const pr = syncPr(fixture)!;
+    assert.equal(pr.createdWith, APP_TOKEN);
+    assert.equal(pr.state, 'MERGED');
+    // Merging with the App token would start workflow runs on develop.
+    assert.equal(pr.mergedWith, 'stub-token');
+    assert.deepEqual(
+      fixture.gh.state().runs[fixture.head!].map((r) => r.conclusion),
+      ['success'],
+      'one CI run, never parked',
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('an approval of the sync PR given while the job waits needs no re-run: announced once, then merged', () => {
+  const fixture = syncFixture({ headChecks: [] });
+  try {
+    ciOnOpen(fixture);
+    seed(fixture, (state) => {
+      state.approveAfterReads = { [fixture.head!]: { reads: 6, checks: requiredChecks() } };
+    });
+    const { run, pauses } = runWaiting(fixture, 'sync-develop');
+    assert.ok(run.ok, run.failed?.stderr);
+    assert.deepEqual(pauses, ['60', '60']);
+    assert.deepEqual(checkQueries(fixture), [...CHECK_QUERIES, ...CHECK_QUERIES, ...CHECK_QUERIES]);
+    const waited = stepStdout(run, "Wait for develop's required checks on the sync PR");
+    assert.equal(waited.match(/::notice::RELEASE_CI_APPROVAL_REQUIRED: /g)?.length, 1);
+    assert.equal(syncPr(fixture)!.state, 'MERGED');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a sync PR with no check and no parked run refuses as RELEASE_CI_PENDING', () => {
   const fixture = syncFixture({ headChecks: [] });
   try {
     const run = runSync(fixture);
     assert.equal(run.ok, false);
     assert.match(
       run.failed!.stderr,
-      /::error::sync PR https:\/\/github\.com\/.*\/pull\/\d+ has no successful/,
+      /^::error::RELEASE_CI_PENDING: sync PR https:\/\/github\.com\/.*\/pull\/\d+ has no successful required checks on .* \(Build & Test: no check run; Lint & format: no check run; Require changeset: no check run\)/,
     );
-    assert.match(run.failed!.stderr, /Approve and run/);
     assert.ok(!ghCalls(fixture).some((c) => c.startsWith('pr merge')));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a sync PR whose check list cannot be read is asked for again, and merges only after a readable green answer', () => {
+  const fixture = syncFixture();
+  try {
+    seed(fixture, (state) => {
+      state.unreadableCheckLists = { [fixture.head!]: 4 };
+    });
+    const { run, pauses } = runWaiting(fixture, 'sync-develop');
+    assert.ok(run.ok, run.failed?.stderr);
+    // Four failed reads spread over two polls, then one poll of three readable green answers.
+    assert.equal(checkReads(fixture), 9);
+    assert.deepEqual(pauses, ['60', '60']);
+    assert.ok(!fixture.gh.state().unreadableCheckLists![fixture.head!]);
+    const calls = ghCalls(fixture);
+    const lastRead = calls.findLastIndex((c) => c.includes('/check-runs?'));
+    assert.ok(
+      calls.findIndex((c) => c.startsWith('pr merge')) > lastRead,
+      'merged after the last read',
+    );
+    assert.equal(syncPr(fixture)!.state, 'MERGED');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a sync PR that cannot be opened fails as RELEASE_SYNC_PR_NOT_OPENED with its next step', () => {
+  const fixture = syncFixture({ headChecks: [] });
+  try {
+    const run = runJobSteps({
+      workflow: release,
+      jobId: 'sync-develop',
+      cwd: fixture.root,
+      ctx: releaseCtx(fixture, APP_CTX),
+      env: {
+        ...baseEnv(fixture),
+        READINESS_WAIT_MINUTES: '0',
+        READINESS_POLL_SECONDS: '0',
+        GH_STUB_FAIL: 'pr create',
+      },
+    });
+    assert.equal(run.ok, false);
+    assert.equal(run.failed!.name, 'Open the main to develop sync PR');
+    assert.match(
+      run.failed!.stderr,
+      /::error::RELEASE_SYNC_PR_NOT_OPENED: opening the main to develop sync pull request failed and no open one was found afterwards; v0\.76\.7 is released and advertised, only the sync is missing\. Next: read the error above/,
+    );
+    assert.equal(syncPr(fixture), undefined);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a sync PR that was opened although gh reported failure is found again and used, never reported as not opened', () => {
+  const fixture = syncFixture();
+  try {
+    const run = runJobSteps({
+      workflow: release,
+      jobId: 'sync-develop',
+      cwd: fixture.root,
+      ctx: releaseCtx(fixture, APP_CTX),
+      env: {
+        ...baseEnv(fixture),
+        READINESS_WAIT_MINUTES: '0',
+        READINESS_POLL_SECONDS: '0',
+        GH_STUB_CREATE_LOST: '1',
+      },
+    });
+    assert.ok(run.ok, run.failed?.stderr);
+    assert.match(
+      stepStdout(run, 'Open the main to develop sync PR'),
+      /gh pr create reported a failure, but sync PR #\d+ is open — using it/,
+    );
+    assert.equal(ghCalls(fixture).filter((c) => c.startsWith('pr create')).length, 1);
+    assert.equal(syncPr(fixture)!.state, 'MERGED');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a configured release App that gave no token warns in the sync job too, and the sync PR is then opened with GITHUB_TOKEN', () => {
+  const fixture = syncFixture();
+  try {
+    const run = runJobSteps({
+      workflow: release,
+      jobId: 'sync-develop',
+      cwd: fixture.root,
+      ctx: releaseCtx(fixture, { [APP_CONFIGURED_EXPR]: 'true' }),
+      env: { ...baseEnv(fixture), READINESS_WAIT_MINUTES: '0', READINESS_POLL_SECONDS: '0' },
+    });
+    assert.ok(run.ok, run.failed?.stderr);
+    assert.match(stepStdout(run, MINT_WARNING_STEP), /^::warning::RELEASE_APP_TOKEN_UNAVAILABLE: /);
+    assert.equal(syncPr(fixture)!.createdWith, 'stub-token');
   } finally {
     fixture.cleanup();
   }
@@ -2023,12 +2705,286 @@ function runCi(
       'github.repository': REPO,
       'github.base_ref': '',
       'github.event.before': '',
+      'github.event_name': 'push',
+      'github.head_ref': '',
+      'github.event.pull_request.head.repo.full_name': '',
       ...ctx,
     },
     env: { ...baseEnv(fixture), ...env },
     only: [CI_STEP],
   });
 }
+
+// A release head whose release another job is about to publish: the by-tag
+// lookup finds no published release `lookups` times, then the release is public.
+function publishingFixture(lookups: number, listsDraft = false): Fixture {
+  const fixture = publishedFixture();
+  seed(fixture, (state) => {
+    state.releases[TAG].draft = true;
+    state.releases[TAG].publishesAfterLookups = lookups;
+    state.releases[TAG].listsDraft = listsDraft;
+    delete state.tags[TAG];
+  });
+  return fixture;
+}
+
+function releaseLookups(fixture: Fixture): number {
+  return ghCalls(fixture).filter((c) => c.includes(`/releases/tags/${TAG}`)).length;
+}
+
+// The Version PR's run: the budget ci.yml gives it, with no pause between lookups.
+const VERSION_PR_RUN = {
+  'github.event_name': 'pull_request',
+  'github.base_ref': 'main',
+  'github.head_ref': 'changeset-release/main',
+  'github.event.pull_request.head.repo.full_name': REPO,
+};
+
+test('the Version PR run asks again until its release is published instead of failing early, then asserts the public bytes', () => {
+  for (const listsDraft of [false, true]) {
+    const fixture = publishingFixture(2, listsDraft);
+    try {
+      const clock = fakeClock(fixture);
+      const run = runCi(fixture, checkout(fixture, fixture.head!), VERSION_PR_RUN);
+      assert.ok(run.ok, run.failed?.stderr);
+      assert.equal(releaseLookups(fixture), 3, 'two "not yet" answers, then the published release');
+      assert.deepEqual(clock.sleeps(), ['15', '15'], 'the default pause between lookups');
+      const out = stepStdout(run, CI_STEP);
+      assert.equal(
+        out.match(/asking again for up to 1800s while release\.yml publishes it/g)?.length,
+        1,
+      );
+      assert.match(out, listsDraft ? /\(draft\)/ : /\(unpublished\)/);
+      assert.match(out, /public runner assets for v0\.76\.7 match the trust root/);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('a run that is not the Version PR never asks again: an unpublished release, a draft and an unreadable lookup each fail on the first answer', () => {
+  const cases: Array<[() => Fixture, RegExp]> = [
+    [
+      () => publishingFixture(2),
+      /release v0\.76\.7 is not published, so the trust root this checkout advertises has no public bytes\n$/,
+    ],
+    [() => publishingFixture(2, true), /release v0\.76\.7 is still a draft\n$/],
+    [
+      () => {
+        const fixture = publishedFixture();
+        seed(fixture, (state) => {
+          state.releases[TAG].unreadableLookups = 2;
+        });
+        return fixture;
+      },
+      /could not determine whether release v0\.76\.7 is published — refusing to guess\n$/,
+    ],
+  ];
+  for (const [make, expected] of cases) {
+    const fixture = make();
+    try {
+      const run = runCi(fixture, checkout(fixture, fixture.head!), { 'github.base_ref': 'main' });
+      assert.equal(run.ok, false);
+      assert.match(run.failed!.stderr, expected);
+      assert.equal(releaseLookups(fixture), 1);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('the polling budget is spent, not exceeded: a release that never appears is asked for until 1800 s are used, the last pause cut to what is left, then fails with its code and the re-run', () => {
+  const fixture = createFixture({ prepared: true });
+  try {
+    const clock = fakeClock(fixture);
+    const run = runCi(fixture, checkout(fixture, fixture.head!), VERSION_PR_RUN, {
+      PUBLICATION_POLL_SECONDS: '700',
+    });
+    assert.equal(run.ok, false);
+    assert.deepEqual(clock.sleeps(), ['700', '700', '400']);
+    assert.equal(releaseLookups(fixture), 4);
+    assert.match(
+      run.failed!.stderr,
+      /::error::RELEASE_UNPUBLISHED_AFTER_WAIT: release v0\.76\.7 is not published.* \(asked again for 1800s\); next: once the Release workflow run has published v0\.76\.7, re-run this job/,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a draft the credential is shown, when the budget is spent, fails as RELEASE_DRAFT_AFTER_WAIT', () => {
+  const fixture = publishingFixture(100000, true);
+  try {
+    const clock = fakeClock(fixture);
+    const run = runCi(fixture, checkout(fixture, fixture.head!), VERSION_PR_RUN, {
+      PUBLICATION_POLL_SECONDS: '900',
+    });
+    assert.equal(run.ok, false);
+    assert.deepEqual(clock.sleeps(), ['900', '900']);
+    assert.match(
+      run.failed!.stderr,
+      /::error::RELEASE_DRAFT_AFTER_WAIT: release v0\.76\.7 is still a draft \(asked again for 1800s\); next: once the Release workflow run has published/,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('an unreadable release lookup is asked again inside the budget; when it is spent it fails as itself with its own code and next step', () => {
+  const unreadable = (lookups: number) => {
+    const fixture = publishedFixture();
+    seed(fixture, (state) => {
+      state.releases[TAG].unreadableLookups = lookups;
+    });
+    return fixture;
+  };
+  const recovered = unreadable(2);
+  try {
+    fakeClock(recovered);
+    const run = runCi(recovered, checkout(recovered, recovered.head!), VERSION_PR_RUN);
+    assert.ok(run.ok, run.failed?.stderr);
+    assert.equal(
+      releaseLookups(recovered),
+      3,
+      'two unreadable answers, then the published release',
+    );
+  } finally {
+    recovered.cleanup();
+  }
+  const never = unreadable(100000);
+  try {
+    fakeClock(never);
+    const run = runCi(never, checkout(never, never.head!), VERSION_PR_RUN, {
+      PUBLICATION_POLL_SECONDS: '900',
+    });
+    assert.equal(run.ok, false);
+    assert.match(
+      run.failed!.stderr,
+      /::error::RELEASE_UNREADABLE_AFTER_WAIT: could not determine whether release v0\.76\.7 is published — refusing to guess \(asked again for 1800s\); next: check that the GitHub API answers and whether release v0\.76\.7 is public, then re-run this job/,
+    );
+    assert.doesNotMatch(
+      run.failed!.stderr,
+      /is not published|once the Release workflow run has published/,
+    );
+  } finally {
+    never.cleanup();
+  }
+});
+
+test('an answer that says nothing readable about draft is malformed: never a draft, never a release, and it names its next step', () => {
+  for (const body of ['{"tag_name":"v0.76.7"}', '', 'not json']) {
+    const fixture = publishedFixture();
+    try {
+      const dir = checkout(fixture, fixture.head!);
+      // A gh that answers the by-tag lookup with success and this body.
+      const real = join(fixture.root, 'bin', 'gh');
+      const wrapped = join(fixture.root, 'bin', 'gh-real');
+      writeFileSync(wrapped, readFileSync(real, 'utf8'));
+      chmodSync(wrapped, 0o755);
+      writeFileSync(join(fixture.root, 'body'), body);
+      writeFileSync(
+        real,
+        `#!/bin/sh\ncase "$*" in *releases/tags/*) cat ${JSON.stringify(join(fixture.root, 'body'))}; exit 0;; esac\nexec ${JSON.stringify(wrapped)} "$@"\n`,
+      );
+      const run = runCi(fixture, dir, { 'github.base_ref': 'main' });
+      assert.equal(run.ok, false, body);
+      assert.match(
+        run.failed!.stderr,
+        /could not determine whether release v0\.76\.7 is published: the API answered without a readable draft field — refusing to guess; next: look at the answer of the GitHub API for release v0\.76\.7, then re-run this job\n$/,
+        body,
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test('a budget or a poll interval that is not a whole number of seconds is refused before any lookup, with its next step', () => {
+  for (const [name, value] of [
+    ['PUBLICATION_WAIT_SECONDS', 'soon'],
+    ['PUBLICATION_POLL_SECONDS', '1.5'],
+    ['PUBLICATION_POLL_SECONDS', ''],
+  ]) {
+    const fixture = publishedFixture();
+    try {
+      const run = runCi(
+        fixture,
+        checkout(fixture, fixture.head!),
+        { 'github.base_ref': 'main' },
+        { [name]: value },
+      );
+      // An empty poll interval falls back to the default: only a set, non-numeric value is refused.
+      if (value === '') {
+        assert.ok(run.ok, run.failed?.stderr);
+        continue;
+      }
+      assert.equal(run.ok, false, name);
+      assert.match(
+        run.failed!.stderr,
+        new RegExp(
+          `${name} must be a whole number of seconds, not '${value}'; next: correct it in the step that calls this script`,
+        ),
+      );
+      assert.equal(releaseLookups(fixture), 0, name);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+});
+
+test("only this repository's Version Packages pull request into main gets the 30-minute polling budget, compared exactly", () => {
+  const cases: Array<[string, Record<string, string>, boolean]> = [
+    ['the Version PR', {}, true],
+    ['the same branch into develop', { 'github.base_ref': 'develop' }, false],
+    [
+      'a fork branch of that name',
+      { 'github.event.pull_request.head.repo.full_name': 'someone/QaReN' },
+      false,
+    ],
+    ['another branch', { 'github.head_ref': 'feature' }, false],
+    // Actions compares strings without regard to case; the shell does not.
+    ['the branch name in another case', { 'github.head_ref': 'Changeset-Release/main' }, false],
+    ['a push', { 'github.event_name': 'push', 'github.head_ref': '' }, false],
+  ];
+  for (const [label, ctx, budget] of cases) {
+    const fixture = publishingFixture(1);
+    try {
+      // The script compares against its base branch, so develop has to exist.
+      git(
+        fixture.root,
+        '--git-dir',
+        fixture.origin,
+        'update-ref',
+        'refs/heads/develop',
+        fixture.base,
+      );
+      const clock = fakeClock(fixture);
+      const run = runCi(fixture, checkout(fixture, fixture.head!), { ...VERSION_PR_RUN, ...ctx });
+      assert.equal(run.ok, budget, label);
+      // The step says which budget it runs with: this line is the control on a real pull request.
+      const said = (run.ok ? stepStdout(run, CI_STEP) : run.failed!.stdout).split('\n')[0];
+      assert.equal(said, `publication polling budget: ${budget ? 1800 : 0}s`, label);
+      assert.equal(releaseLookups(fixture), budget ? 2 : 1, label);
+      assert.deepEqual(clock.sleeps(), budget ? ['15'] : [], label);
+    } finally {
+      fixture.cleanup();
+    }
+  }
+  // The four values reach the shell through the environment, never by interpolation.
+  const step = steps(ci, 'core-tests').find((s) => s.name === CI_STEP)!;
+  assert.deepEqual(
+    Object.fromEntries(
+      ['EVENT_NAME', 'BASE_REF', 'HEAD_REF', 'HEAD_REPO'].map((key) => [key, step.env![key]]),
+    ),
+    {
+      EVENT_NAME: '${{ github.event_name }}',
+      BASE_REF: '${{ github.base_ref }}',
+      HEAD_REF: '${{ github.head_ref }}',
+      HEAD_REPO: '${{ github.event.pull_request.head.repo.full_name }}',
+    },
+  );
+  assert.doesNotMatch(step.run!, /\$\{\{/);
+});
 
 test('the release PR run asserts the public bytes of the version it advertises', () => {
   const fixture = publishedFixture();
@@ -2461,6 +3417,156 @@ test('the release transaction is ordered: prepare -> finalize -> validate -> pub
   assert.equal(changesets?.if, "steps.pending.outputs.resume != 'true'");
 });
 
+test('the release App token is optional, pinned, minimal, and used for exactly the two writes that start CI', () => {
+  const APP_TOKEN_ACTION =
+    'actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc';
+  const expected: Record<string, Record<string, string>> = {
+    finalize: { 'permission-contents': 'write' },
+    'sync-develop': { 'permission-contents': 'read', 'permission-pull-requests': 'write' },
+  };
+  for (const [jobId, job] of Object.entries(release.jobs)) {
+    const minted = (job.steps ?? []).filter((s) =>
+      s.uses?.startsWith('actions/create-github-app-token@'),
+    );
+    if (!(jobId in expected)) {
+      assert.equal(minted.length, 0, `${jobId} must not mint the release App token`);
+      continue;
+    }
+    assert.equal(minted.length, 1, jobId);
+    const [mint] = minted;
+    assert.equal(mint.uses, APP_TOKEN_ACTION);
+    assert.equal(mint.id, 'app-token');
+    // Not configured: skipped. Configured but unusable: the job goes on with GITHUB_TOKEN.
+    assert.equal(mint.if, "${{ vars.RELEASE_APP_CLIENT_ID != '' }}");
+    assert.equal((mint as unknown as Record<string, unknown>)['continue-on-error'], true);
+    assert.deepEqual(mint.with, {
+      'client-id': '${{ vars.RELEASE_APP_CLIENT_ID }}',
+      'private-key': '${{ secrets.RELEASE_APP_PRIVATE_KEY }}',
+      ...expected[jobId],
+    });
+  }
+  // finalize: the checkout that precedes the push of H persists the App token for it.
+  const finalizeSteps = steps(release, 'finalize');
+  const checkoutAt = finalizeSteps.findIndex((s) => s.uses?.startsWith('actions/checkout@'));
+  assert.ok(finalizeSteps.findIndex((s) => s.id === 'app-token') < checkoutAt);
+  assert.deepEqual(finalizeSteps[checkoutAt].with, {
+    ref: '${{ needs.version.outputs.candidate-sha }}',
+    token: `\${{ ${APP_TOKEN_OR_GITHUB_EXPR} }}`,
+  });
+  // sync-develop: the token is minted before the step that opens the pull request,
+  // and only `gh pr create` runs as the App.
+  const syncSteps = steps(release, 'sync-develop');
+  assert.ok(
+    syncSteps.findIndex((s) => s.id === 'app-token') < syncSteps.findIndex((s) => s.id === 'open'),
+  );
+  const open = steps(release, 'sync-develop').find((s) => s.id === 'open')!;
+  assert.deepEqual(open.env, { SYNC_PR_TOKEN: `\${{ ${SYNC_PR_TOKEN_EXPR} }}` });
+  const everyLine = steps(release, 'sync-develop').flatMap((s) =>
+    s.run ? executableLines(s.run) : [],
+  );
+  const withAppToken = everyLine.filter((line) => line.includes('SYNC_PR_TOKEN'));
+  assert.equal(withAppToken.length, 1);
+  assert.match(
+    withAppToken[0],
+    /GH_TOKEN="\$\{?SYNC_PR_TOKEN:-\$GH_TOKEN\}?" gh pr create --head main --base develop/,
+  );
+  // Nothing else in any workflow sees the key or the token, and no step prints either.
+  const text = readFileSync(join(repoRoot, '.github', 'workflows', 'release.yml'), 'utf8');
+  assert.equal(text.match(/secrets\.RELEASE_APP_PRIVATE_KEY/g)?.length, 2);
+  // The token itself is read by the checkout and by SYNC_PR_TOKEN only; the two
+  // warning steps test it for emptiness without receiving it.
+  assert.equal(text.match(/steps\.app-token\.outputs\.token \|\|/g)?.length, 2);
+  assert.equal(text.match(/steps\.app-token\.outputs\.token != ''/g)?.length, 2);
+  assert.equal(text.match(/steps\.app-token\.outputs\.token/g)?.length, 4);
+  for (const { jobId, step } of everyRun(release)) {
+    assert.doesNotMatch(step.run!, /echo[^\n]*SYNC_PR_TOKEN|printf[^\n]*SYNC_PR_TOKEN/, jobId);
+  }
+  for (const name of ['ci.yml', 'runner-artifacts.yml', 'runner-artifacts-sweep.yml']) {
+    assert.doesNotMatch(
+      readFileSync(join(repoRoot, '.github', 'workflows', name), 'utf8'),
+      /RELEASE_APP|app-token/,
+      name,
+    );
+  }
+  // The two waits only read: checks and the run listing. No job may write Actions or checks.
+  for (const jobId of ['merge', 'sync-develop']) {
+    assert.deepEqual(release.jobs[jobId].permissions, {
+      actions: 'read',
+      checks: 'read',
+      contents: 'write',
+      'pull-requests': 'write',
+    });
+  }
+  for (const [jobId, job] of Object.entries(release.jobs)) {
+    assert.notEqual(job.permissions?.actions, 'write', jobId);
+    assert.notEqual(job.permissions?.checks, 'write', jobId);
+  }
+});
+
+test("each refusal of the two waits ends with its keep rule and says exactly the reviewed next steps, and both merges stay on the job's GITHUB_TOKEN", () => {
+  for (const jobId of ['merge', 'sync-develop']) {
+    assert.equal(release.jobs[jobId].env!.GH_TOKEN, '${{ secrets.GITHUB_TOKEN }}');
+    for (const step of steps(release, jobId)) {
+      // No step may swap the credential, by its environment or inline in front of a merge.
+      assert.equal(step.env?.GH_TOKEN, undefined, `${jobId}: ${step.name}`);
+      if (!step.run) continue;
+      assert.doesNotMatch(step.run, /reopen/i, `${jobId}: ${step.name}`);
+      for (const line of executableLines(step.run)) {
+        if (/gh pr merge/.test(line)) assert.doesNotMatch(line, /GH_TOKEN=/, `${jobId}: ${line}`);
+      }
+    }
+  }
+  assert.match(String(release.jobs.merge.env!.KEEP), KEEP_VERSION_PR);
+  // What a person is told to do is fixed text: changing it is a reviewed change of this list.
+  const APPROVE =
+    'open $PR_URL. If it offers \\"Approve workflows to run\\", select it, wait until its checks are green, then re-run this workflow\'s failed jobs. If it offers no approval, re-run this workflow\'s failed jobs once and, if nothing changes, report the pull request, $HEAD and this run. A fresh release needs no approval once the release App is configured and mints its token (PREREQUISITES in release.yml).';
+  const PENDING =
+    'open $PR_URL. If it offers \\"Approve workflows to run\\", select it; if its CI run is still running, wait for it; then re-run this workflow\'s failed jobs. If it shows no CI run at all, re-run this workflow\'s failed jobs once and, if nothing changes, report the pull request, $HEAD and this run.';
+  const expected: Record<string, [string, string[]]> = {
+    merge: [
+      WAIT_MERGE_STEP,
+      ["rerun that CI run, then re-run this workflow's failed jobs.", APPROVE, PENDING],
+    ],
+    'sync-develop': [
+      "Wait for develop's required checks on the sync PR",
+      [
+        "rerun that CI run, then re-run this workflow's failed jobs; never squash the sync.",
+        APPROVE,
+        PENDING,
+      ],
+    ],
+  };
+  for (const [jobId, [name, nextSteps]] of Object.entries(expected)) {
+    const step = steps(release, jobId).find((s) => s.name === name)!;
+    const refusals = step.run!.split('\n').filter((line) => line.includes('::error::RELEASE_CI_'));
+    assert.deepEqual(
+      refusals.map((line) => /Next: (.*) \$KEEP" >&2$/.exec(line.trim())?.[1]),
+      nextSteps,
+      jobId,
+    );
+  }
+});
+
+test('each wait asks GitHub for exactly the three required contexts by name, newest run of each', () => {
+  const merge = publishedFixture();
+  try {
+    seed(merge, (state) => {
+      state.checks[merge.head!] = requiredChecks();
+    });
+    assert.ok(runMerge(merge).ok);
+    assert.deepEqual(checkQueries(merge), CHECK_QUERIES);
+  } finally {
+    merge.cleanup();
+  }
+  const sync = syncFixture();
+  try {
+    assert.ok(runSync(sync).ok);
+    assert.deepEqual(checkQueries(sync), CHECK_QUERIES);
+  } finally {
+    sync.cleanup();
+  }
+});
+
 test('the public-asset assertion feeds the required Build & Test aggregate through core-tests', () => {
   assert.ok(stepNames(ci, 'core-tests').includes(CI_STEP));
   assert.ok((ci.jobs.test.needs as string[]).includes('core-tests'));
@@ -2558,7 +3664,7 @@ test('end to end: the first main commit advertising V carries V’s trust root a
     trace(`CI on H          ${stepStdout(ciRun, CI_STEP).trim().split('\n').pop()}`);
 
     const state = fixture.gh.state();
-    state.checks[head] = [check('success')];
+    state.checks[head] = requiredChecks();
     writeFileSync(join(fixture.root, 'gh-state', 'state.json'), JSON.stringify(state));
     const merged = runMerge(fixture, atHead);
     assert.ok(merged.ok, merged.failed?.stderr);
