@@ -719,6 +719,60 @@ fn invalid_or_missing_workspace_refuses_before_boot_reset_or_any_command() {
 }
 
 #[test]
+fn a_misplaced_attach_limit_fails_before_the_node_check_and_the_receipt_states_the_key() {
+    // The last case also has no plan file: the config is refused before the plan is read.
+    for (platform, device, pr, plan) in [
+        (Platform::Ios, UDID, false, true),
+        (Platform::Android, "emulator-5554", false, true),
+        (Platform::Ios, UDID, true, true),
+        (Platform::Ios, UDID, false, false),
+    ] {
+        let (repo, app) = app_repo();
+        std::fs::write(
+            app.join(".qaren/config.yaml"),
+            "appId: com.rndevagent.testapp\ndevClientScheme: testapp\nattach_seconds: 4271\n",
+        )
+        .unwrap();
+        let mut req = request(&repo, &app, 30);
+        req.platform = platform;
+        req.device = Some(device.into());
+        if pr {
+            req.pr = Some(qaren::run::PrTarget { target: "1".into() });
+        }
+        if !plan {
+            req.plan_file = app.join("no-such-plan.md");
+        }
+        let mut mock = MockRunner::new();
+        let receipt = run(&mut mock, &req);
+        assert_eq!(receipt.verb, if pr { "pr" } else { "check" });
+        assert_eq!(receipt.result, ReceiptResult::Failed);
+        assert_eq!(receipt.phase, "config");
+        assert_eq!(receipt.run_id, "none");
+        let fix = "in the config file, correct what the detail identifies; this qaren reads, at the top level: appId, video, packageManager, registryAuthEnv, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, proofInDescription, depsCache, build, deadlines; under `ios:`: deviceType, runtime, build; under `ios:` then `build:`: workspace, scheme; under `android:`: avd; under `loginMarker:`: id, text; under `build:`: jobs, priority, arch; under `deadlines:`: install_deps_seconds, build_seconds, device_boot_seconds, manifest_warmup_seconds, attach_seconds; then run the same command again";
+        assert_eq!(receipt.next_action, fix);
+        let failure = receipt.failure.clone().unwrap();
+        assert_eq!(failure.code, FailureCode::ScenarioInvalid);
+        assert_eq!(failure.next_action.to_string(), fix);
+        assert_eq!(
+            failure.detail.to_string(),
+            format!(
+                "{} does not parse as check configuration: the top level has a key for `attach_seconds`, which is read only under `deadlines:`",
+                req.config_path.display()
+            )
+        );
+        // The temporary path carries numbers of its own; take it out before looking for the value.
+        let json = receipt
+            .to_json()
+            .replace(&repo.display().to_string(), "<repo>");
+        assert!(!json.contains("4271"), "{json}");
+        // Nothing scripted ran: no Node check, no pull-request lookup, no device command.
+        assert!(mock.calls.is_empty());
+        assert!(!req.runs_root.exists());
+        assert!(!req.lock_root.exists());
+    }
+}
+
+#[test]
 fn missing_ios_launch_scheme_refuses_before_boot_reset_or_any_command() {
     let (repo, app) = app_repo();
     std::fs::write(

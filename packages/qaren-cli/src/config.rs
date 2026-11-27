@@ -6,8 +6,34 @@ use crate::scenario::{
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+mod keys;
+
 pub const DEFAULT_CONFIG_PATH: &str = ".qaren/config.yaml";
 pub const DEFAULT_METRO_PORT: u16 = 8791;
+
+// What a refused file trips on and the next step, in fixed words, key names and counts only:
+// no value or other text from the file, so qaren doctor may print it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Named {
+    pub seen: String,
+    pub fix: String,
+}
+
+impl Named {
+    // The whole next step, the same for check, pr and doctor.
+    pub fn next_action(&self) -> String {
+        format!(
+            "in the config file, {}; then run the same command again",
+            self.fix
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigRefusal {
+    pub failure: Failure,
+    pub named: Option<Named>,
+}
 
 // `.qaren/config.yaml` in the app root. Flags override what they name.
 #[derive(Debug, Clone, Deserialize)]
@@ -135,74 +161,128 @@ impl CheckConfig {
 
     // Returns the bytes it parsed so the run record hashes exactly that configuration.
     pub fn load(path: &Path) -> Result<(CheckConfig, String), Failure> {
-        let raw = std::fs::read_to_string(path).map_err(|e| {
-            Failure::new(
+        Self::load_named(path).map_err(|refusal| refusal.failure)
+    }
+
+    // `load`, keeping what a refusal can say without a value from the file.
+    pub fn load_named(path: &Path) -> Result<(CheckConfig, String), ConfigRefusal> {
+        let raw = std::fs::read_to_string(path).map_err(|e| ConfigRefusal {
+            failure: Failure::new(
                 "config",
                 FailureCode::ScenarioUnreadable,
                 format!("cannot read {}: {e}", path.display()),
-                "create .qaren/config.yaml with at least `appId: <bundle id>`",
-            )
+                // Only a missing file is to be created; anything else there is the user's to keep.
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    "create the config file with at least `appId: <bundle id>` and `devClientScheme: <the app's registered URI scheme>` (.qaren/config.yaml unless --config selects another)"
+                } else {
+                    "make the selected config path a readable UTF-8 text file, then run the same command again"
+                },
+            ),
+            named: None,
         })?;
         let config: CheckConfig = serde_yaml::from_str(&raw).map_err(|_| {
-            Failure::new(
-                "config",
-                FailureCode::ScenarioInvalid,
-                format!("{} does not parse as check configuration", path.display()),
-                "fix .qaren/config.yaml (video must be strict or non-strict; keys: video, appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, proofInDescription, depsCache, registryAuthEnv, build (jobs: a positive number, priority: low or normal, arch: all), deadlines)",
-            )
+            let named = keys::name_faults(&raw);
+            let (detail, next_action) = match &named {
+                Some(named) => (
+                    format!(
+                        "{} does not parse as check configuration: {}",
+                        path.display(),
+                        named.seen
+                    ),
+                    named.next_action(),
+                ),
+                None => (
+                    format!("{} does not parse as check configuration", path.display()),
+                    "fix the config file (video must be strict or non-strict; keys: video, appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, proofInDescription, depsCache, registryAuthEnv, build (jobs: a positive number, priority: low or normal, arch: all), deadlines)".to_string(),
+                ),
+            };
+            ConfigRefusal {
+                failure: Failure::new("config", FailureCode::ScenarioInvalid, detail, next_action),
+                named,
+            }
         })?;
         config.validate(path)?;
         Ok((config, raw))
     }
 
-    fn validate(&self, path: &Path) -> Result<(), Failure> {
-        if let Some(build) = self.ios.as_ref().and_then(|ios| ios.build.as_ref()) {
-            build.validate()?;
-        }
-        let invalid = |detail: String| {
-            Failure::new(
-                "config",
-                FailureCode::ScenarioInvalid,
-                format!("{}: {detail}", path.display()),
-                "fix .qaren/config.yaml",
-            )
+    fn validate(&self, path: &Path) -> Result<(), ConfigRefusal> {
+        // Each refusal states which key failed its rule, and never what the file held.
+        let invalid = |phase: &str, seen: &str, fix: &str| {
+            let named = Named {
+                seen: seen.to_string(),
+                fix: fix.to_string(),
+            };
+            ConfigRefusal {
+                failure: Failure::new(
+                    phase,
+                    FailureCode::ScenarioInvalid,
+                    format!("{}: {seen}", path.display()),
+                    named.next_action(),
+                ),
+                named: Some(named),
+            }
         };
+        if let Some(build) = self.ios.as_ref().and_then(|ios| ios.build.as_ref()) {
+            // The rule is the shared validator's; its phase is kept, its prepare wording is not.
+            build.validate().map_err(|failure| {
+                invalid(
+                    &failure.phase,
+                    "`build:` under `ios:` is not a normal project-relative ios/*.xcworkspace path with a trimmed 1–256-byte scheme without controls or a leading hyphen",
+                    "correct `workspace` and `scheme` under `ios:` then `build:`, or remove that `build:` block to use the default build route",
+                )
+            })?;
+        }
+        let invalid = |seen: &str, fix: &str| invalid("config", seen, fix);
         if !crate::redact::valid_registry_auth_env_names(&self.registry_auth_env) {
-            return Err(invalid("registryAuthEnv requires at most 64 non-reserved environment names matching [A-Za-z_][A-Za-z0-9_]*, each at most 128 ASCII bytes".into()));
+            return Err(invalid(
+                "`registryAuthEnv` is not a list of at most 64 allowed environment names",
+                "list at most 64 names, each matching [A-Za-z_][A-Za-z0-9_]* and at most 128 ASCII bytes, and neither TYPESAFE_API_KEY nor a name starting with QAREN_INPUT_ (in any letter case)",
+            ));
         }
         if self.package_manager != "pnpm" {
-            return Err(invalid(format!(
-                "packageManager {:?} is not supported in this release; only pnpm is",
-                self.package_manager
-            )));
+            return Err(invalid(
+                "`packageManager` is not pnpm, the only package manager this release supports",
+                "set `packageManager: pnpm` or remove the key",
+            ));
         }
         if self.metro_port < 1024 {
-            return Err(invalid(format!(
-                "metroPort {} must be >= 1024",
-                self.metro_port
-            )));
+            return Err(invalid(
+                "`metroPort` is below 1024",
+                "set `metroPort` to a port from 1024 through 65535, or remove the key",
+            ));
         }
-        self.deadlines.validate().map_err(invalid)?;
+        if let Some((field, _)) = self.deadlines.out_of_range() {
+            return Err(invalid(
+                &format!("`{field}` is outside 30 through 7200 seconds"),
+                &format!("set `{field}` to a whole number of seconds from 30 through 7200"),
+            ));
+        }
         if self.app_id.trim().is_empty() {
-            return Err(invalid("appId is required".to_string()));
+            return Err(invalid(
+                "`appId` is blank",
+                "set `appId` to the app's bundle ID or package name",
+            ));
         }
         if let Some(node) = &self.node_path {
             if !Path::new(node).is_absolute() {
-                return Err(invalid(format!(
-                    "nodePath {node:?} must be an absolute path"
-                )));
+                return Err(invalid(
+                    "`nodePath` is not an absolute path",
+                    "set `nodePath` to the absolute path of a Node 24 or newer binary, or remove the key",
+                ));
             }
         }
         if self.login_block.is_some() != self.login_marker.is_some() {
             return Err(invalid(
-                "loginBlock and loginMarker must be set together".to_string(),
+                "`loginBlock` and `loginMarker` are not set together",
+                "set both `loginBlock` and `loginMarker`, or neither",
             ));
         }
         if let Some(slug) = &self.login_block {
             if !valid_action_id(slug) {
-                return Err(invalid(format!(
-                    "loginBlock {slug:?} is not an action slug ([A-Za-z0-9][A-Za-z0-9_.-]*, at most 64, no \"..\")"
-                )));
+                return Err(invalid(
+                    "`loginBlock` is not a saved-block slug",
+                    "set `loginBlock` to a slug of ASCII letters, digits, `_`, `.` or `-` that starts with a letter or digit, at most 64 characters, without `..`",
+                ));
             }
         }
         if let Some(marker) = &self.login_marker {
@@ -212,8 +292,8 @@ impl CheckConfig {
             };
             if !one {
                 return Err(invalid(
-                    "loginMarker needs exactly one non-empty `id` (testID) or `text` (label)"
-                        .to_string(),
+                    "`loginMarker` does not have exactly one of `id` and `text`, set to a non-empty value",
+                    "set exactly one of `id` (testID) or `text` (label) in `loginMarker` to a non-empty value and omit the other",
                 ));
             }
         }

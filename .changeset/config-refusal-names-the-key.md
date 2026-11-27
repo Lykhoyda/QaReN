@@ -1,0 +1,5 @@
+---
+"qaren": patch
+---
+
+When `.qaren/config.yaml` does not load, state what is wrong for these faults: in a file without `!` that a second read can follow, a key reached through blocks this build reads that reads as a key of another block (such as a top-level `attach_seconds`, read only under `deadlines:`) or as a key of its own block in another spelling, and any other key its block does not read (by its position, up to three statements with further faults counted); in any file, YAML the reader cannot follow (by line and column); and, in any file that loads, the first value rule that fails. `qaren doctor` shows the same on its `config` row. The refusals for value rules no longer quote the value the file held. Other faults, including a file with a key written twice, an oversized number, or `!` when a key is wrong, keep the general refusal, whose next step no longer names the default path when another file was selected. No configuration key has been removed, renamed or moved since 2.0.0.
