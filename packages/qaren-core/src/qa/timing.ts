@@ -102,6 +102,7 @@ export const ADMISSION_INNER_CLASSES = [
   'target_list_attempt_timeout',
   'target_readiness_timeout',
   'target_list_empty',
+  'target_list_unreachable',
   'target_other_device',
   'bundle_readiness_timeout',
   'non_dev_bundle',

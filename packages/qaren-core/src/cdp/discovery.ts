@@ -141,6 +141,17 @@ export class TargetReadinessTimeoutError extends Error {
   }
 }
 export class TargetListAttemptTimeoutError extends TargetReadinessTimeoutError {}
+// The requested loopback port refused the connection: nothing listens there. Every other failed read,
+// including a refusal met after a redirect to another port, stays an ordinary error.
+export class TargetListUnreachableError extends Error {}
+
+function refusedBy(error: unknown, port: number): boolean {
+  const cause = (error as { cause?: unknown } | null)?.cause as
+    | { code?: unknown; address?: unknown; port?: unknown }
+    | null
+    | undefined;
+  return cause?.code === 'ECONNREFUSED' && cause.address === '127.0.0.1' && cause.port === port;
+}
 export class BundleReadinessTimeoutError extends TargetReadinessTimeoutError {}
 
 export async function fetchTargets(
@@ -155,6 +166,8 @@ export async function fetchTargets(
 ): Promise<HermesTarget[]> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeout);
+  // Until the request has an answer, a failure is the connection's own.
+  let answered = false;
   try {
     // Only the run's cancellation preempts the read; the request timeout aborts the fetch itself.
     const cancel = cancellationSignal(signal);
@@ -162,6 +175,7 @@ export async function fetchTargets(
       const resp = await fetch(`http://127.0.0.1:${port}/json/list`, {
         signal: cancel ? AbortSignal.any([ctrl.signal, cancel]) : ctrl.signal,
       });
+      answered = true;
       const raw = await resp.json();
       if (!Array.isArray(raw))
         throw new Error(`Invalid CDP target list on port ${port}: expected an array`);
@@ -175,6 +189,7 @@ export async function fetchTargets(
     cancellationSignal(signal);
     const message = `Failed to list CDP targets on port ${port}: ${err instanceof Error ? err.message : err}`;
     if (ctrl.signal.aborted) throw new TargetListAttemptTimeoutError(message);
+    if (!answered && refusedBy(err, port)) throw new TargetListUnreachableError(message);
     throw new Error(message);
   } finally {
     clearTimeout(timer);

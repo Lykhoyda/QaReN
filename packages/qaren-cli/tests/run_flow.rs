@@ -3859,6 +3859,231 @@ fn a_blocked_runner_install_is_a_device_refusal_with_its_cause_and_next_step() {
     assert_eq!(mock.remaining(), 0);
 }
 
+// Teardown after a Metro exit: the drift report, the core group's inventory, then a Metro that cleanup
+// finds already gone (its launcher is an uncollected zombie with the recorded birth, the port is free, the
+// group is empty), so no signal is sent; last, the runner hosts on the leased simulator.
+fn script_teardown_after_metro_exit(mock: &mut MockRunner) {
+    script_drift_status(mock);
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run("git", CmdOutput::success(UNTRACKED_PLAN));
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    // The launcher exited but is not collected yet: its row is a zombie with the recorded birth.
+    mock.expect_run("ps -p 6000 -o lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("ps -p 6000 -o stat=", CmdOutput::success("Z"));
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    script_host_probe(mock, UDID, hosts_absent());
+}
+
+// F1 (AI-72): the core's connection to Metro's target list was refused; the run then proves its Metro gone
+// and names the refusal. The two answers of that proof are not commands, so the base behaviour runs the same
+// script to its receipt and fails there: CORE_REFUSED, "resolve the refusal, then re-run".
+// The facts are the ones the core row "without a count signal the request is unknown" prints for iOS (this
+// scripted run has no count files), with this request's 600 s walk budget less the core's reserve.
+// The later passes declare a runtime input whose value is a closed word of the receipt.
+#[test]
+fn a_refused_target_list_with_metro_gone_is_a_bundle_load_refusal_with_a_log_pointer() {
+    // The last pass is privacy mode (`video: strict`): the same receipt, the same closed words.
+    for (input, strict) in [
+        (None, false),
+        (Some("target_list_unreachable"), false),
+        (Some("metro_exited"), false),
+        (Some("inspect_metro_exit"), false),
+        (None, true),
+    ] {
+        let (repo, app) = app_repo();
+        if strict {
+            let config = app.join(".qaren").join("config.yaml");
+            let text = std::fs::read_to_string(&config).unwrap();
+            std::fs::write(&config, format!("{text}video: strict\n")).unwrap();
+        }
+        let mut mock = MockRunner::new();
+        // A line an app could print, kept in the Metro log: it must reach neither the receipt nor the record.
+        mock.metro_log = Some(format!("{}\n", common::canary::line()));
+        script_preflight(&mut mock, &repo);
+        script_provision(&mut mock);
+        script_drift_status(&mut mock);
+        script_host_probe(&mut mock, UDID, hosts_absent());
+        let facts = serde_json::json!({
+            "attempt": 1, "lastStarted": "attach", "lastCompleted": "none",
+            "inner": "target_list_unreachable", "relaunches": 0, "relaunchFailed": false,
+            "liveness": "alive", "bundleRequest": "unknown",
+            "elapsedMs": 42, "remainingMs": 598458, "budgetMs": 598500
+        });
+        let refusal = serde_json::json!({
+            "verdict": "REFUSED", "code": "CDP_NOT_CONNECTED",
+            "message": "cannot attach to the dev client through Metro 8791: Failed to list CDP targets on port 8791: fetch failed (observed attach: target_list_unreachable; app alive; bundle request unknown; host 1-minute load 1.0)",
+            "admission": facts
+        });
+        mock.expect_spawn_piped(
+            "walk.js",
+            9000,
+            &(envelope(2, "result", &refusal.to_string()) + "\n"),
+            Some(4),
+        );
+        script_core_identity(&mut mock);
+        // The proof, read once after the refusal: the launcher has exited and the port refuses a connection.
+        mock.exited_children.push((6000, 0));
+        mock.refusing_ports.push(8791);
+        script_teardown_after_metro_exit(&mut mock);
+
+        let req = request(&repo, &app, 30);
+        // The text a caller reads, printed inside the input scope as the CLI prints it.
+        let mut check = || {
+            let (receipt, events) = run_with_events(&mut mock, &req);
+            let json = receipt.to_json();
+            (receipt, events, json)
+        };
+        let (receipt, events, json) = match input {
+            Some(value) => {
+                let inputs = std::sync::Arc::new(qaren::redact::InputValues::from_entries([(
+                    std::ffi::OsString::from("QAREN_INPUT_STATE"),
+                    std::ffi::OsString::from(value),
+                )]));
+                qaren::redact::with_input_scope(inputs, check)
+            }
+            None => check(),
+        };
+
+        assert_eq!(mock.remaining(), 0, "{input:?} strict={strict}");
+        assert_eq!(receipt.result, ReceiptResult::Refused);
+        if strict {
+            assert_eq!(
+                receipt.outcomes.get("video_policy").map(String::as_str),
+                Some("strict"),
+                "privacy mode is on for this pass"
+            );
+        }
+        let printed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        // The code and the phase are closed words that no declared input can mask.
+        assert_eq!(printed["failure"]["code"], "BUNDLE_LOAD_FAILED", "{json}");
+        assert_eq!(printed["failure"]["phase"], "attach");
+        assert!(!json.contains("fetch failed"), "the generic message is gone: {json}");
+        assert!(printed["failure"].get("evidence").is_none(), "no log line is quoted");
+        let recovery = &printed["failure"]["recovery"];
+        assert_eq!(recovery["next_rung"], 1);
+        for flag in ["automatic", "destroys_state", "requires_user_ok"] {
+            assert_eq!(recovery[flag], false, "{flag}");
+        }
+        assert_eq!(recovery["ladder"].as_array().unwrap().len(), 5);
+        assert_eq!(mock.child_reads, [6000], "one look was enough");
+        assert!(
+            !mock.calls.iter().any(|spec| spec.program == "/bin/kill"),
+            "nothing is signalled"
+        );
+        let failed_attach = events
+            .iter()
+            .find(|e| {
+                e["event"] == "stage"
+                    && e["payload"]["name"] == "attach"
+                    && e["payload"]["state"] == "failed"
+            })
+            .expect("the attach stage fails");
+        assert_eq!(failed_attach["payload"]["code"], "BUNDLE_LOAD_FAILED");
+        let end = events.iter().find(|e| e["event"] == "end").unwrap();
+        assert_eq!(end["payload"]["failureCode"], "BUNDLE_LOAD_FAILED");
+        assert_eq!(end["payload"]["failurePhase"], "attach");
+        assert_eq!(receipt.cleanup["metro"], "absent");
+        assert_eq!(receipt.cleanup["device_lease"], "removed");
+        let ledger =
+            std::fs::read_to_string(req.runs_root.join(run_id()).join("ledger.json")).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&ledger).unwrap();
+        assert_eq!(saved["verdict"], "REFUSED");
+        match input {
+            None => {
+                assert_eq!(printed["next_action"], "inspect_metro_exit");
+                assert_eq!(recovery["cause"], "metro_exited");
+                assert_eq!(recovery["action"], "inspect_metro_exit");
+                assert_eq!(recovery["admission"], facts);
+                assert_eq!(
+                    printed["failure"]["log"]["file"],
+                    req.runs_root
+                        .join(run_id())
+                        .join("logs/metro.log")
+                        .display()
+                        .to_string()
+                );
+                let detail = printed["failure"]["detail"].as_str().unwrap();
+                assert!(
+                    detail.starts_with("metro_exited: before admission the core's connection to Metro's target list on port 8791 was refused; QaReN then found its Metro gone"),
+                    "{detail}"
+                );
+                assert!(saved["failure"]["seen"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("BUNDLE_LOAD_FAILED: metro_exited: "));
+                assert!(receipt.outcomes.get("metro_exit_check").is_none());
+                // The kept log holds the app's line; the receipt and the record point at it and hold none of it.
+                common::canary::assert_absent("receipt", &json);
+                common::canary::assert_absent("ledger", &ledger);
+                let kept = std::fs::read_to_string(
+                    req.runs_root.join(run_id()).join("logs/metro.log"),
+                )
+                .unwrap();
+                assert!(kept.contains(common::canary::VALUES[0]), "{kept}");
+            }
+            // A declared value is masked wherever it occurs, as for every admission cause today.
+            Some(value) => {
+                assert!(!json.contains(value), "{json}");
+                assert!(!ledger.contains(value), "{ledger}");
+                // The other closed words are still there; the declared one is masked like any other value.
+                if value != "metro_exited" {
+                    assert_eq!(recovery["cause"], "metro_exited");
+                }
+                if value != "inspect_metro_exit" {
+                    assert_eq!(printed["next_action"], "inspect_metro_exit");
+                }
+            }
+        }
+    }
+}
+
+// F3 (AI-72): the same refusal, but Metro is not proven gone (its launcher is not reported exited). The core's
+// refusal stands as it is today, and the receipt says in fixed words what the three looks found.
+// On the base behaviour there is no such note; a build that renames without proof fails at the code.
+#[test]
+fn a_refused_target_list_with_metro_not_proven_gone_keeps_the_refusal_and_says_what_was_found() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    script_provision(&mut mock);
+    script_drift_status(&mut mock);
+    script_host_probe(&mut mock, UDID, hosts_absent());
+    let refusal = serde_json::json!({
+        "verdict": "REFUSED", "code": "CDP_NOT_CONNECTED", "message": "admission refused",
+        "admission": {
+            "attempt": 1, "lastStarted": "attach", "lastCompleted": "none",
+            "inner": "target_list_unreachable", "relaunches": 0, "relaunchFailed": false,
+            "liveness": "alive", "bundleRequest": "unknown",
+            "elapsedMs": 42, "remainingMs": 598458, "budgetMs": 598500
+        }
+    });
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &(envelope(2, "result", &refusal.to_string()) + "\n"),
+        Some(4),
+    );
+    script_core_identity(&mut mock);
+    // The port refuses, but the kernel does not report the launcher as exited.
+    mock.refusing_ports.push(8791);
+    script_teardown(&mut mock);
+
+    let req = request(&repo, &app, 30);
+    let (receipt, _) = run_with_events(&mut mock, &req);
+
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(mock.child_reads, [6000, 6000, 6000], "three looks");
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(failure.code, FailureCode::CoreRefused);
+    assert!(failure.detail.starts_with("CDP_NOT_CONNECTED: "), "{}", failure.detail);
+    assert_eq!(
+        receipt.outcomes.get("metro_exit_check").map(String::as_str),
+        Some("not proven: launcher not known to have exited, port refused a connection")
+    );
+}
+
 #[test]
 fn a_child_refusal_is_a_typed_refusal_with_the_child_code() {
     for admitted in [false, true] {
@@ -15582,6 +15807,69 @@ fn android_refusal_run_as(
     };
     assert_eq!(mock.remaining(), 0);
     outcome
+}
+
+// F2 (AI-72) on Android: the facts alone name `attach_unexplained`; a Metro proven gone keeps its own cause.
+// The facts are the ones the core row "without a count signal the request is unknown" prints for Android
+// (this scripted run has no launch counts). On the base behaviour this run ends as CORE_REFUSED with cause
+// `attach_unexplained`.
+#[test]
+fn android_refused_target_list_with_metro_gone_keeps_the_metro_exit_cause() {
+    let facts = serde_json::json!({
+        "attempt": 1, "lastStarted": "attach", "lastCompleted": "none",
+        "inner": "target_list_unreachable", "relaunches": 0, "relaunchFailed": false,
+        "liveness": "alive", "bundleRequest": "unknown",
+        "elapsedMs": 42, "remainingMs": 598458, "budgetMs": 598500
+    });
+    assert_eq!(
+        qaren::failure::AdmissionCause::from_facts(
+            &serde_json::from_value(facts.clone()).unwrap(),
+            true
+        ),
+        Some(qaren::failure::AdmissionCause::AttachUnexplained)
+    );
+    let (req, mut mock, _repo) = android_reuse_check();
+    let refusal = serde_json::json!({
+        "verdict": "REFUSED", "code": "CDP_NOT_CONNECTED", "message": "admission refused",
+        "admission": facts
+    });
+    script_android_launch(&mut mock, 0);
+    script_android_app_tick(&mut mock, CmdOutput::success("4242\n"));
+    mock.expect_run("ls-files", CmdOutput::success(""));
+    script_drift_status(&mut mock);
+    mock.expect_spawn_piped(
+        "walk.js",
+        9000,
+        &(envelope(2, "result", &refusal.to_string()) + "\n"),
+        Some(4),
+    );
+    script_core_identity(&mut mock);
+    mock.exited_children.push((6000, 0));
+    mock.refusing_ports.push(8791);
+    script_drift_status(&mut mock);
+    mock.expect_run("git", CmdOutput::success(&format!("{}\n", "b".repeat(40))));
+    mock.expect_run(
+        "git",
+        CmdOutput::success("?? test-app/.qaren/config.yaml\0?? test-app/plan.md\0"),
+    );
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    // The launcher exited but is not collected yet: its row is a zombie with the recorded birth.
+    mock.expect_run("ps -p 6000 -o lstart=", CmdOutput::success(LSTART));
+    mock.expect_run("ps -p 6000 -o stat=", CmdOutput::success("Z"));
+    mock.expect_run("lsof", free_port());
+    mock.expect_run("ps -A", CmdOutput::success("1 1 S\n"));
+    script_borrowed_release(&mut mock, false);
+
+    let (receipt, _) = run_with_events(&mut mock, &req);
+
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    let printed: serde_json::Value = serde_json::from_str(&receipt.to_json()).unwrap();
+    assert_eq!(printed["failure"]["code"], "BUNDLE_LOAD_FAILED");
+    assert_eq!(printed["failure"]["phase"], "attach");
+    assert_eq!(printed["failure"]["recovery"]["cause"], "metro_exited");
+    assert_eq!(printed["failure"]["recovery"]["admission"], facts);
+    assert_eq!(printed["next_action"], "inspect_metro_exit");
 }
 
 #[test]

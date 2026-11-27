@@ -355,6 +355,16 @@ pub trait Runner {
     fn adb_server_absent(&self, port: u16) -> bool {
         crate::adapters::android::server_absent(port)
     }
+    // The same positive "nothing listens" answer for any loopback port. A runner that does not connect
+    // answers false, which proves nothing.
+    fn loopback_refuses(&self, _port: u16) -> bool {
+        false
+    }
+    // True only when the kernel says that a spawn_group child this runner still owns has exited. The child
+    // is not collected: cleanup reaps it later. Any other pid, or no answer, is false, which proves nothing.
+    fn child_exited(&mut self, _pid: i32) -> bool {
+        false
+    }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         crate::adapters::android::server_version(port)
     }
@@ -464,6 +474,12 @@ impl Runner for DeadlineRunner<'_> {
     fn adb_server_absent(&self, port: u16) -> bool {
         self.inner.adb_server_absent(port)
     }
+    fn loopback_refuses(&self, port: u16) -> bool {
+        self.inner.loopback_refuses(port)
+    }
+    fn child_exited(&mut self, pid: i32) -> bool {
+        self.inner.child_exited(pid)
+    }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.inner.adb_server_version(port)
     }
@@ -522,6 +538,12 @@ impl Runner for CleanupRunner<'_> {
     fn adb_server_absent(&self, port: u16) -> bool {
         self.0.adb_server_absent(port)
     }
+    fn loopback_refuses(&self, port: u16) -> bool {
+        self.0.loopback_refuses(port)
+    }
+    fn child_exited(&mut self, pid: i32) -> bool {
+        self.0.child_exited(pid)
+    }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.0.adb_server_version(port)
     }
@@ -578,6 +600,26 @@ impl Default for RealRunner {
 impl Runner for RealRunner {
     fn env_var_os(&self, name: &str) -> Option<OsString> {
         std::env::var_os(name)
+    }
+    fn loopback_refuses(&self, port: u16) -> bool {
+        crate::adapters::android::server_absent(port)
+    }
+    fn child_exited(&mut self, pid: i32) -> bool {
+        if !self.children.contains_key(&pid) {
+            return false;
+        }
+        // A wait that neither blocks nor collects: the kernel's own answer for this one child.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let answered = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        // A zeroed answer means "no change yet"; only this child's own exit counts.
+        answered == 0 && info.si_signo == libc::SIGCHLD && unsafe { info.si_pid() } == pid
     }
     fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
         self.executed += 1;
@@ -1135,6 +1177,15 @@ pub struct MockRunner {
     pub adb_devices: Vec<(u16, String)>,
     // Answers to log_lines in read order; once empty, the real count file answers.
     pub scripted_log_lines: VecDeque<Option<u64>>,
+    // (pid, clock ms): spawn_group children the kernel reports as exited from that time on; every other
+    // pid is not known to have exited.
+    pub exited_children: Vec<(i32, u64)>,
+    // Every pid whose exit was asked about, in order.
+    pub child_reads: Vec<i32>,
+    // Loopback ports that refuse a connection; every other port proves nothing.
+    pub refusing_ports: Vec<u16>,
+    // How long one loopback connect takes on the scripted clock.
+    pub connect_takes_ms: u64,
     script: VecDeque<MockExpectation>,
     // Shared with scripted children that exit at a clock time.
     now_ms: Arc<AtomicU64>,
@@ -1158,6 +1209,10 @@ impl MockRunner {
             adb_servers: Vec::new(),
             adb_devices: Vec::new(),
             scripted_log_lines: VecDeque::new(),
+            exited_children: Vec::new(),
+            child_reads: Vec::new(),
+            refusing_ports: Vec::new(),
+            connect_takes_ms: 0,
             script: VecDeque::new(),
             now_ms: Arc::new(AtomicU64::new(1_770_000_000_000)),
         }
@@ -1290,6 +1345,17 @@ impl Runner for MockRunner {
     }
     fn adb_server_absent(&self, port: u16) -> bool {
         !self.adb_servers.iter().any(|(p, _)| *p == port) && !self.adb_inconclusive.contains(&port)
+    }
+    fn loopback_refuses(&self, port: u16) -> bool {
+        self.now_ms.fetch_add(self.connect_takes_ms, Ordering::SeqCst);
+        self.refusing_ports.contains(&port)
+    }
+    fn child_exited(&mut self, pid: i32) -> bool {
+        self.child_reads.push(pid);
+        let now = self.now_ms.load(Ordering::SeqCst);
+        self.exited_children
+            .iter()
+            .any(|(child, at_ms)| *child == pid && now >= *at_ms)
     }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.adb_servers
