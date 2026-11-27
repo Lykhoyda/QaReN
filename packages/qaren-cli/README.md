@@ -3553,7 +3553,7 @@ execute remaining plan steps to delete app or staging-account data created by
 the walk. Bounded plan cleanup and its receipt outcome remain deferred to Part B
 for 2.0.5.
 
-Signals or a vanished caller stop the run with `RUN_CANCELLED`. The CLI checks
+Once `check` or `pr` has installed its cancellation handler, a signal or a vanished caller stops the run with `RUN_CANCELLED`, or with the run's ordinary receipt if it arrives after the last cancellation check. The CLI checks
 cancellation before forward operations, including Git probes, recorder start,
 installation, fresh-install data removal, simulator boot, Metro/core launch,
 video finalization and publication. The core's cancellation helpers inherit the
@@ -3563,8 +3563,7 @@ walking, readiness persistence and saved-action writes. Ownership-gated teardown
 still runs.
 See the [CLI cancellation boundary](src/cancel.rs) and
 [core cancellation mechanism](../qaren-core/src/domain/cancellation.ts).
-A second signal exits immediately; the next run must recover retained resources
-through their recorded ownership proofs.
+A second signal exits immediately after one line on stderr; the next run must recover retained resources through their recorded ownership proofs. Every other command, `watch` included, and `check` or `pr` before their cancellation handler, still stops on SIGTERM, SIGINT or SIGHUP, ended by that signal, after one line on stderr naming it. A signal the caller started qaren with ignored stays ignored, except that `check` and `pr` take over all three for cancellation. Nothing can be printed on SIGKILL, before qaren has installed these handlers at the start of the program, or when stderr is unusable, and a blocked stderr delays the exit. If qaren cannot install these handlers, it stops before doing anything, after one line. Plain output, `--version` and a receipt that cannot be written are reported on stderr with a next step.
 
 Before each iOS launch, `prepare` writes the app's Expo dev-menu preferences with
 `simctl spawn <udid> defaults write <app-id>`: no floating action button, no menu
@@ -4322,7 +4321,7 @@ links and symlinked action files. Inspection header validity and defaults follow
 [core header parser](../qaren-core/src/domain/reusable-action.ts); `list` skips
 invalid headers and `show` refuses them.
 Both commands mask values from the invocation's `QAREN_INPUT_` namespace in stdout,
-including values not required by a plan.
+including values not required by a plan. With nothing to list, the plain output is one line saying so; `--json` prints `[]`.
 
 Saved-block reads, replay, writes, CLI inspection and PR block preservation normally
 use a real `.qaren/actions` directory. A linked Git
@@ -4391,7 +4390,7 @@ titles and the platforms it is flagged broken on. Titles are read as a run reads
 comments are ignored, and blocks come only from the `## QA` section when the file has one. A
 numbered step or check before the first `###` lists the unnamed block, named after the `#` title,
 else `plan`. Listing skips symlinked and unreadable or non-UTF-8 files, refuses a symlinked
-`.qaren` or `.qaren/plans`, and masks `QAREN_INPUT_*` values.
+`.qaren` or `.qaren/plans`, and masks `QAREN_INPUT_*` values. With nothing to list, the plain output is one line saying so; `--json` prints `[]`.
 
 The saved file is a canonical copy built by the core, not the draft's bytes: the `#` title if any,
 `## QA`, then each block's `###` title and raw plan lines in order. Prose, comments and other
@@ -6782,7 +6781,7 @@ simulator can be borrowed instead; see
   before each signal, including escalation after the grace wait. A matching
   port and group alone never authorize signalling after the leader's birth
   identity is lost or its PID is reused. An unreaped zombie with the recorded
-  birth still pins the leader PID and can authorize group escalation. A present
+  birth still pins the leader PID and can authorize group escalation. A recorded Metro is the one exception to giving up at once. When cleanup found its leader alive with its recorded birth and its TERM or KILL step then finds the leader gone (no process row; a held run's launcher is reaped by another parent) and the group still present, cleanup sends no signal and lists the group every 250 ms within a 20 s polling budget. A group found absent then, or already absent, must also pass the leader, free-or-foreign port and final absent-listing checks before `removed` is claimed. A group not proven gone stays `unresolved` and keeps the lease. A present
   group without proven leader identity remains `unresolved`; proven group
   absence can retire it without a signal. After a
   kill the port must be positively free or foreign before `removed` is

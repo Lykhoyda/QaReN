@@ -3965,7 +3965,10 @@ fn a_failed_ios_check_holds_metro_the_simulator_and_the_lease_for_inspection() {
 
     assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
     assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
-    let release = format!("qaren cleanup {} releases it", run_id());
+    let release = format!(
+        "qaren cleanup {} can retry the release once the resources that gate the lease are accounted for",
+        run_id()
+    );
     assert_eq!(
         receipt.cleanup["metro"],
         format!("held: retained for inspection; {release}")
@@ -4367,7 +4370,7 @@ fn status_reports_a_held_run_and_its_release_command() {
     assert!(receipt.held.is_some());
     assert!(
         receipt.next_action.ends_with(&format!(
-            "qaren cleanup {} --json to release Metro, the simulator and the device lease",
+            "qaren cleanup {} --json. It attempts to release this run's recorded resources; check the cleanup receipt for the result.",
             run_id()
         )),
         "{}",
@@ -14946,7 +14949,10 @@ fn a_failed_recorded_ios_check_stops_the_recorder_before_holding() {
     assert_eq!(receipt.result, ReceiptResult::Fail, "{:?}", receipt.failure);
     assert_eq!(mock.remaining(), 0, "{:?}", labels(&mock));
     assert_subsequence(&labels(&mock), &["core-walk", "recorder-interrupt"]);
-    let release = format!("qaren cleanup {} releases it", run_id());
+    let release = format!(
+        "qaren cleanup {} can retry the release once the resources that gate the lease are accounted for",
+        run_id()
+    );
     assert_eq!(receipt.cleanup["recorder"], "removed");
     assert_eq!(
         receipt.cleanup["metro"],
