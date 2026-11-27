@@ -5409,6 +5409,7 @@ rungs in `failure.recovery`, from the first matching end state:
 | a target wait timed out with no bundle request recorded | `bundle_not_requested` | `retry_launch_once` |
 | a target wait timed out with a request and a failed or no completed build | `bundle_not_built` | `inspect_metro_bundle` |
 | any other target wait timeout, including unreadable build outcomes | `no_attachable_target` | `inspect_app_screen` |
+| Metro's target list refused the core's connection and the CLI found its Metro gone (`BUNDLE_LOAD_FAILED`, both platforms) | `metro_exited` | `inspect_metro_exit` |
 | any other class | `attach_unexplained` | `inspect_admission_evidence` |
 
 `DEV_TARGET_MISSING` keeps its code, message and next step; on Android its facts
@@ -5521,6 +5522,8 @@ device, another bundle and unanswered list requests have distinct classes.
 The refusal also carries the measured load; the
 [admission implementation](../qaren-core/src/qa/admission.ts) owns attachment
 retry policy; the [CLI core boundary](src/core.rs) owns deadline classification.
+
+When the core's connection to Metro's target list on the run's port is refused before any answer, the core's refusal carries the inner class `target_list_unreachable`; any other failed read, including a refusal after a redirect to another address or port, keeps its class. For such a refusal before admission, with the app's process not read dead and no restart blocked or failed, the CLI then looks at the Metro it started, up to three times a second apart within 4 seconds: it asks the system whether its Metro launcher process has exited (without collecting it) and connects once to the run's Metro port. If, in one look, the launcher has exited and the connection is refused, the run refuses `BUNDLE_LOAD_FAILED` (exit 4), phase `attach`, with `failure.recovery.cause: metro_exited`, `failure.log` naming the Metro log the run recorded (no line of it is quoted) and the core's facts in `failure.recovery.admission`; `next_action` is `inspect_metro_exit`. As for every failure, an unresolved cleanup makes the next action the cleanup command, and an iOS runner-cleanup recovery replaces the recovery and the next action with the cleanup's. Otherwise the core's refusal stands and the receipt's `metro_exit_check` outcome says, in fixed words, what the looks found. QaReN does not watch Metro while the core runs: an exit during a stage in which the core makes no Metro request (the runner session opening, Android's first-screen gate, proof) can first be named on a later refused read, and the attach budget, the walk budget or another finding can decide first; a refusal that already carried a development-mode finding keeps it. A Metro that is alive but not answering waits as before. QaReN restarts neither Metro nor the app in response, and Metro's exit status is not reported. A declared runtime input equal to one of the cause or action words masks that word, as for every admission cause; `failure.code` is never masked.
 
 ### Candidate provenance
 

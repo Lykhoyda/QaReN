@@ -42,6 +42,8 @@ development mode unknown. State-losing recovery requires approval and ownership
 proof; a non-dev bundle permits app/Metro restart only for proven stale Metro
 serving the wrong bundle. A corrected build requires separate authorization.
 
+For `BUNDLE_LOAD_FAILED` with cause `metro_exited`, the core's connection to QaReN's own Metro port was refused before admission and QaReN then found its Metro launcher exited and the port refusing: inspect the log that `failure.log` names, complete any cleanup the receipt asks for, then re-run once without reset or restart flags; QaReN restarts nothing in response.
+
 For `CORE_REFUSED` with a `DEV_MENU_HIDE_UNVERIFIED_*` inner code in
 `failure.detail`, read the authoritative
 [overlay clearance and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan)

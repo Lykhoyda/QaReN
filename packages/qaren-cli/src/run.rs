@@ -1394,6 +1394,18 @@ fn run_inner(
         for note in driver_notes {
             ctx.notes.push(("runner_driver".to_string(), note));
         }
+        // The core has ended: a refused target list may now be named for a Metro that is proven gone.
+        // A look that proved nothing leaves the core's refusal and says what it found.
+        match core::name_metro_exit(
+            ctx.runner,
+            core::RecordedMetro::for_run(&ctx.record).as_ref(),
+            &mut outcome,
+        ) {
+            Some(core::MetroLook::Gone) | None => {}
+            Some(unproven) => ctx
+                .notes
+                .push(("metro_exit_check".to_string(), unproven.note().to_string())),
+        }
         match &outcome.verdict {
             Verdict::Pass => events::close_running(StageState::Passed, None, &["recording"]),
             Verdict::Fail => {
@@ -1661,7 +1673,10 @@ fn run_inner(
         };
         if let (Some(failure), Verdict::Refused { code, .. }) = (&mut failure, &outcome.verdict) {
             // Only an admission-caused refusal takes the admission overlay; a CLI-owned verification refusal keeps its own phase and next step.
-            let cause = if failure.code == FailureCode::CandidateUnavailable {
+            let cause = if matches!(
+                failure.code,
+                FailureCode::CandidateUnavailable | FailureCode::BundleLoadFailed
+            ) {
                 None
             } else if code == "RUN_CANCELLED"
                 && !outcome.admitted
@@ -4788,6 +4803,50 @@ mod last_screen_tests {
         assert!(fail.recovery.is_none());
         assert_eq!(fail.next_action.as_str(), "re-run");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    // AI-72: today's rule holds for the Metro-exit refusal too. When the iOS runner's cleanup needs
+    // recovery, that recovery and its next action replace the failure's own, as for every failure; the
+    // code, the phase, the detail and the log pointer stay.
+    #[test]
+    fn runner_cleanup_recovery_replaces_the_metro_exit_recovery_and_keeps_its_code() {
+        let facts: crate::failure::AdmissionFacts = serde_json::from_value(json!({
+            "attempt": 1, "lastStarted": "attach", "lastCompleted": "none",
+            "inner": "target_list_unreachable", "relaunches": 0, "relaunchFailed": false,
+            "liveness": "alive", "elapsedMs": 42, "remainingMs": 58958, "budgetMs": 59000
+        }))
+        .unwrap();
+        let failure = core::RecordedMetro::new(4100, 8791, PathBuf::from("/runs/check-1/logs/metro.log"))
+            .refusal(facts);
+        let own = serde_json::to_value(&failure).unwrap();
+        assert_eq!(own["recovery"]["cause"], "metro_exited");
+        assert_eq!(own["next_action"], "inspect_metro_exit");
+        let mut current = record("check-1", "abc");
+        let mut receipt = Receipt::new(
+            "check",
+            &current.run_id,
+            ReceiptResult::Refused,
+            "cleaned",
+            "2026-10-30T08:15:00Z".into(),
+        );
+        receipt.next_action = failure.next_action.to_string();
+        receipt.failure = Some(failure.clone());
+        // No runner cleanup cause: the projection changes nothing.
+        crate::commands::cleanup::project_runner_recovery(&mut receipt, &current);
+        assert_eq!(serde_json::to_value(&receipt).unwrap()["failure"], own);
+
+        current.resources.runner_cleanup_cause = Some(RecoveryReason::StorageFailed);
+        crate::commands::cleanup::project_runner_recovery(&mut receipt, &current);
+        let json = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(json["failure"]["code"], "BUNDLE_LOAD_FAILED");
+        assert_eq!(json["failure"]["phase"], "attach");
+        assert_eq!(json["failure"]["detail"], own["detail"]);
+        assert_eq!(json["failure"]["log"], own["log"]);
+        assert_eq!(json["recovery"]["reason"], "storage_failed");
+        assert_eq!(json["failure"]["recovery"], json["recovery"]);
+        assert!(json["failure"]["recovery"].get("cause").is_none());
+        assert_ne!(json["next_action"], "inspect_metro_exit");
+        assert_eq!(json["failure"]["next_action"], json["next_action"]);
     }
 
     // C2 exercises receipt projection with a run-owned cleanup failure.

@@ -19,6 +19,7 @@ pub(crate) const INNER: &[&str] = &[
     "target_list_attempt_timeout",
     "target_readiness_timeout",
     "target_list_empty",
+    "target_list_unreachable",
     "target_other_device",
     "bundle_readiness_timeout",
     "cdp_probe_timeout",
@@ -120,6 +121,15 @@ impl AdmissionFacts {
                     && self.targets_total == Some(counts[1..].iter().flatten().sum())))
     }
 
+    // The attach ended because Metro's target list refused the connection, with no stronger finding:
+    // the app's process was not read dead and no restart was blocked or failed.
+    pub fn metro_refused_connection(&self) -> bool {
+        self.inner == "target_list_unreachable"
+            && self.liveness != "dead"
+            && !self.relaunch_failed
+            && self.relaunch_blocked.is_none()
+    }
+
     pub fn all_false(&self) -> bool {
         self.inner == "non_dev_bundle"
             && self.targets_total.is_some_and(|n| n > 0)
@@ -161,6 +171,7 @@ pub enum AdmissionCause {
     AppRestartFailed,
     AppProcessDeadAfterRestart,
     BundleNotRequestedAfterRestart,
+    MetroExited,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +191,7 @@ pub enum AdmissionAction {
     WaitForOtherDriver,
     CheckDeviceConnection,
     CheckMetroReachable,
+    InspectMetroExit,
 }
 
 impl AdmissionCause {
@@ -262,6 +274,7 @@ impl AdmissionCause {
             Self::AppRestartBlockedUnreadable => (CheckDeviceConnection, "check_device_connection", "QaReN did not restart the app: the device did not answer the reads QaReN needs before a force-stop (its process table, or the app's process). Check that the device is connected and answers adb, then re-run once."),
             Self::AppRestartFailed => (CheckDeviceConnection, "check_device_connection", "QaReN's one restart of the app (a force-stop, then the same start command) did not complete, so the app may be stopped on the device. Check that the device is connected and answers adb, then re-run once."),
             Self::AppProcessDeadAfterRestart => (InspectAppCrash, "inspect_app_crash", "QaReN stopped the app and issued one recovery start command; the app's process was not running when the attach was refused. Read the device's crash log for the app; if it shows no crash, check that the start opens the app on the device, then re-run once."),
+            Self::MetroExited => (InspectMetroExit, "inspect_metro_exit", "Before admission the core's connection to QaReN's own Metro port was refused, and QaReN then found that Metro gone. QaReN did not restart Metro or the app in response. Inspect the log that `failure.log` names for available evidence, complete any cleanup this receipt asks for, then re-run once without reset or restart flags: a run that needs a dev server starts its own Metro."),
             Self::BundleNotRequestedAfterRestart => (CheckMetroReachable, "check_metro_reachable", "QaReN stopped the app and issued one recovery start command; at the count check after it, Metro had still recorded no bundle request on this port, and no wait had returned a debugger target. Check that the device reaches Metro on the run's port and that the dev client leaves its own launcher, then re-run once."),
         }
     }
@@ -292,6 +305,8 @@ impl AdmissionRecovery {
         let (action, _, instruction) = cause.action();
         let first = if non_dev {
             "An unchanged retry cannot repair bundle mode; correct the build variant before starting a changed run; a build requires separate authorization."
+        } else if cause == AdmissionCause::MetroExited {
+            "After any cleanup this receipt asks for, re-run once without reset or restart flags: a run that needs a dev server starts its own Metro. If Metro exits again, inspect its log before another run."
         } else if cancelled {
             "A retry cannot help a cancelled run; do not resume automatically."
         } else {

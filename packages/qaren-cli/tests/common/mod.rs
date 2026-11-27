@@ -738,6 +738,12 @@ impl qaren::exec::Runner for IosBuildRunner {
     fn adb_server_absent(&self, port: u16) -> bool {
         self.inner.adb_server_absent(port)
     }
+    fn loopback_refuses(&self, port: u16) -> bool {
+        self.inner.loopback_refuses(port)
+    }
+    fn child_exited(&mut self, pid: i32) -> bool {
+        self.inner.child_exited(pid)
+    }
     fn adb_server_version(&self, port: u16) -> Result<u32, String> {
         self.inner.adb_server_version(port)
     }

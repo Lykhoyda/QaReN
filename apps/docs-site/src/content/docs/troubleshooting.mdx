@@ -32,6 +32,8 @@ For `DEV_TARGET_MISSING` or admission-time `CORE_REFUSED`, follow the receipt's
 `next_action` and recovery rungs using the authoritative
 [admission and recovery contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan).
 
+`BUNDLE_LOAD_FAILED` (cause `metro_exited`) means that before admission the core's connection to QaReN's own Metro port was refused and QaReN then found its Metro launcher exited and the port refusing; it restarted nothing in response. Inspect the log `failure.log` names, complete any cleanup the receipt asks for, then re-run once without reset or restart flags.
+
 ## Development overlays before step 1
 
 For `CORE_REFUSED` with a `DEV_MENU_HIDE_UNVERIFIED_*` inner code in

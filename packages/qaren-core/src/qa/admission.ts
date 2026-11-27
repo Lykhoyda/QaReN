@@ -18,6 +18,7 @@ import {
   BundleReadinessTimeoutError,
   TargetReadinessTimeoutError,
   TargetListAttemptTimeoutError,
+  TargetListUnreachableError,
   TargetSelectionError,
   clearFailedPackageProbes,
   type AdvertisedPages,
@@ -167,6 +168,7 @@ export function admissionInnerClass(error: unknown): AdmissionInnerClass {
   }
   if (error instanceof DevTargetUnavailableError)
     return allTargetsNonDev(error.counts) ? 'non_dev_bundle' : 'no_dev_target_unknown';
+  if (error instanceof TargetListUnreachableError) return 'target_list_unreachable';
   if (error instanceof TargetListAttemptTimeoutError) return 'target_list_attempt_timeout';
   if (error instanceof BundleReadinessTimeoutError) return 'bundle_readiness_timeout';
   if (error instanceof TargetReadinessTimeoutError && error.state === 'empty')

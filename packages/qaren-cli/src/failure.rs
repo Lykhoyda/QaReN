@@ -76,6 +76,7 @@ pub enum FailureCode {
     MetroOriginMismatch,
     CoreRefused,
     DevTargetMissing,
+    BundleLoadFailed,
     PressNotRegistered,
     BlockStartMissing,
     DevRedbox,
@@ -129,6 +130,7 @@ impl FailureCode {
                 | FailureCode::MetroOriginMismatch
                 | FailureCode::PressNotRegistered
                 | FailureCode::DevTargetMissing
+                | FailureCode::BundleLoadFailed
                 | FailureCode::CoreRefused
                 | FailureCode::BlockStartMissing
                 | FailureCode::DevRedbox

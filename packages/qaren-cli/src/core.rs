@@ -10,6 +10,8 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 mod diagnostics;
+mod metro_exit;
+pub use metro_exit::{name_metro_exit, MetroLook, RecordedMetro};
 
 pub const WIRE_VERSION: u64 = 1;
 const MAX_ROWS: usize = 10_000;
