@@ -4,6 +4,7 @@ import { isAbsolute } from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {
+  ADMISSION_SCAN_TIMEOUT_MS,
   isAndroidEmulatorSerial,
   isAndroidUsbSerial,
   isIosSimulatorUdid,
@@ -64,14 +65,27 @@ export async function freshInstallPreflight(args: string[]): Promise<FreshInstal
     deviceId: '',
     status: 'unknown',
   };
-  if (args.length !== 4 && args.length !== 6) return invalid;
+  if (![4, 6, 8].includes(args.length)) return invalid;
   const options = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
     const key = args[i];
-    if (!['--platform', '--device', '--process-observer'].includes(key) || options.has(key))
+    if (
+      !['--platform', '--device', '--process-observer', '--scan-timeout-ms'].includes(key) ||
+      options.has(key)
+    )
       return invalid;
     options.set(key, args[i + 1]);
   }
+  // The CLI owns the admission allowance; it may give a repeated scan a longer wait.
+  const wait = options.get('--scan-timeout-ms');
+  const scanTimeoutMs = wait === undefined ? ADMISSION_SCAN_TIMEOUT_MS.default : Number(wait);
+  if (
+    wait !== undefined &&
+    (!/^[1-9]\d{3,4}$/.test(wait) ||
+      scanTimeoutMs < ADMISSION_SCAN_TIMEOUT_MS.default ||
+      scanTimeoutMs > ADMISSION_SCAN_TIMEOUT_MS.max)
+  )
+    return invalid;
   const deviceId = options.get('--device');
   if (
     options.get('--platform') === 'android' &&
@@ -79,8 +93,18 @@ export async function freshInstallPreflight(args: string[]): Promise<FreshInstal
     (isAndroidEmulatorSerial(deviceId) || isAndroidUsbSerial(deviceId)) &&
     !options.has('--process-observer')
   ) {
-    const { status } = await probeAndroidExternalRunnerAdmission(deviceId);
-    return { v: 1, platform: 'android', deviceId, status };
+    const { status, reason } = await probeAndroidExternalRunnerAdmission(
+      deviceId,
+      undefined,
+      scanTimeoutMs,
+    );
+    return {
+      v: 1,
+      platform: 'android',
+      deviceId,
+      status,
+      ...(reason ? { evidence: { reason } } : {}),
+    };
   }
   if (options.get('--platform') !== 'ios' || !deviceId || !isIosSimulatorUdid(deviceId)) {
     return invalid;
@@ -98,6 +122,7 @@ export async function freshInstallPreflight(args: string[]): Promise<FreshInstal
         ? (pid, timeout, withArgv, inspection) =>
             observeProcess(observer, pid, timeout, withArgv, inspection)
         : undefined,
+      scanTimeoutMs,
     )),
   };
 }

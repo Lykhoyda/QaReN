@@ -13,6 +13,15 @@ const ANDROID_ADVISORY_DRIVER = /uiautomator|agent-device|AgentDevice/i;
 const ANDROID_STRICT_DRIVER = /uiautomator|agent-device|AgentDevice|maestro|instrument/i;
 const ANDROID_PS_OPTIONS = { timeout: 2_000, encoding: 'utf8' as const };
 
+// The wait of one strict admission process-table read. The caller that owns the admission
+// allowance may lengthen it for a repeated scan; nothing here repeats a read.
+export const ADMISSION_SCAN_TIMEOUT_MS = { default: 2_000, max: 16_000 } as const;
+
+function scanTimedOut(error: unknown): boolean {
+  const failure = error as (NodeJS.ErrnoException & { killed?: boolean }) | null;
+  return failure?.killed === true || failure?.code === 'ETIMEDOUT';
+}
+
 // `ps -A` rows naming a UI driver, never QaReN's own runner package.
 function androidDriverLines(stdout: string, driver: RegExp): string[] {
   return stdout
@@ -88,7 +97,8 @@ export function isAndroidUsbSerial(value: string): boolean {
 export async function probeAndroidExternalRunnerAdmission(
   serial: string,
   execFileImpl: typeof execFile = execFile,
-): Promise<{ status: AndroidStrictRunnerStatus; matched?: string }> {
+  scanTimeoutMs: number = ADMISSION_SCAN_TIMEOUT_MS.default,
+): Promise<{ status: AndroidStrictRunnerStatus; matched?: string; reason?: 'scan_timeout' }> {
   try {
     const run =
       execFileImpl === execFile
@@ -98,13 +108,19 @@ export async function probeAndroidExternalRunnerAdmission(
             a: string[],
             o: typeof ANDROID_PS_OPTIONS,
           ) => Promise<{ stdout: string }>);
-    const { stdout } = await run('adb', ['-s', serial, 'shell', 'ps', '-A'], ANDROID_PS_OPTIONS);
+    const { stdout } = await run('adb', ['-s', serial, 'shell', 'ps', '-A'], {
+      ...ANDROID_PS_OPTIONS,
+      timeout: scanTimeoutMs,
+    });
     if (typeof stdout !== 'string' || stdout.trim() === '') return { status: 'unknown' };
     const [first] = androidDriverLines(stdout, ANDROID_STRICT_DRIVER);
     if (first === undefined) return { status: 'clear' };
     return { status: 'busy', matched: first.trim().split(/\s+/).at(-1) };
-  } catch {
-    return { status: 'unknown' };
+  } catch (error) {
+    // Only a read killed for time is named: the allowance owner may scan again with a longer wait.
+    return scanTimedOut(error)
+      ? { status: 'unknown', reason: 'scan_timeout' }
+      : { status: 'unknown' };
   }
 }
 
@@ -169,6 +185,7 @@ const MAX_ADMISSION_CANDIDATES = 64;
 async function readIosProcesses(
   execFileImpl: typeof execFile,
   readLine: (line: string) => void,
+  timeoutMs: number = IOS_PS_OPTIONS.timeout,
 ): Promise<{ complete: boolean; stderr?: string }> {
   let pending = '';
   let hasOutput = false;
@@ -187,13 +204,13 @@ async function readIosProcesses(
       a: string[],
       o: typeof IOS_PS_OPTIONS,
     ) => Promise<{ stdout: string; stderr?: string }>;
-    const result = await run('ps', argv, IOS_PS_OPTIONS);
+    const result = await run('ps', argv, { ...IOS_PS_OPTIONS, timeout: timeoutMs });
     if (typeof result.stdout !== 'string') throw new Error('Invalid iOS process scan');
     consume(result.stdout);
     stderr = result.stderr;
   } else {
     const child = spawn('ps', argv, {
-      timeout: IOS_PS_OPTIONS.timeout,
+      timeout: timeoutMs,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.stdout.setEncoding('utf8');
@@ -570,6 +587,7 @@ export async function probeIosExternalRunnerAdmission(
   execFileImpl: typeof execFile = execFile,
   udid?: string,
   observeIdentity?: ProcessIdentityObserver,
+  scanTimeoutMs: number = ADMISSION_SCAN_TIMEOUT_MS.default,
 ): Promise<IosAdmissionProbeResult> {
   const unknown = (
     reason: IosAdmissionProbeReason,
@@ -621,7 +639,7 @@ export async function probeIosExternalRunnerAdmission(
     const drivers: string[] = [];
     const unresolved: string[] = [];
     let candidates = 0;
-    const { complete, stderr } = await readIosProcesses(execFileImpl, (line) => {
+    const readLine = (line: string) => {
       // eslint-disable-next-line no-control-regex -- Corrupt process-table bytes must fail closed.
       corrupt ||= /[\x00-\x08\x0b-\x1f\x7f\ufffd]/.test(line);
       const match = /^\s*([1-9]\d*)[ \t]+(\S[^\n]*)$/.exec(line);
@@ -638,7 +656,8 @@ export async function probeIosExternalRunnerAdmission(
       } else if (controller || hasUnresolvedIosExecutablePath(line)) {
         if (++candidates <= MAX_ADMISSION_CANDIDATES) unresolved.push(line);
       }
-    });
+    };
+    const { complete, stderr } = await readIosProcesses(execFileImpl, readLine, scanTimeoutMs);
     if (!complete) return unknown('scan_incomplete');
     if (stderr !== undefined && stderr !== '') return unknown('scan_stderr');
     if (corrupt) return unknown('scan_corrupt');
@@ -744,7 +763,7 @@ export async function probeIosExternalRunnerAdmission(
     const failure = error as NodeJS.ErrnoException & { killed?: boolean };
     if (failure?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER')
       return unknown('scan_output_oversize');
-    if (failure?.killed || failure?.code === 'ETIMEDOUT') return unknown('scan_timeout');
+    if (scanTimedOut(error)) return unknown('scan_timeout');
     if (['ENOENT', 'EACCES', 'EPERM'].includes(failure?.code ?? ''))
       return unknown('scan_unavailable');
     return unknown('scan_failed');

@@ -3213,7 +3213,10 @@ stops with `APP_RESET_FAILED`.
 On Android, strict admission runs `adb -s <serial> shell ps -A` through the
 borrowed server. A matching UIAutomator, agent-device, Maestro or instrumentation
 process refuses `DEVICE_BUSY`, excluding QaReN's own runner package. A scan
-error, timeout or empty output refuses `FRESH_INSTALL_ADMISSION_UNKNOWN`.
+error or empty output refuses `FRESH_INSTALL_ADMISSION_UNKNOWN`. A scan that
+timed out is scanned again while the admission deadline has room, as described
+under [iOS admission and cleanup](#ios-admission-and-cleanup), and refuses with
+the same code when no further scan fits.
 Both refusals occur before uninstall. This flow never boots, wipes or restarts
 the device. For refusal diagnostics and recovery on either platform, and iOS
 admission rules, see [iOS admission and cleanup](#ios-admission-and-cleanup).
@@ -3855,21 +3858,46 @@ instead of admitting a partial scan. The limits and classification rules are
 owned by the [strict scanner](../qaren-core/src/runners/external-runner-detect.ts)
 and [kernel observer](src/process_observation.rs).
 
-On iOS, a matching `unknown/executable_identity_unproven` response naming a
-foreign PID gets one new whole-device scan after at most 500 ms. Both scans
-share the original 30-second admission allowance, clipped to a smaller caller
-deadline when supplied; a late clear result never admits. Busy, malformed and
-other unknown responses do not trigger a retry. Every scan keeps the same
-kernel identity checks and never signals or adopts a foreign process.
+On iOS, a timely, matching `unknown` response with exit code 4 whose decoded
+evidence has reason `executable_identity_unproven` and a PID gets one new
+whole-device scan after at most 500 ms. Both scans share the original 30-second
+admission allowance, clipped to a smaller caller deadline when supplied; a late
+clear result never admits. Every scan keeps the same kernel identity checks and
+never signals or adopts a foreign process.
+
+On iOS and Android, a timely, matching `unknown/scan_timeout` response with exit
+code 4 whose evidence is a JSON object with string reason `scan_timeout` and no
+other member means the process-table read was stopped for time. On iOS,
+`unknown/observer_timeout` with a PID and no other member (the time available to
+establish a process identity ran out) and `unknown/deadline_exceeded` with at
+most a PID (the scan exhausted its 20-second time budget) in that same JSON
+object and string-reason form are handled the same way. Admission has not proved
+the selected device clear, so the same whole-device scan runs again after a
+pause of up to 500 ms. Its process-scan wait is 4, then 8, then 16 seconds, and
+stays at 16. Each scan command gets the whole seconds left before the admission
+deadline. For a scan that follows such a response, the wait is cut to that time
+less a 2-second reserve for the scan process itself; one clock reading decides
+both. When that leaves under 2 seconds, no such scan is dispatched and the last
+response stands. The identity re-probe is not bound by that room: it is
+dispatched whenever the deadline has not passed, with at least the 2-second
+wait. Only the process-scan wait grows; each identity read keeps its one-second
+limit. These scans and the one identity re-probe share the same 30-second
+admission deadline, which holds at most 53 scans and the re-probe. Only those
+exact timeout shapes trigger a timeout repeat: malformed, wrong-shape, failed,
+unavailable and other unknown responses are not repeated as timeouts, and a
+timely, matching `busy` response is never scanned again.
 
 Check and prepare receipts include `admission_before_deps` and
 `admission_before_mutation` summaries in `outcomes` for the admission points
 that completed, even if a later gate refuses. Refusals carry the same summary in `failure.evidence`: `probe`,
 `initialReason`, `terminalReason`, `attempts`, `elapsedMs` and `deadlineExceeded`.
+`attempts` counts the scan commands handed to the runner, from 0 to 54.
 Elapsed time includes child completion/reaping, which may outlast the admission
-allowance; `deadlineExceeded` prevents acceptance of that result. The final
-scan owns the terminal reason, including `DEVICE_BUSY` if it proves a driver
-within the allowance.
+allowance; `deadlineExceeded` prevents acceptance of that result. The last
+dispatched result supplies the observed `probe_status` and `probe_evidence`
+(`not_run` before any scan is dispatched); allowance expiry sets
+`terminalReason` to `deadline_exceeded` (cancellation sets `cancelled`), and a
+timely, matching `busy` result gives failure code `DEVICE_BUSY`.
 
 When the strict admission probe refuses with `FRESH_INSTALL_ADMISSION_UNKNOWN`
 or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code`,
@@ -3878,8 +3906,10 @@ or `DEVICE_BUSY`, it includes `probe_status`, `probe_evidence`, `exit_code`,
 contains an allowlisted reason and, when available, a PID or candidate count;
 raw process arguments, paths and subprocess output are not included. Missing,
 invalid or mismatched evidence is reported as `unavailable`, `invalid_evidence`,
-`envelope_mismatch` or `invalid_response`. Expiry before dispatch reports
-`not_run`; a late response retains its observed status with `deadline_exceeded=true`.
+`envelope_mismatch` or `invalid_response`. An allowance that expires before the
+first scan is dispatched reports `not_run`. A late response, and the last
+response when the allowance expires during a pause, keep their observed status
+and evidence with `deadline_exceeded=true`.
 These diagnostics do not relax admission. Within the allowance, a matching
 Android `busy` response with exit code 4 advises waiting for the foreign process
 owner even though Android supplies no PID evidence. On iOS, that advice requires
@@ -3897,6 +3927,21 @@ advise running `qaren doctor`, restoring process observation and the QaReN
 runtime, and resolving the reported probe or deadline failure before re-running.
 They use `reason: identity_unavailable`, `action: restore_process_observation`
 and `next_rung: 1`; waiting for a foreign owner cannot repair these failures.
+A refusal that ran out of time is one of these failures and keeps their advice
+and recovery. Its `failure.detail` opens with what ran out:
+`admission allowance expired`, `the admission scan command did not answer
+within its time`, `the process-table read timed out before admission could
+prove the device clear`, `the time available to establish process identity ran
+out before admission could prove the device clear` or `the scan exhausted its
+20-second time budget before admission could prove the device clear`. The detail
+also carries `attempts`, `scan_timeouts_ms` (the process-scan wait of each scan
+command handed to the runner, or `none`) and the host's 1-minute load as a
+measurement, or `host load unavailable`. These detail tokens pass through
+ordinary input redaction (an active secret equal to a listed value can mask it),
+whereas the validated summary note keeps its exemption. On Android the scan runs
+on the device through adb, so a device that does not answer `adb shell ps -A` in
+time ends the same way. `check`, `pr` and `prepare` receipts carry this detail;
+`cleanup` reports it inside its simulator outcome.
 Any retained resources still require this run's own cleanup, recorded separately
 in recovery; a fresh install requires separate authorization for app-data loss.
 Other recovery reasons retain their existing 1-based rungs.

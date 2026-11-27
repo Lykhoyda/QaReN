@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   detectIosExternalRunner,
   isIosExternalRunnerProcessLine,
+  probeAndroidExternalRunnerAdmission,
   probeIosExternalRunnerStrict,
   probeIosExternalRunnerAdmission,
 } from '../../../dist/runners/external-runner-detect.js';
@@ -1717,8 +1718,6 @@ function fakeAdb(result: { stdout: string } | Error): typeof execFile {
 }
 
 test('Android strict admission is clear only for a readable process table without a foreign driver', async () => {
-  const { probeAndroidExternalRunnerAdmission } =
-    await import('../../../dist/runners/external-runner-detect.js');
   assert.deepEqual(
     await probeAndroidExternalRunnerAdmission(SERIAL, fakeAdb({ stdout: androidIdle })),
     {
@@ -1740,16 +1739,16 @@ test('Android strict admission is clear only for a readable process table withou
     );
   }
   const timeout = Object.assign(new Error('adb timed out'), { killed: true, signal: 'SIGTERM' });
-  for (const result of [
-    new Error('adb: device offline'),
-    timeout,
-    { stdout: '' },
-    { stdout: ' \n\n' },
-  ]) {
+  for (const result of [new Error('adb: device offline'), { stdout: '' }, { stdout: ' \n\n' }]) {
     assert.deepEqual(await probeAndroidExternalRunnerAdmission(SERIAL, fakeAdb(result)), {
       status: 'unknown',
     });
   }
+  // AI-511: only a read stopped for time is named, so the allowance owner can scan again.
+  assert.deepEqual(await probeAndroidExternalRunnerAdmission(SERIAL, fakeAdb(timeout)), {
+    status: 'unknown',
+    reason: 'scan_timeout',
+  });
 });
 
 test('the advisory Android detector keeps its patterns and still steps aside on failure', async () => {
@@ -1818,6 +1817,8 @@ else {
           platform: 'android',
           deviceId: device,
           status,
+          // AI-511: a read stopped for time says so; every other unknown stays without evidence.
+          ...('FAKE_ADB_MODE' in env ? { evidence: { reason: 'scan_timeout' } } : {}),
         });
       }
       for (const call of (await readFile(marker, 'utf8')).trim().split('\n'))
@@ -1851,4 +1852,278 @@ else {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+// AI-511: the allowance owner may give a repeated scan a longer wait; the scanner never repeats a read.
+const killedForTime = () => Object.assign(new Error('timed out'), { killed: true });
+
+test('AI-511: an iOS scan uses the wait it is given and is never repeated here', async () => {
+  for (const [given, used] of [
+    [undefined, 2_000],
+    [4_000, 4_000],
+    [16_000, 16_000],
+  ] as const) {
+    const waits: number[] = [];
+    const scan = (async (_bin: string, _argv: string[], opts: { timeout: number }) => {
+      waits.push(opts.timeout);
+      // A stopped read arrives with the killed flag or, from some runtimes, only with this code.
+      throw given === 4_000
+        ? Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })
+        : killedForTime();
+    }) as unknown as typeof execFile;
+    assert.deepEqual(await probeIosExternalRunnerAdmission(scan, UDID, undefined, given), {
+      status: 'unknown',
+      evidence: { reason: 'scan_timeout' },
+    });
+    assert.deepEqual(waits, [used], 'one read, at the given wait');
+  }
+});
+
+test('AI-511: an Android scan uses the wait it is given and is never repeated here', async () => {
+  for (const [given, used] of [
+    [undefined, 2_000],
+    [8_000, 8_000],
+  ] as const) {
+    const waits: number[] = [];
+    const adb = (async (
+      bin: string,
+      argv: string[],
+      opts: { timeout: number; encoding: string },
+    ) => {
+      assert.equal(bin, 'adb');
+      assert.deepEqual(argv, ['-s', SERIAL, 'shell', 'ps', '-A']);
+      assert.equal(opts.encoding, 'utf8');
+      waits.push(opts.timeout);
+      throw given === 8_000
+        ? Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })
+        : killedForTime();
+    }) as unknown as typeof execFile;
+    assert.deepEqual(await probeAndroidExternalRunnerAdmission(SERIAL, adb, given), {
+      status: 'unknown',
+      reason: 'scan_timeout',
+    });
+    assert.deepEqual(waits, [used], 'one read, at the given wait');
+  }
+});
+
+// Runs the real preflight entry with the process seams replaced, so what each seam receives is recorded and
+// nothing waits for a real process. SEAM_MODE=timeout ends the process-table read as one stopped for time.
+type SeamCall = { via: string; bin: string; argv: string[]; timeout: number };
+async function withSeams(
+  run: (
+    preflight: (
+      argv: string[],
+      env?: Record<string, string>,
+    ) => Promise<{ code: number | string | null; envelope: unknown; calls: SeamCall[] }>,
+  ) => Promise<void>,
+) {
+  const root = await mkdtemp(join(tmpdir(), 'qaren-preflight-seams-'));
+  try {
+    const seams = join(root, 'seams.mjs');
+    await writeFile(
+      seams,
+      `import { syncBuiltinESMExports } from 'node:module';
+import child from 'node:child_process';
+import { EventEmitter } from 'node:events';
+import { Readable } from 'node:stream';
+import { appendFileSync } from 'node:fs';
+import { promisify } from 'node:util';
+const note = (entry) => appendFileSync(process.env.SEAM_MARKER, JSON.stringify(entry) + '\\n');
+const timedOut = process.env.SEAM_MODE === 'timeout';
+child.spawn = (bin, argv, opts) => {
+  note({ via: 'spawn', bin, argv, timeout: opts.timeout });
+  const proc = new EventEmitter();
+  proc.stdout = Readable.from(timedOut ? [] : [process.env.SEAM_STDOUT]);
+  proc.stderr = new EventEmitter();
+  proc.exitCode = null;
+  proc.signalCode = null;
+  proc.killed = timedOut;
+  proc.kill = () => true;
+  setImmediate(() => {
+    proc.exitCode = timedOut ? null : 0;
+    proc.signalCode = timedOut ? 'SIGTERM' : null;
+    proc.emit('close', proc.exitCode, proc.signalCode);
+  });
+  return proc;
+};
+child.execFile = () => {
+  throw new Error('callback form is not used');
+};
+child.execFile[promisify.custom] = (bin, argv, opts) => {
+  note({ via: 'execFile', bin, argv, timeout: opts.timeout });
+  if (bin !== 'adb') return Promise.resolve({ stdout: process.env.SEAM_OBSERVER, stderr: '' });
+  return timedOut
+    ? Promise.reject(Object.assign(new Error('timed out'), { killed: true }))
+    : Promise.resolve({ stdout: process.env.SEAM_STDOUT, stderr: '' });
+};
+syncBuiltinESMExports();
+`,
+    );
+    let runs = 0;
+    await run(async (argv, env = {}) => {
+      const marker = join(root, `calls-${runs++}`);
+      const result = await new Promise<{ code: number | string | null; stdout: string }>(
+        (resolve) => {
+          execFile(
+            process.execPath,
+            ['--import', seams, entry, ...argv],
+            {
+              env: {
+                ...process.env,
+                SEAM_MARKER: marker,
+                SEAM_STDOUT: argv.includes('android') ? androidIdle : ordinary,
+                ...env,
+              },
+              timeout: 8_000,
+              encoding: 'utf8',
+            },
+            (error, stdout) => resolve({ code: error ? (error.code ?? null) : 0, stdout }),
+          );
+        },
+      );
+      // No marker means no seam was called.
+      const calls = await readFile(marker, 'utf8').then(
+        (text) =>
+          text
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line) as SeamCall),
+        () => [],
+      );
+      return { code: result.code, envelope: JSON.parse(result.stdout), calls };
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+const iosScan = (timeout: number): SeamCall => ({
+  via: 'spawn',
+  bin: 'ps',
+  argv: ['axww', '-o', 'pid=,command='],
+  timeout,
+});
+const invalidEnvelope = { v: 1, platform: 'ios', deviceId: '', status: 'unknown' };
+
+test('AI-511: the preflight accepts only a whole scan wait from 2 to 16 seconds', async () => {
+  await withSeams(async (preflight) => {
+    for (const wait of ['2000', '2500', '12200', '16000']) {
+      assert.deepEqual(await preflight([...args, '--scan-timeout-ms', wait]), {
+        code: 0,
+        envelope: { v: 1, platform: 'ios', deviceId: UDID, status: 'clear' },
+        calls: [iosScan(Number(wait))],
+      });
+    }
+    for (const wait of [
+      '0',
+      '1999',
+      '16001',
+      '99999',
+      '2000.5',
+      '-4000',
+      '4e3',
+      ' 4000',
+      '04000',
+      '',
+    ]) {
+      assert.deepEqual(
+        await preflight([...args, '--scan-timeout-ms', wait]),
+        { code: 4, envelope: invalidEnvelope, calls: [] },
+        `"${wait}"`,
+      );
+    }
+    assert.deepEqual(
+      await preflight([...args, '--scan-timeout-ms', '4000', '--scan-timeout-ms', '8000']),
+      { code: 4, envelope: invalidEnvelope, calls: [] },
+    );
+  });
+});
+
+test('AI-511: the real iOS spawn is given the wait the preflight was told', async () => {
+  await withSeams(async (preflight) => {
+    const envelope = { v: 1, platform: 'ios', deviceId: UDID };
+    for (const [extra, timeout] of [
+      [[], 2_000],
+      [['--scan-timeout-ms', '7000'], 7_000],
+      // The eight-argument command the CLI sends for a repeated iOS scan.
+      [['--process-observer', '/opt/qaren/bin/qaren', '--scan-timeout-ms', '12200'], 12_200],
+    ] as const) {
+      assert.deepEqual(await preflight([...args, ...extra]), {
+        code: 0,
+        envelope: { ...envelope, status: 'clear' },
+        calls: [iosScan(timeout)],
+      });
+      assert.deepEqual(await preflight([...args, ...extra], { SEAM_MODE: 'timeout' }), {
+        code: 4,
+        envelope: { ...envelope, status: 'unknown', evidence: { reason: 'scan_timeout' } },
+        calls: [iosScan(timeout)],
+      });
+    }
+  });
+});
+
+test('AI-511: the eight-argument iOS command scans with its wait and still observes identities', async () => {
+  await withSeams(async (preflight) => {
+    const observer = '/opt/qaren/bin/qaren';
+    // A row that only an identity read can clear; the longer scan wait does not lengthen that read.
+    const result = await preflight(
+      [...args, '--process-observer', observer, '--scan-timeout-ms', '8000'],
+      {
+        SEAM_STDOUT: `20 agent ${'word '.repeat(4000)}/tmp/WebDriverAgent\n`,
+        SEAM_OBSERVER: JSON.stringify({
+          v: 1,
+          pid: 20,
+          birth: { seconds: 1, micros: 0 },
+          executable: '/tools/agent',
+        }),
+      },
+    );
+    assert.equal(result.code, 0);
+    assert.deepEqual(result.envelope, { v: 1, platform: 'ios', deviceId: UDID, status: 'clear' });
+    assert.equal(result.calls.length, 2);
+    assert.deepEqual(result.calls[0], iosScan(8_000));
+    const { timeout, ...identityRead } = result.calls[1];
+    assert.deepEqual(identityRead, {
+      via: 'execFile',
+      bin: observer,
+      argv: ['--internal-process-observation', '20'],
+    });
+    assert.ok(timeout > 0 && timeout <= 1_000, `identity read wait ${timeout}`);
+  });
+});
+
+test('AI-511: the real Android execFile is given the wait the preflight was told', async () => {
+  await withSeams(async (preflight) => {
+    const android = ['--platform', 'android', '--device', SERIAL];
+    const envelope = { v: 1, platform: 'android', deviceId: SERIAL };
+    const scan = (timeout: number): SeamCall[] => [
+      { via: 'execFile', bin: 'adb', argv: ['-s', SERIAL, 'shell', 'ps', '-A'], timeout },
+    ];
+    for (const [extra, timeout] of [
+      [[], 2_000],
+      [['--scan-timeout-ms', '7000'], 7_000],
+    ] as const) {
+      assert.deepEqual(await preflight([...android, ...extra]), {
+        code: 0,
+        envelope: { ...envelope, status: 'clear' },
+        calls: scan(timeout),
+      });
+      assert.deepEqual(await preflight([...android, ...extra], { SEAM_MODE: 'timeout' }), {
+        code: 4,
+        envelope: { ...envelope, status: 'unknown', evidence: { reason: 'scan_timeout' } },
+        calls: scan(timeout),
+      });
+    }
+    // The observer stays an iOS-only argument, with or without a wait.
+    for (const extra of [
+      ['--process-observer', '/usr/bin/true'],
+      ['--scan-timeout-ms', '4000', '--process-observer', '/usr/bin/true'],
+    ]) {
+      assert.deepEqual(await preflight([...android, ...extra]), {
+        code: 4,
+        envelope: invalidEnvelope,
+        calls: [],
+      });
+    }
+  });
 });

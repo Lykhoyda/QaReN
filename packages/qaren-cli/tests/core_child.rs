@@ -179,11 +179,9 @@ fn fresh_admission_reprobe_is_one_new_whole_scan_and_uses_only_the_terminal_verd
         (admission_output("unknown", "scan_unavailable"), Some(FailureCode::FreshInstallAdmissionUnknown), "scan_unavailable"),
         (admission_output("unknown", "observer_unavailable"), Some(FailureCode::FreshInstallAdmissionUnknown), "observer_unavailable"),
         (admission_output("unknown", "observer_failed"), Some(FailureCode::FreshInstallAdmissionUnknown), "observer_failed"),
-        (admission_output("unknown", "observer_timeout"), Some(FailureCode::FreshInstallAdmissionUnknown), "observer_timeout"),
         (admission_output("unknown", "scan_failed"), Some(FailureCode::FreshInstallAdmissionUnknown), "scan_failed"),
         (admission_output("unknown", "scan_timeout"), Some(FailureCode::FreshInstallAdmissionUnknown), "scan_timeout"),
         (admission_output("unknown", "candidate_budget_exceeded"), Some(FailureCode::FreshInstallAdmissionUnknown), "candidate_budget_exceeded"),
-        (admission_output("unknown", "deadline_exceeded"), Some(FailureCode::FreshInstallAdmissionUnknown), "deadline_exceeded"),
         (admission_output("invalid", "executable_identity_unproven"), Some(FailureCode::FreshInstallAdmissionUnknown), "invalid_status"),
         (CmdOutput { exit_code: Some(4), ..admission_output("clear", "scan_failed") }, Some(FailureCode::FreshInstallAdmissionUnknown), "clear_exit_mismatch"),
         (CmdOutput { stdout: r#"{"v":1,"platform":"ios","deviceId":"AAAA-1111","status":"unknown","evidence":{"reason":"/private/secret"}}"#.into(), ..admission_output("unknown", "scan_failed") }, Some(FailureCode::FreshInstallAdmissionUnknown), "invalid_evidence"),
@@ -299,14 +297,15 @@ fn fresh_admission_reprobe_requires_a_matching_typed_identity_refusal_with_a_pid
 
 #[test]
 fn fresh_admission_reprobe_shares_the_original_allowance_and_rejects_late_results() {
-    for (allowance, per_read, expected_attempts, terminal, elapsed) in [
-        (30_000, 10_000, 2, "clear", 20_500),
-        (30_000, 15_000, 2, "deadline_exceeded", 30_500),
-        (60_000, 15_000, 2, "deadline_exceeded", 30_500),
-        (30_000, 30_000, 1, "deadline_exceeded", 30_000),
-        (600, 100, 1, "deadline_exceeded", 600),
-        (700, 100, 2, "deadline_exceeded", 700),
-        (0, 0, 0, "deadline_exceeded", 0),
+    // AI-511: `waits` is the process-scan wait of each scan that was dispatched, and of no other.
+    for (allowance, per_read, expected_attempts, terminal, elapsed, waits) in [
+        (30_000, 10_000, 2, "clear", 20_500, ""),
+        (30_000, 15_000, 2, "deadline_exceeded", 30_500, "2000,2000"),
+        (60_000, 15_000, 2, "deadline_exceeded", 30_500, "2000,2000"),
+        (30_000, 30_000, 1, "deadline_exceeded", 30_000, "2000"),
+        (600, 100, 1, "deadline_exceeded", 600, "2000"),
+        (700, 100, 2, "deadline_exceeded", 700, "2000,2000"),
+        (0, 0, 0, "deadline_exceeded", 0, "none"),
     ] {
         let mut mock = MockRunner::new();
         let start = mock.monotonic_ms();
@@ -335,11 +334,24 @@ fn fresh_admission_reprobe_shares_the_original_allowance_and_rejects_late_result
             );
             assert!(failure.next_action.contains("qaren doctor"));
             assert!(failure.detail.contains("admission allowance expired"));
+            assert!(
+                failure.detail.contains(&format!(
+                    "; attempts={expected_attempts}; scan_timeouts_ms={waits}; host "
+                )),
+                "{}",
+                failure.detail
+            );
             assert!(failure.detail.contains("deadline_exceeded=true"));
-            if allowance == 0 || allowance == 600 {
+            if allowance == 0 {
                 assert!(failure.detail.contains("probe_status=not_run"));
                 assert!(failure.detail.contains("timed_out=false"));
                 assert!(!failure.detail.contains("invalid_response"));
+            }
+            if allowance == 600 {
+                // AI-511: the allowance ran out in the pause; the answer that was observed stays in the refusal.
+                assert!(failure.detail.contains(
+                    r#"probe_status=unknown; probe_evidence={"reason":"executable_identity_unproven","pid":812}; exit_code=Some(4); timed_out=false; deadline_exceeded=true"#
+                ), "{}", failure.detail);
             }
             admission_failure_summary(&failure)
         };
@@ -567,13 +579,592 @@ fn fresh_admission_projection_never_exempts_unvalidated_note_payloads() {
             failure = serde_json::from_value(value).unwrap();
             assert!(failure.evidence.is_empty(), "{:?}", failure.evidence);
         }
-        let note = serde_json::json!({"probe":"fresh-install-admission","initialReason":"clear","terminalReason":"clear","attempts":3,"elapsedMs":0,"deadlineExceeded":false}).to_string();
-        let output = qaren::redact::durable_json(
-            &serde_json::json!({"outcomes":{"admission_before_deps":note}}),
-        )
-        .unwrap();
-        assert!(!output.contains("clear"));
+        // AI-511: 53 scans and one identity re-probe are the most one allowance can hold.
+        for (attempts, kept) in [(54, true), (55, false)] {
+            let note = serde_json::json!({"probe":"fresh-install-admission","initialReason":"clear","terminalReason":"clear","attempts":attempts,"elapsedMs":0,"deadlineExceeded":false}).to_string();
+            let output = qaren::redact::durable_json(
+                &serde_json::json!({"outcomes":{"admission_before_deps":note}}),
+            )
+            .unwrap();
+            assert_eq!(output.contains("clear"), kept, "{attempts}");
+        }
     });
+}
+
+// AI-511: a scan that timed out is repeated with a longer wait while the allowance lasts.
+fn timed_out_scan(platform: &str, device: &str, reason: &str) -> CmdOutput {
+    let mut evidence = serde_json::json!({ "reason": reason });
+    if reason != "scan_timeout" {
+        evidence["pid"] = 812.into();
+    }
+    CmdOutput {
+        exit_code: Some(4),
+        stdout: serde_json::json!({"v":1,"platform":platform,"deviceId":device,"status":"unknown","evidence":evidence})
+            .to_string(),
+        ..Default::default()
+    }
+}
+
+fn clear_scan(platform: &str, device: &str) -> CmdOutput {
+    CmdOutput::success(
+        &serde_json::json!({"v":1,"platform":platform,"deviceId":device,"status":"clear"})
+            .to_string(),
+    )
+}
+
+fn admit_on(
+    mock: &mut MockRunner,
+    platform: &str,
+    deadline: Option<u64>,
+) -> Result<core::AdmissionSummary, qaren::failure::Failure> {
+    let android = core::AndroidEnv {
+        serial: "emulator-5554".into(),
+        server_port: 5038,
+        platform_tools: "/android/platform-tools".into(),
+    };
+    core::fresh_install_admission(
+        mock,
+        Path::new("/node"),
+        Path::new("/runtime"),
+        Path::new("/app"),
+        if platform == "ios" { "AAAA-1111" } else { "emulator-5554" },
+        (platform == "android").then_some(&android),
+        deadline,
+    )
+}
+
+// The wait a scan command was told; None is the scanner's own 2 seconds.
+fn scan_wait(spec: &CmdSpec) -> Option<&str> {
+    let at = spec.args.iter().position(|arg| arg == "--scan-timeout-ms")?;
+    assert_eq!(at, spec.args.len() - 2, "the wait is the last argument pair");
+    Some(spec.args[at + 1].as_str())
+}
+
+// The advice of an unknown admission refusal that is not a foreign-owner case; an out-of-time refusal keeps it.
+const UNKNOWN_NEXT: &str = "run qaren doctor; restore process observation and the qaren runtime, resolve the reported probe or deadline failure, then re-run the check; do not signal or adopt unproven processes";
+
+fn read_host_load_1m() -> Option<f64> {
+    let mut reading = 0.0f64;
+    (unsafe { libc::getloadavg(&mut reading, 1) } == 1).then_some(reading)
+}
+
+// The tokens every out-of-time refusal adds to its detail. Its advice and recovery are the unchanged ones.
+fn assert_out_of_time(failure: &qaren::failure::Failure, attempts: usize, waits: &str) {
+    assert_eq!(failure.code, FailureCode::FreshInstallAdmissionUnknown);
+    let detail = failure.detail.as_str();
+    let (_, load) = detail
+        .split_once(&format!("; attempts={attempts}; scan_timeouts_ms={waits}; "))
+        .unwrap_or_else(|| panic!("{detail}"));
+    // The reading is this machine's own: a finite non-negative number wherever the machine can give one.
+    if read_host_load_1m().is_some() {
+        assert!(
+            load.strip_prefix("host 1-minute load ")
+                .is_some_and(|n| n.parse::<f64>().is_ok_and(|n| n.is_finite() && n >= 0.0)),
+            "{detail}"
+        );
+    } else {
+        assert_eq!(load, "host load unavailable", "{detail}");
+    }
+    assert!(!detail.contains("did not prove the selected device clear"), "{detail}");
+    assert_eq!(failure.next_action.as_str(), UNKNOWN_NEXT);
+    assert_eq!(
+        failure.build_recovery().unwrap(),
+        &qaren::failure::Recovery::new(qaren::failure::RecoveryReason::IdentityUnavailable)
+    );
+}
+
+// A clock on which every reading costs a millisecond, so two readings never agree.
+struct TickingRunner {
+    mock: MockRunner,
+    ticks: std::cell::Cell<u64>,
+}
+
+impl Runner for TickingRunner {
+    fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
+        self.mock.execute(spec, interruptible)
+    }
+    fn spawn_group_unchecked(&mut self, spec: &CmdSpec, log: &Path) -> std::io::Result<Spawned> {
+        self.mock.spawn_group_unchecked(spec, log)
+    }
+    fn spawn_piped_unchecked(&mut self, spec: &CmdSpec, log: &Path) -> std::io::Result<PipedChild> {
+        self.mock.spawn_piped_unchecked(spec, log)
+    }
+    fn sleep(&mut self, duration: Duration) {
+        self.mock.sleep(duration);
+    }
+    fn now_epoch_ms(&self) -> u64 {
+        self.ticks.set(self.ticks.get() + 1);
+        self.mock.now_epoch_ms() + self.ticks.get()
+    }
+    fn commands_executed(&self) -> u64 {
+        self.mock.commands_executed()
+    }
+}
+
+#[test]
+fn fresh_admission_decides_the_command_time_and_the_wait_from_one_clock_reading() {
+    // Sweep the allowance by the millisecond across whole-second boundaries and across expiry.
+    for allowance in 3_000..9_000u64 {
+        let mock = MockRunner::new();
+        let mut runner = TickingRunner { mock, ticks: std::cell::Cell::new(0) };
+        let deadline = runner.now_epoch_ms() + allowance;
+        // More answers than any of these allowances can use.
+        for _ in 0..14 {
+            runner.mock.expect_run("fresh-install-preflight.js", timed_out_scan("ios", "AAAA-1111", "scan_timeout"));
+        }
+        let failure = core::fresh_install_admission(
+            &mut runner,
+            Path::new("/node"),
+            Path::new("/runtime"),
+            Path::new("/app"),
+            "AAAA-1111",
+            None,
+            Some(deadline),
+        )
+        .unwrap_err();
+        let summary = admission_failure_summary(&failure);
+        // Every counted attempt is a command that was handed to the runner.
+        assert_eq!(summary["attempts"], runner.mock.calls.len(), "{allowance}");
+        // With more than 4.6 s of allowance a second scan always fits after the first answer and the pause.
+        assert!(allowance < 4_600 || runner.mock.calls.len() >= 2, "{allowance}");
+        for call in &runner.mock.calls[1..] {
+            // A scan after a timed-out read always has its wait plus the full reserve inside its command.
+            let wait: u64 = scan_wait(call).unwrap_or("2000").parse().unwrap();
+            assert!(wait + 2_000 <= call.timeout_seconds * 1_000, "{allowance}: {wait} in {}s", call.timeout_seconds);
+        }
+    }
+}
+
+#[test]
+fn fresh_admission_repeats_a_timed_out_scan_with_a_longer_wait_and_admits() {
+    for (platform, device) in [("ios", "AAAA-1111"), ("android", "emulator-5554")] {
+        for (reason, timed_out) in [
+            ("scan_timeout", 1),
+            ("scan_timeout", 3),
+            ("observer_timeout", 1),
+            // The fifth answer clears: the last wait is kept, the scans do not stop at four.
+            ("observer_timeout", 4),
+            ("deadline_exceeded", 1),
+            // The scanner also reports its own deadline without a pid.
+            ("deadline_exceeded without a pid", 1),
+        ] {
+            if platform == "android" && reason != "scan_timeout" {
+                continue;
+            }
+            let mut mock = MockRunner::new();
+            for _ in 0..timed_out {
+                mock.expect_run(
+                    "fresh-install-preflight.js",
+                    match reason.strip_suffix(" without a pid") {
+                        Some(reason) => CmdOutput {
+                            exit_code: Some(4),
+                            stdout: serde_json::json!({"v":1,"platform":platform,"deviceId":device,"status":"unknown","evidence":{"reason":reason}}).to_string(),
+                            ..Default::default()
+                        },
+                        None => timed_out_scan(platform, device, reason),
+                    },
+                );
+            }
+            let reason = reason.trim_end_matches(" without a pid");
+            mock.expect_run("fresh-install-preflight.js", clear_scan(platform, device));
+            let summary =
+                serde_json::to_value(admit_on(&mut mock, platform, None).unwrap()).unwrap();
+            assert_eq!(summary["initialReason"], reason);
+            assert_eq!(summary["terminalReason"], "clear");
+            assert_eq!(summary["attempts"], timed_out + 1);
+            assert_eq!(summary["elapsedMs"], 500 * timed_out);
+            assert_eq!(summary["deadlineExceeded"], false);
+            assert_eq!(
+                mock.calls.iter().map(scan_wait).collect::<Vec<_>>(),
+                [None, Some("4000"), Some("8000"), Some("16000"), Some("16000")][..=timed_out],
+                "{platform} {reason}"
+            );
+            for (index, call) in mock.calls.iter().enumerate() {
+                // Each command gets the whole seconds the allowance leaves; apart from the wait it is the same scan.
+                assert_eq!(call.timeout_seconds, (30_000 - 500 * index as u64) / 1000);
+                let mut first = mock.calls[0].clone();
+                let mut later = call.clone();
+                if index > 0 {
+                    later.args.truncate(later.args.len() - 2);
+                }
+                first.timeout_seconds = later.timeout_seconds;
+                assert_eq!(first, later);
+            }
+            assert_eq!(mock.remaining(), 0);
+        }
+    }
+}
+
+#[test]
+fn fresh_admission_refuses_spent_scans_as_out_of_time_with_attempts_waits_and_load() {
+    for (platform, device) in [("ios", "AAAA-1111"), ("android", "emulator-5554")] {
+        // per_read is what each scan costs on the clock. A later wait is cut to the whole seconds its command
+        // gets, less the 2-second reserve; when that is under 2 seconds no scan starts and the last answer stands.
+        for (allowance, per_read, waits, elapsed) in [
+            (30_000, 6_500, vec![None, Some("4000"), Some("8000"), Some("7000")], 28_000),
+            (30_000, 9_000, vec![None, Some("4000"), Some("8000")], 28_500),
+            (30_000, 13_000, vec![None, Some("4000")], 27_000),
+            // No room after the pause: the one scan's refusal stands and lists that one scan.
+            (700, 100, vec![None], 600),
+        ] {
+            let mut mock = MockRunner::new();
+            let start = mock.monotonic_ms();
+            mock.advance_on = Some(("fresh-install-preflight.js".into(), per_read));
+            let attempts = waits.len();
+            for _ in 0..attempts {
+                mock.expect_run("fresh-install-preflight.js", timed_out_scan(platform, device, "scan_timeout"));
+            }
+            let load_before = read_host_load_1m().map(|load| format!("{load:.1}"));
+            let failure = admit_on(&mut mock, platform, Some(start + allowance)).unwrap_err();
+            let load_after = read_host_load_1m().map(|load| format!("{load:.1}"));
+            let listed = waits.iter().map(|wait| wait.unwrap_or("2000")).collect::<Vec<_>>().join(",");
+            assert_out_of_time(&failure, attempts, &listed);
+            if let (Some(before), Some(after)) = (&load_before, &load_after) {
+                if before == after {
+                    assert!(
+                        failure.detail.ends_with(&format!("; host 1-minute load {before}")),
+                        "{}",
+                        failure.detail
+                    );
+                }
+            }
+            assert!(
+                failure.detail.starts_with("the process-table read timed out before admission could prove the device clear; probe_status=unknown; probe_evidence={\"reason\":\"scan_timeout\"}; exit_code=Some(4); timed_out=false; deadline_exceeded=false; attempts="),
+                "{}",
+                failure.detail
+            );
+            // The child was told exactly the waits the refusal lists.
+            assert_eq!(mock.calls.iter().map(scan_wait).collect::<Vec<_>>(), waits);
+            let summary = admission_failure_summary(&failure);
+            assert_eq!(summary["initialReason"], "scan_timeout");
+            assert_eq!(summary["terminalReason"], "scan_timeout");
+            assert_eq!(summary["attempts"], attempts);
+            assert_eq!(summary["elapsedMs"], elapsed);
+            assert_eq!(summary["deadlineExceeded"], false);
+            assert_eq!(mock.remaining(), 0);
+        }
+    }
+}
+
+#[test]
+fn fresh_admission_cuts_a_longer_wait_to_the_whole_seconds_its_command_gets() {
+    // Two scans time out 100 ms each; the third is dispatched 1.2 s in, with its 8 s step in force.
+    for (allowance, wait, command_seconds) in [
+        // 10.875 s left: a 10 s command, so 8 s of wait and a full 2 s reserve.
+        (12_075, "8000", 10),
+        // 9.999 s left: a 9 s command, so 7 s of wait.
+        (11_199, "7000", 9),
+        // 4.0 s left: a 4 s command, so the scanner's own 2 s and no argument.
+        (5_200, "2000", 4),
+    ] {
+        let mut mock = MockRunner::new();
+        let start = mock.monotonic_ms();
+        mock.advance_on = Some(("fresh-install-preflight.js".into(), 100));
+        for _ in 0..2 {
+            mock.expect_run("fresh-install-preflight.js", timed_out_scan("ios", "AAAA-1111", "scan_timeout"));
+        }
+        mock.expect_run("fresh-install-preflight.js", clear_scan("ios", "AAAA-1111"));
+        admit_on(&mut mock, "ios", Some(start + allowance)).unwrap();
+        assert_eq!(scan_wait(&mock.calls[2]).unwrap_or("2000"), wait, "{allowance}");
+        assert_eq!(mock.calls[2].timeout_seconds, command_seconds, "{allowance}");
+        assert_eq!(mock.remaining(), 0);
+    }
+    // One millisecond less: the second scan already had room for 2 s only, and 3.999 s left then gives a 3 s
+    // command with no room for a 2 s wait, so the second timeout stands.
+    let mut mock = MockRunner::new();
+    let start = mock.monotonic_ms();
+    mock.advance_on = Some(("fresh-install-preflight.js".into(), 100));
+    for _ in 0..2 {
+        mock.expect_run("fresh-install-preflight.js", timed_out_scan("ios", "AAAA-1111", "scan_timeout"));
+    }
+    mock.expect_run("fresh-install-preflight.js", clear_scan("ios", "AAAA-1111"));
+    let failure = admit_on(&mut mock, "ios", Some(start + 5_199)).unwrap_err();
+    assert_out_of_time(&failure, 2, "2000,2000");
+    assert_eq!(mock.remaining(), 1, "the queued clear answer was never asked for");
+}
+
+#[test]
+fn fresh_admission_names_which_read_ran_out_of_time() {
+    for (reason, opening) in [
+        ("observer_timeout", "the time available to establish process identity ran out before admission could prove the device clear; "),
+        ("deadline_exceeded", "the scan exhausted its 20-second time budget before admission could prove the device clear; "),
+    ] {
+        let mut mock = MockRunner::new();
+        let start = mock.monotonic_ms();
+        mock.expect_run("fresh-install-preflight.js", timed_out_scan("ios", "AAAA-1111", reason));
+        // 3.5 s of allowance: after the pause the command would get 3 s, which leaves no 2 s wait.
+        let failure = admit_on(&mut mock, "ios", Some(start + 3_500)).unwrap_err();
+        assert!(failure.detail.starts_with(opening), "{}", failure.detail);
+        assert_out_of_time(&failure, 1, "2000");
+        let summary = admission_failure_summary(&failure);
+        assert_eq!(summary["terminalReason"], reason);
+        assert_eq!(summary["deadlineExceeded"], false);
+        assert_eq!(summary["elapsedMs"], 500);
+    }
+    // The allowance ran out during the pause: no second scan is listed, and it reads as an expired allowance.
+    let mut mock = MockRunner::new();
+    let start = mock.monotonic_ms();
+    mock.advance_on = Some(("fresh-install-preflight.js".into(), 100));
+    mock.expect_run("fresh-install-preflight.js", timed_out_scan("ios", "AAAA-1111", "scan_timeout"));
+    let failure = admit_on(&mut mock, "ios", Some(start + 600)).unwrap_err();
+    // The answer that was observed stays in the refusal; only an admission with no scan at all says not_run.
+    assert!(
+        failure.detail.starts_with(r#"admission allowance expired; probe_status=unknown; probe_evidence={"reason":"scan_timeout"}; exit_code=Some(4); timed_out=false; deadline_exceeded=true; "#),
+        "{}",
+        failure.detail
+    );
+    assert_out_of_time(&failure, 1, "2000");
+    assert_eq!(admission_failure_summary(&failure)["terminalReason"], "deadline_exceeded");
+    // Identity uncertainty, then a read stopped for time, then the allowance runs out in the pause: the last
+    // typed cause is still there.
+    let mut mock = MockRunner::new();
+    let start = mock.monotonic_ms();
+    mock.advance_on = Some(("fresh-install-preflight.js".into(), 100));
+    mock.expect_run("fresh-install-preflight.js", admission_output("unknown", "executable_identity_unproven"));
+    mock.expect_run("fresh-install-preflight.js", timed_out_scan("ios", "AAAA-1111", "observer_timeout"));
+    let failure = admit_on(&mut mock, "ios", Some(start + 1_200)).unwrap_err();
+    assert!(
+        failure.detail.starts_with(r#"admission allowance expired; probe_status=unknown; probe_evidence={"reason":"observer_timeout","pid":812}; exit_code=Some(4); timed_out=false; deadline_exceeded=true; "#),
+        "{}",
+        failure.detail
+    );
+    assert_out_of_time(&failure, 2, "2000,2000");
+    let summary = admission_failure_summary(&failure);
+    assert_eq!(
+        (summary["initialReason"].as_str(), summary["terminalReason"].as_str(), summary["deadlineExceeded"].as_bool()),
+        (Some("executable_identity_unproven"), Some("deadline_exceeded"), Some(true))
+    );
+    // A busy answer that arrives after the deadline keeps its status and is not a busy refusal.
+    let mut mock = MockRunner::new();
+    let start = mock.monotonic_ms();
+    mock.advance_on = Some(("fresh-install-preflight.js".into(), 200));
+    mock.expect_run("fresh-install-preflight.js", admission_output("busy", "driver_on_selected_device"));
+    let failure = admit_on(&mut mock, "ios", Some(start + 100)).unwrap_err();
+    assert!(
+        failure.detail.starts_with(r#"admission allowance expired; probe_status=busy; probe_evidence={"reason":"driver_on_selected_device","pid":812}; "#),
+        "{}",
+        failure.detail
+    );
+    assert_out_of_time(&failure, 1, "2000");
+    // A command the CLI had to stop is out of time too, and is not scanned again.
+    let mut mock = MockRunner::new();
+    mock.expect_run(
+        "fresh-install-preflight.js",
+        CmdOutput { timed_out: true, ..timed_out_scan("ios", "AAAA-1111", "scan_timeout") },
+    );
+    mock.expect_run("fresh-install-preflight.js", clear_scan("ios", "AAAA-1111"));
+    let failure = admit_on(&mut mock, "ios", None).unwrap_err();
+    assert!(failure.detail.starts_with("the admission scan command did not answer within its time; "), "{}", failure.detail);
+    assert_out_of_time(&failure, 1, "2000");
+    assert_eq!(mock.remaining(), 1, "the queued clear answer was never asked for");
+    // An earlier typed timeout followed by an empty stopped command replaces the earlier answer with the
+    // transport failure, and does not scan again.
+    let mut mock = MockRunner::new();
+    mock.expect_run("fresh-install-preflight.js", timed_out_scan("ios", "AAAA-1111", "scan_timeout"));
+    mock.expect_run(
+        "fresh-install-preflight.js",
+        CmdOutput {
+            exit_code: None,
+            timed_out: true,
+            ..Default::default()
+        },
+    );
+    mock.expect_run("fresh-install-preflight.js", clear_scan("ios", "AAAA-1111"));
+    let failure = admit_on(&mut mock, "ios", None).unwrap_err();
+    assert_eq!(mock.calls.len(), 2);
+    assert_eq!(
+        mock.calls.iter().map(scan_wait).collect::<Vec<_>>(),
+        [None, Some("4000")]
+    );
+    assert!(
+        failure.detail.starts_with(
+            "the admission scan command did not answer within its time; probe_status=invalid; probe_evidence=invalid_response; exit_code=None; timed_out=true; deadline_exceeded=false; "
+        ),
+        "{}",
+        failure.detail
+    );
+    assert_out_of_time(&failure, 2, "2000,4000");
+    assert_eq!(mock.remaining(), 1, "the queued clear answer was never asked for");
+}
+
+#[test]
+fn fresh_admission_repeats_only_a_typed_timeout_and_never_a_busy_or_failed_scan() {
+    let with = |platform: &str, status: &str, evidence: serde_json::Value| CmdOutput {
+        exit_code: Some(4),
+        stdout: serde_json::json!({"v":1,"platform":platform,
+            "deviceId": if platform == "ios" { "AAAA-1111" } else { "emulator-5554" },
+            "status":status,"evidence":evidence})
+        .to_string(),
+        ..Default::default()
+    };
+    let timeout = serde_json::json!({"reason":"scan_timeout"});
+    use qaren::failure::RecoveryAction::{RestoreProcessObservation, WaitForOwner};
+    for (platform, output, code, action) in [
+        // A busy answer is never scanned again, whatever reason travels with it.
+        ("ios", with("ios", "busy", timeout.clone()), FailureCode::DeviceBusy, RestoreProcessObservation),
+        ("android", with("android", "busy", timeout.clone()), FailureCode::DeviceBusy, WaitForOwner),
+        ("ios", with("ios", "busy", serde_json::json!({"reason":"driver_on_selected_device","pid":812})), FailureCode::DeviceBusy, WaitForOwner),
+        // Not about time.
+        ("ios", with("ios", "unknown", serde_json::json!({"reason":"scan_failed"})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("ios", with("ios", "unknown", serde_json::json!({"reason":"scan_unavailable"})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("ios", with("ios", "unknown", serde_json::json!({"reason":"observer_failed","pid":812})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("ios", with("ios", "unknown", serde_json::json!({"reason":"driver_identity_unproven","pid":812})), FailureCode::FreshInstallAdmissionUnknown, WaitForOwner),
+        // A timeout in a shape the platform's scanner never reports keeps the existing guidance.
+        ("android", with("android", "unknown", serde_json::json!({"reason":"observer_timeout","pid":812})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("android", with("android", "unknown", serde_json::json!({"reason":"deadline_exceeded"})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("ios", with("ios", "unknown", serde_json::json!({"reason":"observer_timeout"})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("ios", with("ios", "unknown", serde_json::json!({"reason":"scan_timeout","pid":812})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("ios", with("ios", "unknown", serde_json::json!({"reason":"scan_timeout","candidates":3})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("ios", with("ios", "unknown", serde_json::json!({"reason":"scan_timeout","extra":1})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        // A member the scanner never writes, even as null, is not its shape.
+        ("ios", with("ios", "unknown", serde_json::json!({"reason":"scan_timeout","pid":null})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("android", with("android", "unknown", serde_json::json!({"reason":"scan_timeout","candidates":null})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("ios", with("ios", "unknown", serde_json::json!({"reason":"observer_timeout","pid":812,"candidates":null})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("ios", with("ios", "unknown", serde_json::json!({"reason":"observer_timeout","pid":812,"candidates":2})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("ios", with("ios", "unknown", serde_json::json!({"reason":"deadline_exceeded","pid":null})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("ios", with("ios", "unknown", serde_json::json!({"reason":"deadline_exceeded","candidates":2})), FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("ios", CmdOutput { exit_code: Some(0), ..with("ios", "unknown", timeout.clone()) }, FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        ("ios", CmdOutput { exit_code: Some(1), ..with("ios", "unknown", timeout.clone()) }, FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+        // An unknown without evidence stays the unnamed unknown it was.
+        ("android", CmdOutput { exit_code: Some(4), ..CmdOutput::success(r#"{"v":1,"platform":"android","deviceId":"emulator-5554","status":"unknown"}"#) }, FailureCode::FreshInstallAdmissionUnknown, RestoreProcessObservation),
+    ] {
+        let mut mock = MockRunner::new();
+        mock.expect_run("fresh-install-preflight.js", output);
+        mock.expect_run("fresh-install-preflight.js", clear_scan(platform, if platform == "ios" { "AAAA-1111" } else { "emulator-5554" }));
+        let failure = admit_on(&mut mock, platform, None).unwrap_err();
+        assert_eq!(failure.code, code, "{}", failure.detail);
+        assert_eq!(failure.build_recovery().unwrap().action, action, "{}", failure.detail);
+        assert!(!failure.detail.contains("scan_timeouts_ms"), "{}", failure.detail);
+        assert_eq!(admission_failure_summary(&failure)["attempts"], 1);
+        assert_eq!(mock.calls.len(), 1);
+        assert_eq!(mock.remaining(), 1, "the queued clear answer was never asked for");
+    }
+    // Forms the evidence decoder accepts but the scanner never writes, exactly as they would arrive.
+    for evidence in [
+        r#"["scan_timeout",null,null]"#,
+        r#"{"reason":{"scan_timeout":null}}"#,
+        r#"["observer_timeout",812,null]"#,
+        r#"{"reason":{"deadline_exceeded":null},"pid":812}"#,
+    ] {
+        let mut mock = MockRunner::new();
+        mock.expect_run(
+            "fresh-install-preflight.js",
+            CmdOutput {
+                exit_code: Some(4),
+                stdout: format!(r#"{{"v":1,"platform":"ios","deviceId":"AAAA-1111","status":"unknown","evidence":{evidence}}}"#),
+                ..Default::default()
+            },
+        );
+        mock.expect_run("fresh-install-preflight.js", clear_scan("ios", "AAAA-1111"));
+        let failure = admit(&mut mock, None).unwrap_err();
+        assert_eq!(failure.build_recovery().unwrap().action, RestoreProcessObservation, "{evidence}");
+        assert!(!failure.detail.contains("scan_timeouts_ms"), "{evidence}: {}", failure.detail);
+        assert_eq!(mock.remaining(), 1, "{evidence}: the queued clear answer was never asked for");
+    }
+    // A scan that timed out and is then answered busy: the busy answer ends it.
+    let mut mock = MockRunner::new();
+    mock.expect_run("fresh-install-preflight.js", timed_out_scan("ios", "AAAA-1111", "scan_timeout"));
+    mock.expect_run("fresh-install-preflight.js", admission_output("busy", "driver_on_selected_device"));
+    mock.expect_run("fresh-install-preflight.js", clear_scan("ios", "AAAA-1111"));
+    let failure = admit(&mut mock, None).unwrap_err();
+    assert_eq!(failure.code, FailureCode::DeviceBusy);
+    assert_eq!(failure.build_recovery().unwrap().action, WaitForOwner);
+    let summary = admission_failure_summary(&failure);
+    assert_eq!((summary["attempts"].as_u64(), summary["initialReason"].as_str(), summary["terminalReason"].as_str()), (Some(2), Some("scan_timeout"), Some("driver_on_selected_device")));
+    assert_eq!(mock.remaining(), 1);
+}
+
+#[test]
+fn fresh_admission_keeps_one_identity_reprobe_beside_the_longer_scans() {
+    let clear = || admission_output("clear", "scan_failed");
+    let identity = || admission_output("unknown", "executable_identity_unproven");
+    let timeout = || timed_out_scan("ios", "AAAA-1111", "scan_timeout");
+    for (outputs, waits, terminal) in [
+        // The re-probe repeats the wait in force; the next timeout moves on from it.
+        (vec![identity(), timeout(), clear()], vec![None, None, Some("4000")], "clear"),
+        (vec![timeout(), identity(), clear()], vec![None, Some("4000"), Some("4000")], "clear"),
+        (vec![timeout(), identity(), identity()], vec![None, Some("4000"), Some("4000")], "executable_identity_unproven"),
+    ] {
+        let mut mock = MockRunner::new();
+        let attempts = outputs.len();
+        for output in outputs {
+            mock.expect_run("fresh-install-preflight.js", output);
+        }
+        let summary = match admit(&mut mock, None) {
+            Ok(summary) => serde_json::to_value(summary).unwrap(),
+            Err(failure) => {
+                assert_eq!(
+                    failure.build_recovery().unwrap().action,
+                    qaren::failure::RecoveryAction::WaitForOwner
+                );
+                admission_failure_summary(&failure)
+            }
+        };
+        assert_eq!(summary["terminalReason"], terminal);
+        assert_eq!(summary["attempts"], attempts);
+        assert_eq!(mock.calls.iter().map(scan_wait).collect::<Vec<_>>(), waits);
+        assert_eq!(mock.remaining(), 0);
+    }
+    // A re-probe is cut to the room its command has, like any other scan, but never below the scanner's 2 s.
+    let mut mock = MockRunner::new();
+    mock.advance_on = Some(("fresh-install-preflight.js".into(), 9_000));
+    for output in [timeout(), timeout(), identity(), identity()] {
+        mock.expect_run("fresh-install-preflight.js", output);
+    }
+    let failure = admit(&mut mock, None).unwrap_err();
+    assert_eq!(mock.calls.iter().map(scan_wait).collect::<Vec<_>>(), [None, Some("4000"), Some("8000"), None]);
+    assert!(failure.detail.starts_with("admission allowance expired; "), "{}", failure.detail);
+    assert_out_of_time(&failure, 4, "2000,4000,8000,2000");
+}
+
+#[test]
+fn fresh_admission_scans_are_bounded_by_the_allowance_and_the_pause() {
+    // Scans that cost no time at all: 53 fit before the room for a 2 s wait is gone.
+    let mut mock = MockRunner::new();
+    for _ in 0..53 {
+        mock.expect_run("fresh-install-preflight.js", timed_out_scan("ios", "AAAA-1111", "observer_timeout"));
+    }
+    let failure = admit(&mut mock, None).unwrap_err();
+    let summary = admission_failure_summary(&failure);
+    assert_eq!((summary["attempts"].as_u64(), summary["elapsedMs"].as_u64()), (Some(53), Some(26_500)));
+    assert_eq!(mock.calls.len(), 53);
+    assert_eq!(scan_wait(mock.calls.last().unwrap()), None, "the last scan had room for 2 s only");
+    assert_eq!(mock.remaining(), 0);
+    // With the identity re-probe last, 54 is the most; the saved note survives with that count.
+    let mut mock = MockRunner::new();
+    for _ in 0..52 {
+        mock.expect_run("fresh-install-preflight.js", timed_out_scan("ios", "AAAA-1111", "observer_timeout"));
+    }
+    for _ in 0..2 {
+        mock.expect_run("fresh-install-preflight.js", admission_output("unknown", "executable_identity_unproven"));
+    }
+    let failure = admit(&mut mock, None).unwrap_err();
+    assert_eq!(admission_failure_summary(&failure)["attempts"], 54);
+    let saved: serde_json::Value =
+        serde_json::from_str(&qaren::redact::durable_json(&failure).unwrap()).unwrap();
+    let kept: serde_json::Value = serde_json::from_str(saved["evidence"][0].as_str().unwrap()).unwrap();
+    assert_eq!(kept["attempts"], 54);
+    assert_eq!(mock.remaining(), 0);
+}
+
+#[test]
+fn fresh_admission_cancelled_while_pausing_before_a_longer_scan_stops() {
+    // With a long allowance and with one that has no room left after the pause: cancellation wins both times.
+    for allowance in [30_000, 700] {
+        let mut mock = MockRunner::new();
+        let start = mock.monotonic_ms();
+        mock.cancel_at_ms = Some((start + 300, "cancelled".into()));
+        mock.advance_on = Some(("fresh-install-preflight.js".into(), 100));
+        mock.expect_run(
+            "fresh-install-preflight.js",
+            timed_out_scan("ios", "AAAA-1111", "scan_timeout"),
+        );
+        let failure = admit(&mut mock, Some(start + allowance)).unwrap_err();
+        assert_eq!(failure.code, FailureCode::RunCancelled, "{allowance}");
+        let summary = admission_failure_summary(&failure);
+        assert_eq!((summary["attempts"].as_u64(), summary["terminalReason"].as_str()), (Some(1), Some("cancelled")));
+        assert_eq!(mock.calls.len(), 1);
+    }
 }
 
 fn request() -> CoreRequest {

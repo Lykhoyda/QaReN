@@ -1,4 +1,4 @@
-use crate::exec::{CmdOutput, CmdSpec, DeadlineRunner, Runner};
+use crate::exec::{CmdOutput, CmdSpec, Runner};
 use crate::failure::{AdmissionCause, AdmissionFacts, Failure, FailureCode};
 use crate::redact::redact_secrets;
 use serde::{Deserialize, Serialize};
@@ -1628,7 +1628,7 @@ impl AdmissionSummary {
                 || serde_json::from_value::<AdmissionProbeReason>(json!(reason)).is_ok()
         };
         (summary.probe == "fresh-install-admission"
-            && summary.attempts <= 2
+            && summary.attempts <= ADMISSION_MAX_ATTEMPTS
             && closed_reason(&summary.initial_reason)
             && closed_reason(&summary.terminal_reason))
         .then_some(summary)
@@ -1641,6 +1641,23 @@ impl AdmissionSummary {
         failure
     }
 }
+
+// One strict admission has this long; no answer is accepted at or after its end.
+const ADMISSION_ALLOWANCE_MS: u64 = 30_000;
+// The process-scan wait of the scans in one admission: after a read that was stopped for time the next scan gets
+// the next wait, and the last wait is kept from then on.
+const ADMISSION_SCAN_WAITS_MS: [u64; 4] = [2_000, 4_000, 8_000, 16_000];
+const ADMISSION_RETRY_PAUSE_MS: u64 = 500;
+// Kept back from the scan command's time for the scan process's own start and exit.
+const ADMISSION_SCAN_RESERVE_MS: u64 = 2_000;
+// A scan after a timed-out read is dispatched only while its command still has the shortest wait after the reserve,
+// and every such scan follows a pause: that bounds the scans of one allowance. The one identity re-probe may come
+// on top.
+const ADMISSION_MAX_ATTEMPTS: u8 = ((ADMISSION_ALLOWANCE_MS
+    - ADMISSION_SCAN_RESERVE_MS
+    - ADMISSION_SCAN_WAITS_MS[0])
+    / ADMISSION_RETRY_PAUSE_MS
+    + 2) as u8;
 
 // None admits an iOS simulator; Some scans the borrowed emulator through the run's adb server.
 pub fn fresh_install_admission(
@@ -1655,7 +1672,7 @@ pub fn fresh_install_admission(
     let started = runner.monotonic_ms();
     let deadline_ms = caller_deadline_ms
         .unwrap_or(u64::MAX)
-        .min(started.saturating_add(30_000));
+        .min(started.saturating_add(ADMISSION_ALLOWANCE_MS));
     let mut summary = AdmissionSummary {
         probe: "fresh-install-admission".into(),
         initial_reason: "not_started".into(),
@@ -1701,17 +1718,33 @@ pub fn fresh_install_admission(
     if let Some(observer) = &observer {
         args.extend(["--process-observer", observer.as_str()]);
     }
-    let spec = CmdSpec::new(
-        "fresh-install-admission",
-        &node.to_string_lossy(),
-        &args,
-        30,
-    )
-    .cwd(worktree);
-    let spec = match android {
-        Some(android) => with_android_env(spec, android),
-        None => spec,
+    // A scan with the scanner's own 2-second wait is the same command as before; only a longer wait is told.
+    let spec_for = |wait_ms: u64| {
+        let wait = wait_ms.to_string();
+        let mut args = args.clone();
+        if wait_ms != ADMISSION_SCAN_WAITS_MS[0] {
+            args.extend(["--scan-timeout-ms", wait.as_str()]);
+        }
+        let spec = CmdSpec::new(
+            "fresh-install-admission",
+            &node.to_string_lossy(),
+            &args,
+            30,
+        )
+        .cwd(worktree);
+        match android {
+            Some(android) => with_android_env(spec, android),
+            None => spec,
+        }
     };
+    // The process-scan wait of each scan dispatched; the step of ADMISSION_SCAN_WAITS_MS in force; whether the one
+    // identity re-probe is used; whether the coming scan follows a read that was stopped for time.
+    let mut waits: Vec<u64> = Vec::new();
+    let mut step = 0;
+    let mut identity_reprobed = false;
+    let mut after_timeout = false;
+    // The last answer. It stands when no further scan is dispatched.
+    let mut last: Option<CmdOutput> = None;
     loop {
         let now = runner.monotonic_ms();
         summary.elapsed_ms = now.saturating_sub(started);
@@ -1723,17 +1756,34 @@ pub fn fresh_install_admission(
                     .with_recovery(crate::failure::RecoveryReason::RunCancelled),
             ));
         }
-        let dispatched = !summary.deadline_exceeded;
-        let output = if !dispatched {
-            CmdOutput::default()
-        } else {
+        // This one clock reading decides the command's time and the wait it is told: the whole seconds the
+        // deadline leaves, at most the command's own 30, and for the wait the reserve less.
+        let command_seconds = (deadline_ms.saturating_sub(now) / 1000).min(30);
+        let room = (command_seconds * 1000).saturating_sub(ADMISSION_SCAN_RESERVE_MS);
+        // A scan after a timed-out read needs room for the shortest wait. The first scan and the identity re-probe
+        // are dispatched whenever the deadline has not passed, as before.
+        let dispatched = !summary.deadline_exceeded
+            && (!after_timeout || room >= ADMISSION_SCAN_WAITS_MS[0]);
+        let output = if dispatched {
+            let wait = if waits.is_empty() {
+                ADMISSION_SCAN_WAITS_MS[0]
+            } else {
+                ADMISSION_SCAN_WAITS_MS[step]
+                    .min(room)
+                    .max(ADMISSION_SCAN_WAITS_MS[0])
+            };
+            let mut spec = spec_for(wait);
+            spec.timeout_seconds = command_seconds;
+            waits.push(wait);
             summary.attempts += 1;
-            DeadlineRunner {
-                inner: runner,
-                deadline_ms,
-            }
-            .run(&spec)
+            let output = runner.run(&spec);
+            last = Some(output.clone());
+            output
+        } else {
+            // No further scan: the last answer stands, with the clock as it is now.
+            last.clone().unwrap_or_default()
         };
+        let observed = last.is_some();
         let now = runner.monotonic_ms();
         summary.elapsed_ms = now.saturating_sub(started);
         summary.deadline_exceeded = now >= deadline_ms;
@@ -1758,7 +1808,7 @@ pub fn fresh_install_admission(
             .and_then(|v| serde_json::from_value::<AdmissionProbeEvidence>(v.clone()).ok())
             .filter(|e| e.pid != Some(0) && e.candidates.is_none_or(|n| n <= 1_048_576));
         let evidence = match matched.and_then(|v| v.get("evidence")) {
-            _ if !dispatched => "not_run".into(),
+            _ if !observed => "not_run".into(),
             Some(_) => validated
                 .as_ref()
                 .and_then(|e| serde_json::to_string(e).ok())
@@ -1796,16 +1846,49 @@ pub fn fresh_install_admission(
         if clear {
             return Ok(summary);
         }
-        let retry = android.is_none()
-            && summary.attempts == 1
-            && !summary.deadline_exceeded
+        let typed_unknown = !summary.deadline_exceeded
             && !output.timed_out
             && output.exit_code == Some(4)
-            && status == Some("unknown")
+            && status == Some("unknown");
+        // Time ran out inside the scan, in exactly the shape the platform's scanner reports it. The members are read
+        // from the answer itself: a null or an extra member is not that shape. A busy answer is never one of these.
+        let sent = matched
+            .and_then(|v| v.get("evidence"))
+            .and_then(Value::as_object)
+            // The scanner writes an object whose reason is a string; other forms the decoder accepts are not it.
+            .filter(|evidence| evidence.get("reason").is_some_and(Value::is_string));
+        let only = |allowed: &[&str]| {
+            sent.is_some_and(|evidence| evidence.keys().all(|member| allowed.contains(&member.as_str())))
+        };
+        let timed_out_read = validated.as_ref().filter(|_| typed_unknown).and_then(|e| {
+            match e.reason {
+                AdmissionProbeReason::ScanTimeout if only(&["reason"]) => {
+                    Some("the process-table read timed out before admission could prove the device clear")
+                }
+                AdmissionProbeReason::ObserverTimeout
+                    if android.is_none() && e.pid.is_some() && only(&["reason", "pid"]) =>
+                {
+                    Some("the time available to establish process identity ran out before admission could prove the device clear")
+                }
+                AdmissionProbeReason::DeadlineExceeded
+                    if android.is_none()
+                        && only(&["reason", "pid"])
+                        && (e.pid.is_some() || only(&["reason"])) =>
+                {
+                    Some("the scan exhausted its 20-second time budget before admission could prove the device clear")
+                }
+                _ => None,
+            }
+        });
+        let identity_retry = dispatched
+            && android.is_none()
+            && !identity_reprobed
+            && typed_unknown
             && validated.as_ref().is_some_and(|e| {
                 e.reason == AdmissionProbeReason::ExecutableIdentityUnproven && e.pid.is_some()
             });
-        if retry {
+        // Only an answer of the scan just dispatched is acted on; an answer that stands is refused below.
+        if identity_retry || (dispatched && timed_out_read.is_some()) {
             if let Some(reason) = runner.cancellation() {
                 summary.terminal_reason = "cancelled".into();
                 return Err(summary.refusal(
@@ -1813,8 +1896,18 @@ pub fn fresh_install_admission(
                         .with_recovery(crate::failure::RecoveryReason::RunCancelled),
                 ));
             }
+            if identity_retry {
+                identity_reprobed = true;
+                after_timeout = false;
+            } else {
+                // The next scan waits longer; whether one still fits is decided at its dispatch, after the pause.
+                step = (step + 1).min(ADMISSION_SCAN_WAITS_MS.len() - 1);
+                after_timeout = true;
+            }
             let remaining = deadline_ms.saturating_sub(runner.monotonic_ms());
-            runner.sleep(Duration::from_millis(500.min(remaining)));
+            runner.sleep(Duration::from_millis(
+                ADMISSION_RETRY_PAUSE_MS.min(remaining),
+            ));
             continue;
         }
         let busy = !summary.deadline_exceeded
@@ -1822,17 +1915,40 @@ pub fn fresh_install_admission(
             && output.exit_code == Some(4)
             && status == Some("busy");
         let probe_status = match status {
-            _ if !dispatched => "not_run",
+            _ if !observed => "not_run",
             Some("clear") => "clear",
             Some("busy") => "busy",
             Some("unknown") => "unknown",
             _ => "invalid",
         };
+        // Out of time, not a finding: the allowance, the scan command or one of its reads ran out.
+        let timed = if summary.deadline_exceeded {
+            Some("admission allowance expired")
+        } else if busy {
+            None
+        } else if output.timed_out {
+            Some("the admission scan command did not answer within its time")
+        } else {
+            timed_out_read
+        };
+        let measured = if timed.is_some() {
+            let waits = match waits.len() {
+                0 => "none".to_string(),
+                _ => waits.iter().map(u64::to_string).collect::<Vec<_>>().join(","),
+            };
+            // The load is a measurement beside the timeout, in the words other refusals use; it names no cause.
+            let load = match host_load_1m() {
+                Some(load) => format!("host 1-minute load {load:.1}"),
+                None => "host load unavailable".to_string(),
+            };
+            format!("; attempts={}; scan_timeouts_ms={waits}; {load}", summary.attempts)
+        } else {
+            String::new()
+        };
         let detail = format!(
-            "{}; probe_status={probe_status}; probe_evidence={evidence}; exit_code={:?}; timed_out={}; deadline_exceeded={}",
-            if summary.deadline_exceeded { "admission allowance expired" }
-            else if busy { "a foreign automation flow is active on the selected device" }
-            else { "strict foreign-flow admission did not prove the selected device clear" },
+            "{}; probe_status={probe_status}; probe_evidence={evidence}; exit_code={:?}; timed_out={}; deadline_exceeded={}{measured}",
+            if busy { "a foreign automation flow is active on the selected device" }
+            else { timed.unwrap_or("strict foreign-flow admission did not prove the selected device clear") },
             output.exit_code, output.timed_out, summary.deadline_exceeded,
         );
         let foreign = (android.is_some() && busy)
