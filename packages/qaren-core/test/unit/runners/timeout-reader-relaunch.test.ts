@@ -23,6 +23,7 @@ import {
   _setFetchForTest,
   ensureFastRunner,
   observeRunnerRelaunches,
+  recoverDownFastRunner,
   getFastRunnerState,
   runIOS,
   resolveReadyTimeoutMs,
@@ -904,4 +905,65 @@ test('a vanished reader leaves a post-mortem of host state and marker counts, ne
     assert.deepEqual(postMortem(), { hostChild: 'exited', exitSignal: 'SIGKILL', ...markers });
   });
   assert.ok(!JSON.stringify(events).includes(secret));
+});
+
+// AI-515: a QA step that sent nothing asks the runner; a dead one gets one attach-only start.
+test('I1 a dead reader is relaunched attach-only once and answers relaunched', async () => {
+  assert.equal(await recoverDownFastRunner('fixture-ios', 'dev.fixture', true), 'relaunched');
+  assert.equal(launches, 1);
+  assert.equal(launchEnv.RN_RUNNER_ATTACH_ONLY, '1');
+  assert.equal(getFastRunnerState()?.port, 22089);
+});
+
+test('I2 a probe without permission never launches', async () => {
+  assert.equal(await recoverDownFastRunner('fixture-ios', 'dev.fixture', false), 'down');
+  assert.equal(launches, 0);
+});
+
+test('I3 a healthy reader is alive and is not relaunched', async () => {
+  _setFastRunnerStateForTest({
+    pid: process.pid,
+    port: 22089,
+    deviceId: 'fixture-ios',
+    bundleId: 'dev.fixture',
+    startedAt: 'now',
+  });
+  assert.equal(await recoverDownFastRunner('fixture-ios', 'dev.fixture', true), 'alive');
+  assert.equal(launches, 0);
+});
+
+test('I4 a relaunch that fails is down after exactly one launch', async () => {
+  failLaunch = true;
+  assert.equal(await recoverDownFastRunner('fixture-ios', 'dev.fixture', true), 'down');
+  assert.equal(launches, 1);
+});
+
+test('I5 a reader answering for another identity is left alone: not down, never relaunched', async () => {
+  _setFastRunnerStateForTest({
+    pid: process.pid,
+    port: 22089,
+    deviceId: 'fixture-ios',
+    bundleId: 'dev.fixture',
+    startedAt: 'now',
+    instanceId: 'other',
+    sessionId: 'other',
+    claimEpoch: 1,
+  });
+  assert.equal(await recoverDownFastRunner('fixture-ios', 'dev.fixture', true), 'alive');
+  assert.equal(launches, 0);
+});
+
+test("I6 a step that waited on a containment's relaunch answers relaunched without a launch of its own", async () => {
+  launchDelayMs = 50;
+  const typed = runIOS({
+    command: 'type',
+    text: 'exact',
+    _verifyExactReadback: async () => ({ matches: true }),
+  });
+  while (launches === 0) await nextTurn();
+  const asked = recoverDownFastRunner('fixture-ios', 'dev.fixture', false);
+  assert.equal(parseEnvelope(await typed).ok, true);
+  assert.equal(await asked, 'relaunched');
+  assert.equal(launches, 1);
+  assert.equal(getFastRunnerState()?.port, 22089);
 });

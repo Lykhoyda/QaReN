@@ -841,6 +841,24 @@ impl Failure {
         }
     }
 
+    // QaReN's own runner, never the app or the plan: the next rung after a run's own walk-time
+    // restart, without overriding open-time runner-start refusals that share these codes.
+    pub fn core_refusal_next_action_for(code: &str, message: &str) -> &'static str {
+        if message.starts_with(
+            "QaReN's own device runner stopped answering before this step sent anything",
+        ) {
+            match code {
+                "RN_FAST_RUNNER_DOWN" =>
+                    "QaReN's own iOS runner was not answering when the run needed it and QaReN could not bring it back within this run; the app and the plan are not the cause. Next rungs, in order: re-run once (a new run starts a fresh runner and keeps the app); if it repeats on this simulator, restart the simulator (this ends the app's session and any unsaved app state, so ask the user first); rebuilding the app does not help a runner that stops answering; then run qaren cleanup with this run's id and a fresh qaren prepare (this also restarts the app; ask the user first)",
+                "RN_ANDROID_RUNNER_DOWN" =>
+                    "QaReN's own Android runner was not answering when the run needed it and QaReN could not bring it back within this run; the app and the plan are not the cause. Next rungs, in order: re-run once (a new run starts a fresh runner and keeps the app); if it repeats on this emulator or device, restart it (this ends the app's session and any unsaved app state, so ask the user first); rebuilding the app does not help a runner that stops answering; then run qaren cleanup with this run's id and a fresh qaren prepare (this also restarts the app; ask the user first)",
+                _ => Self::core_refusal_next_action(code),
+            }
+        } else {
+            Self::core_refusal_next_action(code)
+        }
+    }
+
     // A core refusal that is a device cause carries it as a machine-readable subreason.
     pub fn core_refusal_subreason(code: &str) -> Option<String> {
         (code == "RUNNER_INSTALL_BLOCKED").then(|| "runner-install-blocked".to_string())
@@ -1016,6 +1034,51 @@ mod log_pointer_tests {
         assert!(json["log"].get("bytes").is_none(), "{json}");
         assert_eq!(json["log"]["file"], missing.display().to_string());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod runner_down_next_action_tests {
+    use super::*;
+
+    #[test]
+    fn runner_down_refusals_name_qarens_runner_and_the_next_rung() {
+        let walker_msg = "QaReN's own device runner stopped answering before this step sent anything, and QaReN could not bring it back; nothing was sent to the app, and neither the app nor the plan is the cause";
+        for (code, device) in [
+            ("RN_FAST_RUNNER_DOWN", "restart the simulator"),
+            ("RN_ANDROID_RUNNER_DOWN", "restart it ("),
+        ] {
+            let next = Failure::core_refusal_next_action_for(code, walker_msg);
+            assert!(next.starts_with("QaReN's own"), "{code}");
+            assert!(
+                next.contains("the app and the plan are not the cause"),
+                "{code}"
+            );
+            assert!(next.contains("re-run once"), "{code}");
+            assert!(next.contains(device), "{code}");
+            assert!(next.contains("ask the user first"), "{code}");
+            assert!(next.contains("rebuilding the app does not help"), "{code}");
+            assert!(next.contains("qaren cleanup"), "{code}");
+            assert_ne!(
+                next,
+                Failure::core_refusal_next_action("UNLISTED_CODE"),
+                "{code}"
+            );
+        }
+        assert_eq!(
+            Failure::core_refusal_next_action_for(
+                "RN_ANDROID_RUNNER_DOWN",
+                "Failed to start device runner: qaren-android-runner source build failed"
+            ),
+            "resolve the refusal, then re-run"
+        );
+        assert_eq!(
+            Failure::core_refusal_next_action_for(
+                "RN_FAST_RUNNER_DOWN",
+                "Failed to start device runner: iOS runner did not become ready"
+            ),
+            "resolve the refusal, then re-run"
+        );
     }
 }
 

@@ -147,6 +147,27 @@ export function postAdmissionSnapshots<A>(
     },
     events: () => events.slice().sort((a, b) => a.atMs - b.atMs),
     dropped: () => dropped,
+    // QaReN restarted its own runner between steps. The same app process on both sides is proof and is not
+    // counted; a different one is the app's interruption; without both reads the next snapshot decides.
+    runnerRelaunched(fromPid: number | undefined, toPid: number | undefined, atMs = Date.now()) {
+      const proven = fromPid !== undefined && toPid !== undefined;
+      const event = record({
+        signal: 'runner-recovery',
+        atMs,
+        counted: proven && fromPid !== toPid,
+        detail: { recoveryTier: 'runner-relaunch', ...(proven ? { fromPid, toPid } : {}) },
+      });
+      if (proven) {
+        // Only a platform whose snapshots carry the app's process keeps a baseline (iOS); on Android
+        // a baseline the snapshots never confirm would read as an unresolved interruption at finish.
+        if (appProcess !== undefined) appProcess = toPid;
+        return;
+      }
+      if (admitted) {
+        pending ??= { baseline: appProcess, atMs, recoveries: [] };
+        if (pending.recoveries.length < 16) pending.recoveries.push(event);
+      }
+    },
     async snapshot(args: A): Promise<ToolResult> {
       const result = await snapshot(args);
       const atMs = Date.now();

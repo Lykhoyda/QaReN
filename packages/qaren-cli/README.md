@@ -2940,6 +2940,46 @@ capture budget, so that capture stays refused without re-reading; recovery
 allows the following separate capture to use the healthy relaunched reader.
 Advisory timeouts and unrelated presence failures do not trigger this containment.
 
+A runner that is down between steps, with no command in flight, is checked when a
+step fails before it has sent anything to the app: no authorized dispatch for the
+item, including a tap a recovery, dev-overlay dismissal or login replay made for
+it, no press that may have acted, no post-action read. Only the plan's own walk
+asks; a nested recovery or login walk does not. The walker probes QaReN's own
+runner; if it answers, the step's failure stands, including when it answers for
+another identity, version or credential, which QaReN does not restart or reap
+while the host still tracks it. If it does not answer, QaReN reads the app's
+process, restarts the runner once with an attach-only start (iOS: the reap and
+relaunch above, inside one `READY_TIMEOUT_MS` window; a timeout containment
+already relaunching it is waited for and counts against the limit; Android: the
+ordinary runner start, without the stale-artifact rebuild, after force-stopping an
+untracked runner's packages on the device—when reaped, `forceReinstall` reinstalls
+the runner APKs without touching the app), reads the app's process again, and
+starts the step again on fresh reads, with its time budgets, including a first
+step's launch allowance, resumed where they stood. A Wait whose first read
+outlasted its deadline asks before it reports the timeout (if the runner answers,
+`TARGET_WAIT_TIMEOUT` keeps its fields and `elapsed_ms` may include the probe).
+The ledger shows a `retry` row naming the restart. At most two restarts are made
+or adopted by this port per run. When the restart fails, or the limit is reached,
+the run is `REFUSED` with `RN_FAST_RUNNER_DOWN` (iOS) or `RN_ANDROID_RUNNER_DOWN`
+(Android), a message that names QaReN's runner and not the app or the plan, and a
+next action (for that walk-time message, leaving open-time runner-start refusals
+unchanged) that lists the next rungs: re-run; restart the simulator or emulator
+(ask the user first: it ends the app's session); rebuilding the app does not help;
+`qaren cleanup` and a fresh `qaren prepare` (ask the user first). The receipt's
+`failure.code` is `CORE_REFUSED` and its detail starts with the runner code. The
+same app process on both sides of a restart is recorded as an uncounted
+`runner-recovery` continuity event; a different or missing app process is
+`APP_PROCESS_CHANGED`; on Android, a restart whose app process could not be read
+is counted as an interruption. A step that has sent anything is never sent again:
+a runner that dies after a dispatch keeps the existing outcome. Paths that return
+without the step catch—pre-dispatch refusals from an iOS live-hit probe that
+reported `unavailable`, a Wait poll cut off by its deadline after the first read,
+and a nested interruption or dev-overlay recovery that fails before authorization—
+keep their existing outcome. Owners: the
+[walker](../qaren-core/src/qa/walker.ts) and the
+[runner recovery port](../qaren-core/src/qa/runner-recovery.ts); regressions in
+[runner-down-walker](../qaren-core/test/unit/qa/runner-down-walker.test.ts).
+
 Slot diagnostics retain the `relaunch` metric with `attempted`, `ready`, `failed`
 or `timeout`, its duration and the fixed reap disposition, without runner output
 or values.

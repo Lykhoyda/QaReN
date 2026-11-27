@@ -1647,7 +1647,7 @@ fn run_inner(
                         "prove",
                         refusal_code(code),
                         format!("{code}: {message}"),
-                        Failure::core_refusal_next_action(code),
+                        Failure::core_refusal_next_action_for(code, message),
                     );
                     Failure {
                         subreason: Failure::core_refusal_subreason(code),
