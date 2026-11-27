@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // A gh(1) test double for workflow-step simulations. It keeps releases (with
-// draft/target/tag state), pull requests and check runs in a JSON state file,
+// draft/target/tag state), pull requests, check runs and ci.yml runs in a JSON state file,
 // records every invocation, and answers --json/--jq queries by running the REAL
 // jq over the projected records, so a workflow's own filter is exercised rather
 // than re-implemented here.
@@ -59,6 +59,8 @@ const injected = (process.env.GH_STUB_FAIL ?? '')
   .map((s) => s.trim())
   .filter(Boolean);
 if (injected.some((f) => command.startsWith(f))) {
+  // gh prints an API error's body on stdout as well as failing.
+  if (process.env.GH_STUB_FAIL_BODY) process.stdout.write(process.env.GH_STUB_FAIL_BODY);
   die(`gh stub: injected failure for \`gh ${command}\``);
 }
 
@@ -132,6 +134,7 @@ function notFound(message) {
 const state = readState();
 state.tags ??= {};
 state.checks ??= {};
+state.runs ??= {};
 const [group, sub] = argv;
 
 function releaseAssetRecords(release) {
@@ -249,10 +252,31 @@ if (group === 'release' && sub === 'view') {
     // reads `.status` instead of parsing a CLI message.
     const tag = path.slice(path.lastIndexOf('/') + 1);
     const release = state.releases[tag];
-    if (!release || release.draft) notFound('Not Found');
+    // A transient API failure: the lookup cannot be read that many times.
+    if (release?.unreadableLookups) {
+      release.unreadableLookups--;
+      writeState(state);
+      die('gh: Server Error (HTTP 502)');
+    }
+    // A draft seeded with publishesAfterLookups stands for a release another
+    // job is about to publish: it stays a draft for that many lookups, then
+    // is public.
+    if (release?.draft && release.publishesAfterLookups !== undefined) {
+      if (release.publishesAfterLookups > 0) release.publishesAfterLookups--;
+      else {
+        release.draft = false;
+        delete release.publishesAfterLookups;
+        if (!state.tags[tag]) state.tags[tag] = release.target ?? 'main';
+      }
+      writeState(state);
+    }
+    // By tag a draft answers 404. listsDraft models a credential that is shown
+    // the draft instead: the same lookup then succeeds with draft: true.
+    if (release?.draft && !release.listsDraft) notFound('Not Found');
+    if (!release) notFound('Not Found');
     emit({
       tag_name: tag,
-      draft: false,
+      draft: release.draft === true,
       target_commitish: release.target ?? 'main',
       assets: releaseAssetRecords(release),
     });
@@ -275,6 +299,27 @@ if (group === 'release' && sub === 'view') {
     const sha = path.split('/').at(-2);
     const params = new URLSearchParams(query ?? '');
     const name = params.get('check_name');
+    // A transient API failure: the check list cannot be read that many times.
+    if (state.unreadableCheckLists?.[sha]) {
+      state.unreadableCheckLists[sha]--;
+      writeState(state);
+      die('gh: Server Error (HTTP 502)');
+    }
+    // A maintainer approving a parked run while a job polls: after the seeded
+    // number of check-list reads the parked run is replaced by a finished one
+    // and CI reports its checks.
+    const approval = state.approveAfterReads?.[sha];
+    if (approval) {
+      if (approval.reads > 0) approval.reads--;
+      else {
+        state.runs[sha] = (state.runs[sha] ?? []).map((run) =>
+          run.conclusion === 'action_required' ? { ...run, conclusion: 'success' } : run,
+        );
+        state.checks[sha] = approval.checks;
+        delete state.approveAfterReads[sha];
+      }
+      writeState(state);
+    }
     let runs = (state.checks[sha] ?? []).filter((run) => !name || run.name === name);
     // filter=latest (the API default) keeps only the newest run per name;
     // seeded arrays are in creation order.
@@ -282,6 +327,18 @@ if (group === 'release' && sub === 'view') {
       runs = [...new Map(runs.map((run) => [run.name, run])).values()];
     }
     emit({ total_count: runs.length, check_runs: runs });
+  } else if (/^repos\/[^/]+\/[^/]+\/actions\/workflows\/ci\.yml\/runs$/.test(path)) {
+    // Runs of ci.yml by head commit, newest first; seeded arrays are in
+    // creation order. A run parked for approval is completed/action_required.
+    const params = new URLSearchParams(query ?? '');
+    const event = params.get('event');
+    const runs = (state.runs[params.get('head_sha') ?? ''] ?? [])
+      .filter((run) => !event || run.event === event)
+      .reverse();
+    emit({
+      total_count: runs.length,
+      workflow_runs: runs.slice(0, Number(params.get('per_page') ?? 30)),
+    });
   } else {
     die(`gh stub: unsupported api endpoint: ${endpoint}`);
   }
@@ -310,9 +367,32 @@ if (group === 'release' && sub === 'view') {
     title: flag('--title'),
     state: 'OPEN',
     autoMerge: null,
+    createdWith: process.env.GH_TOKEN ?? null,
   };
+  // GitHub's rule for a pull request opened from a workflow, modelled only when
+  // a test seeds ciOnOpen. Opened with the workflow's own token, its CI run is
+  // parked for approval and reports no check. Opened with the App token, a CI
+  // run exists and reports the seeded checks. Any other credential is refused.
+  if (state.ciOnOpen && gitDir()) {
+    const head = git('rev-parse', `refs/heads/${pr.headRefName}`);
+    const run = { event: 'pull_request', html_url: 'https://github.com/x/actions/runs/7' };
+    if (pr.createdWith === state.ciOnOpen.workflowToken) {
+      (state.runs[head] ??= []).push({
+        ...run,
+        status: 'completed',
+        conclusion: 'action_required',
+      });
+    } else if (pr.createdWith === state.ciOnOpen.appToken) {
+      (state.runs[head] ??= []).push({ ...run, status: 'completed', conclusion: 'success' });
+      state.checks[head] = state.ciOnOpen.checks;
+    } else {
+      die('gh: Bad credentials (HTTP 401)');
+    }
+  }
   state.prs.push(pr);
   writeState(state);
+  // GH_STUB_CREATE_LOST: GitHub opened the pull request, but its answer never reached gh.
+  if (process.env.GH_STUB_CREATE_LOST) die('gh: connection reset before the response arrived');
   process.stdout.write(`${prRecord(pr).url}\n`);
 } else if (group === 'pr' && sub === 'view') {
   const pr = findPr(positional[2]);
@@ -339,13 +419,18 @@ if (group === 'release' && sub === 'view') {
     if (expected && expected !== head) {
       die(`gh stub: head commit ${head} does not match the expected ${expected}`);
     }
-    // The base branch requires "Build & Test": GitHub refuses the merge until
-    // that check has succeeded on the head commit.
-    const check = (state.checks[head] ?? []).filter((run) => run.name === 'Build & Test').at(-1);
-    if (!check || check.conclusion !== 'success') {
-      die('gh stub: the base branch requires all checks to pass');
+    // The base branch requires three checks from GitHub Actions: GitHub refuses
+    // the merge until each has completed with success on the head commit.
+    for (const required of ['Build & Test', 'Lint & format', 'Require changeset']) {
+      const check = (state.checks[head] ?? [])
+        .filter((run) => run.name === required && run.app?.slug === 'github-actions')
+        .at(-1);
+      if (!check || check.status !== 'completed' || check.conclusion !== 'success') {
+        die(`gh stub: the base branch requires all checks to pass (${required})`);
+      }
     }
     pr.state = 'MERGED';
+    pr.mergedWith = process.env.GH_TOKEN ?? null;
     pr.mergeCommit = `merge-of-${head.slice(0, 12)}`;
     pr.mergeMethod = has('--squash') ? 'squash' : has('--rebase') ? 'rebase' : 'merge';
     writeState(state);

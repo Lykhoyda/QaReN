@@ -23,19 +23,33 @@ name: Release
 #                producer handoff)
 #   publish   -> draft release vV targeting H, attach the retained bytes and
 #                the manifest, read every byte back, then publish
-#   merge     -> require the PR head to still be H, tag vV -> H, the existing
-#                CI "Build & Test" check green on H (its core-tests job asserts
-#                the public assets), then merge H with a merge commit and
-#                --match-head-commit
+#   merge     -> require the PR head to still be H, tag vV -> H, main's required
+#                checks green on H (the core-tests job behind "Build & Test"
+#                asserts the public assets), then merge H with a merge commit
+#                and --match-head-commit
 #   sync      -> open (or reuse) the main -> develop sync PR and merge it with a
 #                merge commit once develop's required checks pass on it
 #
-# GH #292: the Version PR is created with GITHUB_TOKEN, so its ci.yml run parks
-# at action_required until a maintainer approves it. The merge job waits a
-# bounded time for that check and otherwise fails with the instruction; after
-# "Approve and run" (or `gh run rerun` of a failed run) re-run this workflow's
-# failed jobs — the candidate H, its retained bytes and the published release
-# are unchanged, so the same run resumes. A push to main while a published
+# GH #292, AI-74: GitHub parks the ci.yml run of a pull request that
+# GITHUB_TOKEN opened or updated until a maintainer selects "Approve workflows
+# to run", and documents no supported way for GITHUB_TOKEN alone to produce
+# the required checks on such a head. Two writes therefore go through the
+# release App's installation token when it is configured (PREREQUISITES
+# below): the push of the release head H in `finalize` and the opening of the
+# sync pull request in `sync-develop`. Their CI then starts by itself; H's run
+# asks scripts/check-public-runner-assets.sh again until `publish` has made
+# the release public. Everything else stays on GITHUB_TOKEN, including both
+# merges, so a release starts no push-triggered workflow run on main or
+# develop.
+#
+# Without the App the approval is the one manual step of a fresh release:
+# `merge` and `sync-develop` announce RELEASE_CI_APPROVAL_REQUIRED, wait a
+# bounded time and go on by themselves if the approved run turns green in that
+# time. The Version PR is never to be closed and its head never moved: the
+# open PR at that exact head is how a published
+# candidate is found again. After a refusal, re-run this workflow's failed
+# jobs — the candidate H, its retained bytes and the published release are
+# unchanged, so the same run resumes. A push to main while a published
 # candidate waits resumes that exact head (nothing is regenerated); a push
 # while an unpublished candidate waits regenerates and rebuilds it.
 #
@@ -50,6 +64,11 @@ name: Release
 #   - main allows merge commits only; develop allows merge commits for sync PRs
 #     and squash merges for feature PRs.
 #   - develop requires "Build & Test", "Lint & format" and "Require changeset".
+#   - Optional, for releases that need no approval click: a GitHub App owned by
+#     the repository owner with repository permissions Contents: read and write
+#     and Pull requests: read and write, installed on this repository only; its
+#     client ID in the repository variable RELEASE_APP_CLIENT_ID and one of its
+#     private keys in the repository secret RELEASE_APP_PRIVATE_KEY.
 
 on:
   push:
@@ -231,9 +250,34 @@ jobs:
       QAREN_ARM64_SHA256: ${{ needs.prepare.outputs.qaren-darwin-arm64-sha256 }}
       QAREN_ARM64_BYTES: ${{ needs.prepare.outputs.qaren-darwin-arm64-bytes }}
     steps:
+      # AI-74: the push of H below is the write that starts the Version PR's CI.
+      # Minted only when the release App is configured; a failure to mint
+      # falls back to GITHUB_TOKEN instead of stopping the release.
+      - id: app-token
+        name: Mint the release App token for the push of the release head
+        if: ${{ vars.RELEASE_APP_CLIENT_ID != '' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc  # v3.4.0 — SHA pin
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Warn when the release App is configured but gave no token
+        env:
+          APP_CONFIGURED: ${{ vars.RELEASE_APP_CLIENT_ID != '' }}
+          APP_TOKEN_MINTED: ${{ steps.app-token.outcome == 'success' && steps.app-token.outputs.token != '' }}
+        run: |
+          if [ "$APP_CONFIGURED" = true ] && [ "$APP_TOKEN_MINTED" != true ]; then
+            echo "::warning::RELEASE_APP_TOKEN_UNAVAILABLE: RELEASE_APP_CLIENT_ID is set but the step before this one minted no release App token. This job goes on with GITHUB_TOKEN; if it then pushes to or opens a pull request, that pull request's CI will wait for \"Approve workflows to run\". Next: check that the App is installed on this repository with Contents and Pull requests write access and that the secret RELEASE_APP_PRIVATE_KEY holds one of its private keys"
+          fi
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2 — same pin as ci.yml
         with:
           ref: ${{ needs.version.outputs.candidate-sha }}
+          # The credential this checkout persists is the one the push of H
+          # below uses: the App token when one was minted, else GITHUB_TOKEN.
+          token: ${{ steps.app-token.outcome == 'success' && steps.app-token.outputs.token || github.token }}
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0 — same pin as ci.yml
         with:
@@ -289,8 +333,16 @@ jobs:
           git commit --quiet -m "chore(release): runner trust root for v$VERSION"
           H=$(git rev-parse HEAD)
           # Lands only if the branch is still the candidate this run built from.
-          git push origin "HEAD:refs/heads/changeset-release/main" \
-            --force-with-lease="refs/heads/changeset-release/main:$CANDIDATE"
+          if ! git push origin "HEAD:refs/heads/changeset-release/main" \
+            --force-with-lease="refs/heads/changeset-release/main:$CANDIDATE"; then
+            # The command's exit status is not the outcome: read the branch back.
+            REMOTE=$(git ls-remote origin refs/heads/changeset-release/main 2>/dev/null | cut -f1) || REMOTE=""
+            if [ "$REMOTE" != "$H" ]; then
+              echo "::error::RELEASE_HEAD_PUSH_REFUSED: the push of the release head failed and changeset-release/main is at ${REMOTE:-a commit that could not be read}, not at $H, so nothing of v$VERSION is published. Next: read the git error above. If the branch is at another commit, a newer push to main owns it: let that run finish. If the credential was refused, check the release App's Contents permission or delete the variable RELEASE_APP_CLIENT_ID. Then re-run this workflow's failed jobs" >&2
+              exit 1
+            fi
+            echo "git push reported a failure, but changeset-release/main is at $H — going on"
+          fi
           echo "sha=$H" >> "$GITHUB_OUTPUT"
           {
             echo "## Release candidate v$VERSION"
@@ -565,8 +617,8 @@ jobs:
           echo "release v$VERSION is published from $HEAD"
           echo "- release: v$VERSION published from $HEAD (resume=$RESUME)" >> "$GITHUB_STEP_SUMMARY"
 
-  # Exact-head merge, only after the existing CI check on H — whose core-tests
-  # job asserts the now-public assets — has succeeded. Never auto-merge.
+  # Exact-head merge, only after main's required checks on H — whose core-tests
+  # job asserts the now-public assets — have succeeded. Never auto-merge.
   merge:
     needs: [version, finalize, publish]
     if: >-
@@ -576,6 +628,9 @@ jobs:
       && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
+      # read: the head's check runs and, for the wording of a refusal, its CI run.
+      actions: read
+      checks: read
       contents: write
       pull-requests: write
     env:
@@ -584,6 +639,11 @@ jobs:
       HEAD: ${{ needs.version.outputs.resume == 'true' && needs.version.outputs.head-sha || needs.finalize.outputs.head-sha }}
       VERSION: ${{ needs.version.outputs.version }}
       PR_NUMBER: ${{ needs.version.outputs.pr-number }}
+      PR_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ needs.version.outputs.pr-number }}
+      # One rule for every refusal of the wait below: the published candidate
+      # is found again only through this open pull request at this exact head
+      # (the `pending` step of the version job).
+      KEEP: "Keep the Version PR open and its head unchanged: never close it, push to it or resolve a conflict on it. If it cannot land as it is, report it; changed content ships as a new version"
     steps:
       - name: Require the public release from the exact candidate
         run: |
@@ -603,40 +663,70 @@ jobs:
             exit 1
           fi
 
-      - name: Wait for the existing "Build & Test" check on the candidate
+      # All of main's required checks, not only the aggregate: a merge sent
+      # while a sibling check is still running would be refused by GitHub.
+      - name: Wait for main's required checks on the candidate
         run: |
           WAIT_MINUTES=${READINESS_WAIT_MINUTES:-20}
           DEADLINE=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+          ANNOUNCED=false
           while :; do
-            RUN=$(gh api "repos/{owner}/{repo}/commits/$HEAD/check-runs?check_name=Build%20%26%20Test&filter=latest" \
-              --jq '[.check_runs[] | select(.app.slug == "github-actions")] | first // empty | "\(.status) \(.conclusion) \(.html_url)"')
-            STATUS=${RUN%% *}
-            CONCLUSION=$(cut -d' ' -f2 <<< "$RUN")
-            case "$STATUS:$CONCLUSION" in
-              completed:success)
-                echo "Build & Test succeeded on $HEAD: ${RUN##* }"
-                echo "- readiness: Build & Test success on $HEAD (${RUN##* })" >> "$GITHUB_STEP_SUMMARY"
-                break
-                ;;
-              completed:*)
-                echo "::error::Build & Test on $HEAD concluded $CONCLUSION (${RUN##* }) — fix or rerun that CI run, then re-run this workflow's failed jobs" >&2
-                exit 1
-                ;;
-            esac
+            PENDING=""
+            ABSENT=true
+            for NAME in "Build & Test" "Lint & format" "Require changeset"; do
+              # Exactly this context, reported by GitHub Actions, on exactly this
+              # head. A list that cannot be read is asked for again.
+              RUN=$(gh api "repos/{owner}/{repo}/commits/$HEAD/check-runs?check_name=$(jq -rn --arg name "$NAME" '$name | @uri')&filter=latest" \
+                --jq '[.check_runs[] | select(.app.slug == "github-actions")] | first // empty | "\(.status) \(.conclusion) \(.html_url)"' 2>/dev/null) || RUN="unreadable"
+              [ -z "$RUN" ] || ABSENT=false
+              case "${RUN%% *}:$(cut -d' ' -f2 <<< "$RUN")" in
+                completed:success) ;;
+                completed:*)
+                  echo "::error::RELEASE_CI_FAILED: $NAME on PR #$PR_NUMBER ($HEAD) concluded $(cut -d' ' -f2 <<< "$RUN") (${RUN##* }). Next: rerun that CI run, then re-run this workflow's failed jobs. $KEEP" >&2
+                  exit 1
+                  ;;
+                *) PENDING="$PENDING; $NAME: ${RUN:-no check run}" ;;
+              esac
+            done
+            [ -n "$PENDING" ] || break
+            # Wording only, never a verdict, and only while no required check
+            # exists on the head at all: GitHub lists a run it parked for
+            # approval as completed/action_required and creates no check run
+            # for it. The listing is by commit, not by pull request, and an
+            # unreadable listing is "not known to be parked".
+            PARKED=""
+            if [ "$ABSENT" = true ]; then
+              PARKED=$(gh api "repos/{owner}/{repo}/actions/workflows/ci.yml/runs?head_sha=$HEAD&event=pull_request&per_page=1" \
+                --jq '.workflow_runs[0] // empty | select(.conclusion == "action_required") | .html_url' 2>/dev/null) || PARKED=""
+            fi
             if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-              echo "::error::no successful Build & Test check on $HEAD yet (${RUN:-no check run}). Approve the queued CI run of PR #$PR_NUMBER (\"Approve and run\") or rerun it, then re-run this workflow's failed jobs" >&2
+              if [ -n "$PARKED" ]; then
+                echo "::error::RELEASE_CI_APPROVAL_REQUIRED: PR #$PR_NUMBER has no required check on $HEAD after polling for $WAIT_MINUTES minutes, and a CI run on that commit waits for approval ($PARKED). Next: open $PR_URL. If it offers \"Approve workflows to run\", select it, wait until its checks are green, then re-run this workflow's failed jobs. If it offers no approval, re-run this workflow's failed jobs once and, if nothing changes, report the pull request, $HEAD and this run. A fresh release needs no approval once the release App is configured and mints its token (PREREQUISITES in release.yml). $KEEP" >&2
+              else
+                echo "::error::RELEASE_CI_PENDING: PR #$PR_NUMBER has no successful required checks on $HEAD yet (${PENDING#; }) after polling for $WAIT_MINUTES minutes. Next: open $PR_URL. If it offers \"Approve workflows to run\", select it; if its CI run is still running, wait for it; then re-run this workflow's failed jobs. If it shows no CI run at all, re-run this workflow's failed jobs once and, if nothing changes, report the pull request, $HEAD and this run. $KEEP" >&2
+              fi
               exit 1
+            fi
+            if [ -n "$PARKED" ] && [ "$ANNOUNCED" = false ]; then
+              ANNOUNCED=true
+              echo "::notice::RELEASE_CI_APPROVAL_REQUIRED: a CI run on $HEAD waits for approval ($PARKED) — open $PR_URL and, if it offers \"Approve workflows to run\", select it. This job polls for $WAIT_MINUTES minutes in total and goes on by itself if the required checks turn green in that time"
             fi
             sleep "${READINESS_POLL_SECONDS:-60}"
           done
+          echo "main's required checks succeeded on $HEAD"
+          echo "- readiness: Build & Test, Lint & format and Require changeset success on $HEAD" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Merge exactly the candidate
         run: |
-          gh pr merge --merge --match-head-commit "$HEAD" "$PR_NUMBER"
+          # A refused merge only states what is: nothing here tells a person what to do next.
+          if ! gh pr merge --merge --match-head-commit "$HEAD" "$PR_NUMBER"; then
+            echo "::error::gh pr merge did not succeed for PR #$PR_NUMBER: head $HEAD, tag v$VERSION, run ${GITHUB_RUN_ID:-unknown} — v$VERSION is published but not advertised" >&2
+            exit 1
+          fi
           MERGED=$(gh pr view "$PR_NUMBER" --json state,mergeCommit --jq '"\(.state) \(.mergeCommit.oid // "")"')
           case "$MERGED" in
             "MERGED "?*) ;;
-            *) echo "::error::PR #$PR_NUMBER did not merge ($MERGED) — v$VERSION is published but not advertised" >&2; exit 1 ;;
+            *) echo "::error::PR #$PR_NUMBER did not merge ($MERGED): head $HEAD, tag v$VERSION, run ${GITHUB_RUN_ID:-unknown} — v$VERSION is published but not advertised" >&2; exit 1 ;;
           esac
           echo "PR #$PR_NUMBER: $MERGED"
           echo "- merged: PR #$PR_NUMBER head $HEAD as ${MERGED#* }" >> "$GITHUB_STEP_SUMMARY"
@@ -649,6 +739,9 @@ jobs:
     if: ${{ !cancelled() && needs.merge.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
+      # read: the head's check runs and, for the wording of a refusal, its CI run.
+      actions: read
+      checks: read
       contents: write
       pull-requests: write
     env:
@@ -656,8 +749,34 @@ jobs:
       GH_REPO: ${{ github.repository }}
       VERSION: ${{ needs.version.outputs.version }}
     steps:
+      # AI-74: opening the sync PR is the write that starts its CI.
+      # Minted only when the release App is configured; a failure to mint
+      # falls back to GITHUB_TOKEN instead of stopping the release.
+      - id: app-token
+        name: Mint the release App token for opening the sync PR
+        if: ${{ vars.RELEASE_APP_CLIENT_ID != '' }}
+        continue-on-error: true
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc  # v3.4.0 — SHA pin
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: write
+
+      - name: Warn when the release App is configured but gave no token
+        env:
+          APP_CONFIGURED: ${{ vars.RELEASE_APP_CLIENT_ID != '' }}
+          APP_TOKEN_MINTED: ${{ steps.app-token.outcome == 'success' && steps.app-token.outputs.token != '' }}
+        run: |
+          if [ "$APP_CONFIGURED" = true ] && [ "$APP_TOKEN_MINTED" != true ]; then
+            echo "::warning::RELEASE_APP_TOKEN_UNAVAILABLE: RELEASE_APP_CLIENT_ID is set but the step before this one minted no release App token. This job goes on with GITHUB_TOKEN; if it then pushes to or opens a pull request, that pull request's CI will wait for \"Approve workflows to run\". Next: check that the App is installed on this repository with Contents and Pull requests write access and that the secret RELEASE_APP_PRIVATE_KEY holds one of its private keys"
+          fi
+
       - name: Open the main to develop sync PR
         id: open
+        env:
+          # Empty unless the release App token was minted.
+          SYNC_PR_TOKEN: ${{ steps.app-token.outcome == 'success' && steps.app-token.outputs.token || '' }}
         run: |
           AHEAD=$(gh api "repos/{owner}/{repo}/compare/develop...main" --jq '.ahead_by')
           if [ "$AHEAD" = 0 ]; then
@@ -675,10 +794,23 @@ jobs:
           fi
           MAIN=$(gh api "repos/{owner}/{repo}/git/ref/heads/main" --jq '.object.sha')
           if [ -z "$NUMBER" ]; then
-            URL=$(gh pr create --head main --base develop \
+            # Only this call runs as the App: every other call of this job,
+            # the merge included, stays on GITHUB_TOKEN, so that the merge
+            # starts no workflow run on develop.
+            if URL=$(GH_TOKEN="${SYNC_PR_TOKEN:-$GH_TOKEN}" gh pr create --head main --base develop \
               --title "Sync main into develop after v$VERSION" \
-              --body "Brings the v$VERSION release commits from main back into develop. Opened and merged with a merge commit by the release workflow; never squash it.")
-            NUMBER=${URL##*/}
+              --body "Brings the v$VERSION release commits from main back into develop. Opened and merged with a merge commit by the release workflow; never squash it."); then
+              NUMBER=${URL##*/}
+            else
+              # The command's exit status is not the outcome: look for the pull request again.
+              NUMBER=$(gh pr list --head main --base develop --state open --json number,isCrossRepository \
+                --jq '[.[] | select(.isCrossRepository == false)] | first // empty | .number' 2>/dev/null) || NUMBER=""
+              if [ -z "$NUMBER" ]; then
+                echo "::error::RELEASE_SYNC_PR_NOT_OPENED: opening the main to develop sync pull request failed and no open one was found afterwards; v$VERSION is released and advertised, only the sync is missing. Next: read the error above. If the credential was refused, check the release App's Pull requests permission or delete the variable RELEASE_APP_CLIENT_ID. Then re-run this workflow's failed jobs; the job reuses a sync pull request that is already open" >&2
+                exit 1
+              fi
+              echo "gh pr create reported a failure, but sync PR #$NUMBER is open — using it"
+            fi
           fi
           URL=$(gh pr view "$NUMBER" --json url --jq '.url')
           SYNC_HEAD=$(gh pr view "$NUMBER" --json headRefOid --jq '.headRefOid')
@@ -700,26 +832,51 @@ jobs:
             echo "::error::sync PR $URL conflicts with develop — resolve it with a merge commit (never squash or force), then re-run this workflow's failed jobs" >&2
             exit 1
           fi
+          PR_URL=$URL
+          KEEP="Keep the sync pull request open"
           WAIT_MINUTES=${READINESS_WAIT_MINUTES:-45}
           DEADLINE=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+          ANNOUNCED=false
           while :; do
             PENDING=""
+            ABSENT=true
             for NAME in "Build & Test" "Lint & format" "Require changeset"; do
-              RUN=$(gh api "repos/{owner}/{repo}/commits/$HEAD/check-runs?filter=latest&per_page=100" \
-                --jq "[.check_runs[] | select(.app.slug == \"github-actions\" and .name == \"$NAME\")] | first // empty | \"\\(.status) \\(.conclusion) \\(.html_url)\"")
+              # Exactly this context, reported by GitHub Actions, on exactly this
+              # head. A list that cannot be read is asked for again.
+              RUN=$(gh api "repos/{owner}/{repo}/commits/$HEAD/check-runs?check_name=$(jq -rn --arg name "$NAME" '$name | @uri')&filter=latest" \
+                --jq '[.check_runs[] | select(.app.slug == "github-actions")] | first // empty | "\(.status) \(.conclusion) \(.html_url)"' 2>/dev/null) || RUN="unreadable"
+              [ -z "$RUN" ] || ABSENT=false
               case "${RUN%% *}:$(cut -d' ' -f2 <<< "$RUN")" in
                 completed:success) ;;
                 completed:*)
-                  echo "::error::$NAME on sync PR $URL ($HEAD) concluded $(cut -d' ' -f2 <<< "$RUN") (${RUN##* }) — fix or rerun that CI run, then re-run this workflow's failed jobs; never squash the sync" >&2
+                  echo "::error::RELEASE_CI_FAILED: $NAME on sync PR $URL ($HEAD) concluded $(cut -d' ' -f2 <<< "$RUN") (${RUN##* }). Next: rerun that CI run, then re-run this workflow's failed jobs; never squash the sync. $KEEP" >&2
                   exit 1
                   ;;
                 *) PENDING="$PENDING; $NAME: ${RUN:-no check run}" ;;
               esac
             done
             [ -n "$PENDING" ] || break
+            # Wording only, never a verdict, and only while no required check
+            # exists on the head at all: GitHub lists a run it parked for
+            # approval as completed/action_required and creates no check run
+            # for it. The listing is by commit, not by pull request, and an
+            # unreadable listing is "not known to be parked".
+            PARKED=""
+            if [ "$ABSENT" = true ]; then
+              PARKED=$(gh api "repos/{owner}/{repo}/actions/workflows/ci.yml/runs?head_sha=$HEAD&event=pull_request&per_page=1" \
+                --jq '.workflow_runs[0] // empty | select(.conclusion == "action_required") | .html_url' 2>/dev/null) || PARKED=""
+            fi
             if [ "$(date +%s)" -ge "$DEADLINE" ]; then
-              echo "::error::sync PR $URL has no successful required checks on $HEAD yet (${PENDING#; }). Approve its queued CI run (\"Approve and run\"), rerun it, or close and reopen the PR if no run started, then re-run this workflow's failed jobs" >&2
+              if [ -n "$PARKED" ]; then
+                echo "::error::RELEASE_CI_APPROVAL_REQUIRED: sync PR $URL has no required check on $HEAD after polling for $WAIT_MINUTES minutes, and a CI run on that commit waits for approval ($PARKED). Next: open $PR_URL. If it offers \"Approve workflows to run\", select it, wait until its checks are green, then re-run this workflow's failed jobs. If it offers no approval, re-run this workflow's failed jobs once and, if nothing changes, report the pull request, $HEAD and this run. A fresh release needs no approval once the release App is configured and mints its token (PREREQUISITES in release.yml). $KEEP" >&2
+              else
+                echo "::error::RELEASE_CI_PENDING: sync PR $URL has no successful required checks on $HEAD yet (${PENDING#; }) after polling for $WAIT_MINUTES minutes. Next: open $PR_URL. If it offers \"Approve workflows to run\", select it; if its CI run is still running, wait for it; then re-run this workflow's failed jobs. If it shows no CI run at all, re-run this workflow's failed jobs once and, if nothing changes, report the pull request, $HEAD and this run. $KEEP" >&2
+              fi
               exit 1
+            fi
+            if [ -n "$PARKED" ] && [ "$ANNOUNCED" = false ]; then
+              ANNOUNCED=true
+              echo "::notice::RELEASE_CI_APPROVAL_REQUIRED: a CI run on $HEAD waits for approval ($PARKED) — open $PR_URL and, if it offers \"Approve workflows to run\", select it. This job polls for $WAIT_MINUTES minutes in total and goes on by itself if the required checks turn green in that time"
             fi
             sleep "${READINESS_POLL_SECONDS:-60}"
           done

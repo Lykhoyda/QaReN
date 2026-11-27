@@ -247,11 +247,21 @@ export type GhPullRequest = {
   autoMerge: string | null;
   mergeCommit?: string;
   mergeMethod?: string;
+  // GH_TOKEN of the `gh pr create` call that opened it (stub-created PRs only)
+  // and of the `gh pr merge` call that merged it.
+  createdWith?: string | null;
+  mergedWith?: string | null;
 };
 export type GhRelease = {
   assets: Record<string, { uploads: number }>;
   draft?: boolean;
   target?: string;
+  // A draft that becomes public after this many more by-tag lookups.
+  publishesAfterLookups?: number;
+  // While a draft, the by-tag lookup answers draft: true instead of 404.
+  listsDraft?: boolean;
+  // The next this-many by-tag lookups fail without an answer (not a 404).
+  unreadableLookups?: number;
 };
 export type GhCheckRun = {
   name: string;
@@ -260,10 +270,28 @@ export type GhCheckRun = {
   html_url: string;
   app: { slug: string };
 };
+export type GhWorkflowRun = {
+  event: string;
+  status: string;
+  conclusion: string | null;
+  html_url: string;
+};
+// What CI does when the stub opens a pull request: parked for approval when
+// `gh pr create` ran with `workflowToken`, a run that reports `checks` when it
+// ran with `appToken`, refused for any other credential.
+export type GhCiOnOpen = { workflowToken: string; appToken: string; checks: GhCheckRun[] };
 export type GhState = {
   releases: Record<string, GhRelease>;
   tags: Record<string, string>;
   checks: Record<string, GhCheckRun[]>;
+  // ci.yml runs per head commit, in creation order.
+  runs: Record<string, GhWorkflowRun[]>;
+  ciOnOpen?: GhCiOnOpen;
+  // Per head commit: the parked run is approved after `reads` more check-list
+  // reads and CI then reports `checks`.
+  approveAfterReads?: Record<string, { reads: number; checks: GhCheckRun[] }>;
+  // Per head commit: the next this-many check-list reads fail.
+  unreadableCheckLists?: Record<string, number>;
   prs: GhPullRequest[];
   nextPr: number;
 };
@@ -291,6 +319,7 @@ export function installGhStub(root: string, seed: GhSeed = {}): GhStub {
     releases: {},
     tags: seed.tags ?? {},
     checks: seed.checks ?? {},
+    runs: {},
     prs: seed.prs ?? [],
     nextPr: seed.nextPr ?? 1,
   };
