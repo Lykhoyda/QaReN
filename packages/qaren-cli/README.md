@@ -366,6 +366,7 @@ names and status kinds.
 
 The viewer exits 0 for finished or incomplete runs, independently of the test
 verdict, 1 for no such run, 2 for usage errors, and 3 for unavailable telemetry.
+When it cannot write or flush its output, it stops with one line on stderr and exits 0.
 Running `qaren watch` without an id or `--latest` is a usage error in W1.
 Interactive controls, lanes and timed replay remain later slices.
 
