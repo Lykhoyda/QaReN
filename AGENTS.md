@@ -177,8 +177,6 @@ node --test scripts/test/check-document-ownership.test.ts scripts/test/assert-qa
 corepack yarn build:docs
 ```
 
-A new test owns its temp folder. In `packages/qaren-cli` create it with `crate::test_tmp::TestDir::new` (`src`) or `common::temp_dir` (`tests`) and keep the returned owner bound until the test ends; in `packages/qaren-core` a test file that writes under `os.tmpdir()` imports `test/helpers/private-tmp.ts` first. `scripts/test-tmp-guard.mts` runs a command in an empty temp folder and fails a passing run that leaves an entry there (`TEST_TMP_LEFTOVER`; two tool caches are exempt); the core test scripts and CI's `cargo test` step run through it.
-
 Jev unit tests are hermetic. `corepack yarn jev:evals` requires `TYPESAFE_API_KEY` and makes live calls; run it before changing the pinned model. The device-bound `gate:qaren-check` follows the [plan readiness contract](packages/qaren-cli/README.md#check-a-plan) and uninstalls the selected test app through `qaren check --fresh-install` under the CLI's device lease; coordinate external device ownership before running it. It accepts `--plan-file` for the phrase fixture under `packages/qaren-core/test/fixtures/plans/`.
 
 For a shutdown iOS target, explicitly pass `check --boot-device --device <UUID>`; the existing lease and durable record precede strict admission, boot and exact-target readiness readback. Default selection remains booted-only, and cleanup keeps the borrowed simulator. The gate forwards this opt-in with `QAREN_BOOT_DEVICE=1` alongside `QAREN_DEVICE_UDID`.
