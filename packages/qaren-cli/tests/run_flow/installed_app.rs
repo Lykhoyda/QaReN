@@ -213,6 +213,10 @@ fn installed_app_receipt_keeps_start_refusal_guidance_with_private_output_withhe
         let bundle = installed_bundle(&repo, Some("release javascript"));
         let mut mock = MockRunner::new();
         script_installed_preflight(&mut mock, &repo);
+        // AI-469: the check before dependencies answers clear here, so the refusal below is the walk's own.
+        if code == "BUSY_FOREIGN_FLOW" {
+            script_driver_check(&mut mock, "ios", driver_check_answer("ios", "clear", None));
+        }
         script_installed_launch(&mut mock, &bundle);
         let result = serde_json::json!({
             "verdict": "REFUSED",
@@ -240,6 +244,9 @@ fn installed_app_receipt_keeps_start_refusal_guidance_with_private_output_withhe
         let receipt = run(&mut mock, &installed_request(&repo, &app));
 
         assert_eq!(receipt.result, ReceiptResult::Refused, "{code}");
+        if code == "BUSY_FOREIGN_FLOW" {
+            assert_eq!(receipt.outcomes["driver_preflight"], "clear");
+        }
         if driver {
             assert!(receipt.cleanup.contains_key("runner_driver"), "{receipt:?}");
         }

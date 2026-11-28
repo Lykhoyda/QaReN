@@ -3196,7 +3196,7 @@ unavailable reason; iOS QA never falls back to unrestricted simulator capture.
 
 ```text
 plan preflight -> device selection -> lease + durable run record
-               -> app preparation -> screen proof -> walk -> teardown
+               -> driver check -> app preparation -> screen proof -> walk -> teardown
 ```
 
 ### Fresh install
@@ -3220,6 +3220,94 @@ the same code when no further scan fits.
 Both refusals occur before uninstall. This flow never boots, wipes or restarts
 the device. For refusal diagnostics and recovery on either platform, and iOS
 admission rules, see [iOS admission and cleanup](#ios-admission-and-cleanup).
+
+### Driver check before dependencies
+
+Right after it takes the device lease, `qaren check` and `qaren pr` scan the
+selected device for another UI automation driver, before dependencies, the
+native build, Metro and the launch. A run with `--fresh-install`,
+`--boot-device`, `--restart-device` or `--shutdown-device-on-exit` does not
+make this check: it makes its own [strict admission](#ios-admission-and-cleanup)
+before dependencies, with that admission's rules.
+
+This check refuses only on proof. Text in a process table is never enough:
+
+- **iOS.** The scan reads the host process table and asks the kernel for the
+  identity of every automation candidate. A driver is proven when a UI-test
+  runner's kernel executable lies inside the selected simulator's container, or
+  when a host tool's kernel executable and exact arguments target that
+  simulator: `xcodebuild` whose first argument is `test` or
+  `test-without-building` (an `xcodebuild` the process table cannot name
+  plainly, such as one under a path with a space, must also have nothing but
+  `-destination id=<simulator>` pairs after its action), or a `maestro` command
+  or its Java process with a `--device` argument. QaReN's own runner app is not
+  a refusal of this check, and neither is the host `xcodebuild` that serves it
+  (QaReN's runner scheme and test, both as exact arguments). A process the scan
+  cannot judge does not end it: a later proven driver is still found, and only
+  when none is proven does the check end `unproven`.
+- **Android.** The scan reads `adb -s <serial> shell ps -A` through the
+  borrowed server. The output must be a complete process table (a header from
+  `USER` to `NAME`, at least one process and a final newline). A driver is proven when a process name is exactly
+  `uiautomator`, `io.appium.uiautomator2.server`, `dev.mobile.maestro`, or one
+  of the latter two with `.test` appended.
+
+`outcomes.driver_preflight` says what the check decided, and
+`outcomes.driver_preflight_detail` holds `scans`, `elapsed_ms` and
+`last_answer` (the last scan's answer as a fixed word):
+
+| Result | Meaning |
+|---|---|
+| `clear` | a complete scan found no driver; the run continues |
+| `clear_after_recheck` | a driver was found, and a later complete scan found none; the run continues |
+| `build_only` | a complete scan found no driver, only an `xcodebuild` build whose arguments name this simulator; the run continues, and that build may still install or start an app while the walk runs |
+| `unproven` | the scan established nothing; the run continues |
+
+`unproven` covers a slow, failed or incomplete scan, an unreadable process
+identity, an `xcodebuild` test whose action is not its first argument, a driver
+session that names no device, an Android process name that only resembles a
+driver, and an answer from a runtime without this check. It never refuses, so
+this check never refuses because the machine is busy. The walk's own check
+before it opens its session is unchanged and still refuses `BUSY_FOREIGN_FLOW`
+for a driver it recognises, including one that starts after this check. Neither
+check sees automation that runs inside an app's own process.
+
+When a scan finds a driver, the check scans again after 2 seconds, and reads at
+most three answers from that scan on; when less than 3 seconds are left, it
+refuses without another scan. No answer is read more than 12 seconds
+after the check began; stopping a scan that does not answer can take a few
+seconds more. A later complete scan without a driver lets the run continue. An
+answer that establishes nothing does not: the driver that was found has not
+been proven gone. The run then refuses `DEVICE_BUSY` with `failure.phase`
+`preflight` and `failure.subreason` `foreign-driver`. It has installed and
+built nothing, and its normal teardown releases what it holds: the device
+lease when the release succeeds, a USB phone's claim, and a `pr` run's
+worktree. QaReN does not stop
+the driver and does not restart the device. The refusal uses the
+wait-for-owner recovery of a busy strict admission (`action: wait-owner`,
+`next_rung: 0`).
+
+`failure.detail` says which driver was found, in words and as
+`driver=<class>`, with `driver_pid=<host process id>` on iOS, and what the
+scans saw: `scans`, `driver_scans` (how many of them found a driver),
+`last_answer` and `observed_ms`. It reports what was found at scan time; the
+process may have ended since. It does not name the session or program that
+started the driver. An Android driver is a process of the device and has no
+host process id.
+
+A class is one of these fixed words. For a foreign driver, no process name,
+path, argument, bundle identifier or package name is put into the receipt or
+`run.json`.
+
+| Class | Proven by |
+|---|---|
+| `maestro_ios_runner` | a kernel executable named `maestro-driver-iosUITests-Runner` inside the simulator's container |
+| `webdriveragent` | one whose name starts with `WebDriverAgent` |
+| `xctest_runner` | one named `XCTRunner` or ending in `UITests-Runner` |
+| `xcodebuild_test` | `xcodebuild` with a test action first and this simulator as its destination |
+| `maestro_cli` | a `maestro` command or its Java process with this simulator as its `--device` |
+| `xcodebuild_build` | `xcodebuild` without a test action whose arguments name this simulator; reported as `build_only`, never refused |
+| `uiautomator` | an Android process named `uiautomator` or `io.appium.uiautomator2.server` (also with `.test`) |
+| `maestro_android` | an Android process named `dev.mobile.maestro` (also with `.test`) |
 
 ### iOS simulator lifecycle
 

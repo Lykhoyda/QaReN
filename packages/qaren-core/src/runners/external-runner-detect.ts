@@ -93,6 +93,92 @@ export function isAndroidUsbSerial(value: string): boolean {
   );
 }
 
+// The tool classes the driver check may name. A class is a fixed word chosen by a fixed rule from
+// kernel identity (iOS) or an exact process name (Android): no process name, path, argument or
+// package identifier ever leaves the scanner with it.
+export type ForeignDriverClass =
+  | 'maestro_ios_runner'
+  | 'webdriveragent'
+  | 'xctest_runner'
+  | 'xcodebuild_test'
+  | 'maestro_cli'
+  | 'xcodebuild_build'
+  | 'maestro_android'
+  | 'uiautomator';
+
+// The process names of the Android UI drivers the check before dependencies knows exactly.
+const ANDROID_KNOWN_DRIVERS: ReadonlyMap<string, ForeignDriverClass> = new Map([
+  ['uiautomator', 'uiautomator'],
+  ['io.appium.uiautomator2.server', 'uiautomator'],
+  ['io.appium.uiautomator2.server.test', 'uiautomator'],
+  ['dev.mobile.maestro', 'maestro_android'],
+  ['dev.mobile.maestro.test', 'maestro_android'],
+]);
+const ANDROID_OWN_RUNNER = /^dev\.lykhoyda\.rndevagent\.androidrunner(?:\.test)?$/;
+
+export interface AndroidDriverCheckResult {
+  status: AndroidStrictRunnerStatus;
+  reason?: 'scan_timeout' | 'scan_incomplete' | 'driver_identity_unproven';
+  driver?: ForeignDriverClass;
+}
+
+/**
+ * The check before dependencies: busy only for a process whose name is exactly a known UI driver.
+ * A name that merely resembles one, or a table that cannot be read as one, proves nothing.
+ */
+export async function probeAndroidForeignDriver(
+  serial: string,
+  execFileImpl: typeof execFile = execFile,
+  scanTimeoutMs: number = ADMISSION_SCAN_TIMEOUT_MS.default,
+): Promise<AndroidDriverCheckResult> {
+  try {
+    const run =
+      execFileImpl === execFile
+        ? promisify(execFileImpl)
+        : (execFileImpl as unknown as (
+            b: string,
+            a: string[],
+            o: typeof ANDROID_PS_OPTIONS,
+          ) => Promise<{ stdout: string }>);
+    const { stdout } = await run('adb', ['-s', serial, 'shell', 'ps', '-A'], {
+      ...ANDROID_PS_OPTIONS,
+      timeout: scanTimeoutMs,
+    });
+    if (typeof stdout !== 'string') return { status: 'unknown' };
+    // A table cut short has no final newline; its last name may be cut too.
+    if (!stdout.endsWith('\n')) return { status: 'unknown', reason: 'scan_incomplete' };
+    const rows = stdout
+      .split('\n')
+      .map((row) => row.trim().split(/\s+/))
+      .filter((columns) => columns[0] !== '');
+    const [header, ...processes] = rows;
+    // A process table has its header and at least one process, and every row has the header's columns.
+    // NAME is the last column and may itself contain spaces, so it is everything from that column on.
+    if (
+      header === undefined ||
+      header.length < 2 ||
+      header[0] !== 'USER' ||
+      header.at(-1) !== 'NAME' ||
+      processes.length === 0 ||
+      processes.some((columns) => columns.length < header.length)
+    )
+      return { status: 'unknown', reason: 'scan_incomplete' };
+    const names = processes.map((columns) => columns.slice(header.length - 1).join(' '));
+    for (const name of names) {
+      const driver = ANDROID_KNOWN_DRIVERS.get(name);
+      if (driver) return { status: 'busy', driver };
+    }
+    // A name the strict pattern would match, but that is not a known driver's exact name.
+    if (names.some((name) => !ANDROID_OWN_RUNNER.test(name) && ANDROID_STRICT_DRIVER.test(name)))
+      return { status: 'unknown', reason: 'driver_identity_unproven' };
+    return { status: 'clear' };
+  } catch (error) {
+    return scanTimedOut(error)
+      ? { status: 'unknown', reason: 'scan_timeout' }
+      : { status: 'unknown' };
+  }
+}
+
 /** Strict admission for a destructive reset: only a readable process table without a driver is clear. */
 export async function probeAndroidExternalRunnerAdmission(
   serial: string,
@@ -576,6 +662,53 @@ export interface IosAdmissionProbeEvidence {
   reason: IosAdmissionProbeReason;
   pid?: number;
   candidates?: number;
+  // Only from the check before dependencies: the class of the process `pid` names.
+  driver?: ForeignDriverClass;
+}
+
+// The scheme and test of QaReN's own iOS runner (qaren-ios-runner-client.ts).
+// QaReN's runner launcher passes these; renaming them changes which runners the driver check
+// recognises as QaReN's own.
+export const QAREN_IOS_RUNNER_SCHEME = 'QarenIosRunner';
+export const QAREN_IOS_RUNNER_ONLY_TESTING =
+  'QarenIosRunnerUITests/QarenIosRunnerTests/testCommand';
+
+// The class of a process that kernel identity places on the selected simulator, for the check
+// before dependencies. `own` is QaReN's runner app, which that check never refuses; undefined is a
+// process whose kernel executable or arguments do not prove a UI driver.
+function provenIosDriverClass(
+  value: unknown,
+  line: string,
+  scanStartedAt: number,
+): ForeignDriverClass | 'own' | undefined {
+  const executable = observedExecutable(value, line, scanStartedAt);
+  if (!executable) return undefined;
+  const name = executable.slice(executable.lastIndexOf('/') + 1);
+  if (SIMULATOR_CONTAINER.test(executable)) {
+    if (/^(?:QarenIosRunner|QaReN-Runner)/i.test(name)) return 'own';
+    if (/^maestro-driver-iosUITests-Runner$/i.test(name)) return 'maestro_ios_runner';
+    if (/^WebDriverAgent/i.test(name)) return 'webdriveragent';
+    if (/^(?:XCTRunner|.*UITests-Runner)$/i.test(name)) return 'xctest_runner';
+    return undefined;
+  }
+  const argv = (value as { argv?: unknown }).argv;
+  if (!Array.isArray(argv) || !argv.every((arg) => typeof arg === 'string')) return undefined;
+  // Only the action-first form proves a test session; a later `test` word may be an option's value.
+  if (name === 'xcodebuild') {
+    // The host of QaReN's own runner: its fixed scheme and its fixed test, both as exact arguments.
+    if (
+      argv.some((arg, i) => arg === '-scheme' && argv[i + 1] === QAREN_IOS_RUNNER_SCHEME) &&
+      argv.includes(`-only-testing:${QAREN_IOS_RUNNER_ONLY_TESTING}`)
+    )
+      return 'own';
+    return XCODE_TEST_ACTIONS.has(argv[1]) ? 'xcodebuild_test' : undefined;
+  }
+  if (
+    name === 'maestro' ||
+    (name === 'java' && argv.some((arg) => /^maestro\.cli\.[\w.$]+$/i.test(arg)))
+  )
+    return 'maestro_cli';
+  return undefined;
 }
 
 export interface IosAdmissionProbeResult {
@@ -588,6 +721,9 @@ export async function probeIosExternalRunnerAdmission(
   udid?: string,
   observeIdentity?: ProcessIdentityObserver,
   scanTimeoutMs: number = ADMISSION_SCAN_TIMEOUT_MS.default,
+  // The check before dependencies: a busy answer needs kernel identity, names a class, and a build
+  // that names the simulator is reported only when no driver and no unresolved process remains.
+  driverCheck = false,
 ): Promise<IosAdmissionProbeResult> {
   const unknown = (
     reason: IosAdmissionProbeReason,
@@ -601,9 +737,9 @@ export async function probeIosExternalRunnerAdmission(
       ...(candidates === undefined ? {} : { candidates }),
     },
   });
-  const busy = (pid: number): IosAdmissionProbeResult => ({
+  const busy = (pid: number, driver?: ForeignDriverClass): IosAdmissionProbeResult => ({
     status: 'busy',
-    evidence: { reason: 'driver_on_selected_device', pid },
+    evidence: { reason: 'driver_on_selected_device', pid, ...(driver ? { driver } : {}) },
   });
   const observationFailure = (value: unknown): IosAdmissionProbeReason | undefined => {
     const reason = (value as { observationFailure?: unknown } | null)?.observationFailure;
@@ -666,99 +802,139 @@ export async function probeIosExternalRunnerAdmission(
       return unknown('candidate_budget_exceeded', undefined, candidates);
     if (performance.now() >= deadline) return unknown('deadline_exceeded');
     const target = new RegExp(`(?:^|[^a-z0-9-])${udid}(?=$|[^a-z0-9-])`, 'i');
-    const selectedDriver = drivers.find((line) => target.test(line));
+    // Process-table text is enough to refuse a destructive step; the check before dependencies
+    // reads kernel identity for every driver row instead.
+    const selectedDriver = driverCheck ? undefined : drivers.find((line) => target.test(line));
     if (selectedDriver) return busy(Number(/^\s*(\d+)/.exec(selectedDriver)![1]));
     if (drivers.length > 0 && !observeIdentity)
       return unknown('observer_unavailable', undefined, drivers.length);
+    // In the driver check one process it cannot judge does not end the scan: a later one may still be a
+    // proven driver. The first such answer is kept and given at the end unless a driver is proven.
+    // Strict admission stops at the first one, as before.
+    let firstUnproven: IosAdmissionProbeResult | undefined;
+    const defer = (verdict: IosAdmissionProbeResult): boolean => {
+      if (
+        !driverCheck ||
+        verdict.status !== 'unknown' ||
+        verdict.evidence?.reason === 'deadline_exceeded'
+      )
+        return false;
+      firstUnproven ??= verdict;
+      return true;
+    };
     for (const line of drivers) {
-      const remaining = Math.floor(deadline - performance.now());
-      if (remaining <= 0) return unknown('deadline_exceeded');
-      const pid = Number(/^\s*(\d+)/.exec(line)![1]);
-      const observation = await observe(pid, Math.min(1_000, remaining), true);
-      if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
-      const failed = observationFailure(observation);
-      if (failed) return unknown(failed, pid);
-      if (identityProvesMcpControl(observation, line, scanStartedAt)) continue;
-      const devices = observedDriverDevices(observation, line, scanStartedAt);
-      if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
-      if (!devices) return unknown('driver_identity_unproven', pid);
-      if (devices.some((device) => device.toLowerCase() === udid.toLowerCase())) return busy(pid);
+      const verdict = await (async (): Promise<IosAdmissionProbeResult | undefined> => {
+        const remaining = Math.floor(deadline - performance.now());
+        if (remaining <= 0) return unknown('deadline_exceeded');
+        const pid = Number(/^\s*(\d+)/.exec(line)![1]);
+        const observation = await observe(pid, Math.min(1_000, remaining), true);
+        if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
+        const failed = observationFailure(observation);
+        if (failed) return unknown(failed, pid);
+        if (identityProvesMcpControl(observation, line, scanStartedAt)) return undefined;
+        const devices = observedDriverDevices(observation, line, scanStartedAt);
+        if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
+        if (!devices) return unknown('driver_identity_unproven', pid);
+        if (devices.some((device) => device.toLowerCase() === udid.toLowerCase())) {
+          if (!driverCheck) return busy(pid);
+          const proven = provenIosDriverClass(observation, line, scanStartedAt);
+          if (proven === 'own') return undefined;
+          if (!proven) return unknown('driver_identity_unproven', pid);
+          return busy(pid, proven);
+        }
+        return undefined;
+      })();
+      if (verdict === undefined || defer(verdict)) continue;
+      return verdict;
     }
     if (performance.now() >= deadline) return unknown('deadline_exceeded');
-    if (!unresolved.length) return { status: 'clear' };
-    if (!observeIdentity) return unknown('observer_unavailable', undefined, unresolved.length);
+    if (!unresolved.length) return firstUnproven ?? { status: 'clear' };
+    let build: number | undefined;
+    if (!observeIdentity)
+      return firstUnproven ?? unknown('observer_unavailable', undefined, unresolved.length);
     for (const line of unresolved) {
-      const candidateStartedAt = performance.now();
-      const candidateDeadline = Math.min(deadline, candidateStartedAt + 1_000);
-      const remaining = Math.floor(deadline - candidateStartedAt);
-      if (remaining <= 0) return unknown('deadline_exceeded');
-      const pid = Number(/^\s*(\d+)/.exec(line)![1]);
-      const controller = isUnscopedMcpControl(line);
-      let observation = await observe(pid, Math.min(1_000, remaining), controller || undefined);
-      if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
-      let failed = observationFailure(observation);
-      if (failed) return unknown(failed, pid);
-      const executable = observedExecutable(observation, line, scanStartedAt);
-      // Only a kernel-proven JVM needs exact argv; a long prompt naming the entrypoint would exceed its cap.
-      if (
-        !controller &&
-        MAESTRO_JAVA_ENTRYPOINT_RE.test(line) &&
-        executable?.slice(executable.lastIndexOf('/') + 1) === 'java'
-      ) {
-        const argvRemaining = Math.floor(candidateDeadline - performance.now());
-        if (argvRemaining <= 0) return unknown('observer_timeout', pid);
-        observation = await observe(pid, argvRemaining, true);
+      const verdict = await (async (): Promise<IosAdmissionProbeResult | undefined> => {
+        const candidateStartedAt = performance.now();
+        const candidateDeadline = Math.min(deadline, candidateStartedAt + 1_000);
+        const remaining = Math.floor(deadline - candidateStartedAt);
+        if (remaining <= 0) return unknown('deadline_exceeded');
+        const pid = Number(/^\s*(\d+)/.exec(line)![1]);
+        const controller = isUnscopedMcpControl(line);
+        let observation = await observe(pid, Math.min(1_000, remaining), controller || undefined);
         if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
-        failed = observationFailure(observation);
+        let failed = observationFailure(observation);
         if (failed) return unknown(failed, pid);
-        if (performance.now() >= candidateDeadline) return unknown('observer_timeout', pid);
-        if (observedExecutable(observation, line, scanStartedAt) !== executable)
-          return unknown('executable_identity_unproven', pid);
-      }
-      if (executable?.slice(executable.lastIndexOf('/') + 1) === 'xcodebuild') {
-        if (SIMULATOR_CONTAINER.test(executable))
-          return unknown('executable_identity_unproven', pid);
-        const argvRemaining = Math.floor(candidateDeadline - performance.now());
-        if (argvRemaining <= 0) return unknown('observer_timeout', pid);
-        const exact = await observe(pid, argvRemaining, true);
-        if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
-        const exactFailure = observationFailure(exact);
-        if (exactFailure) return unknown(exactFailure, pid);
-        if (performance.now() >= candidateDeadline) return unknown('observer_timeout', pid);
-        if (observedExecutable(exact, line, scanStartedAt) !== executable)
-          return unknown('executable_identity_unproven', pid);
-        const birth = (observation as { birth: Record<string, unknown> }).birth;
-        const exactBirth = (exact as { birth: Record<string, unknown> }).birth;
-        const argv = attestedXcodeArgv(exact, line);
-        // Without a test action xcodebuild cannot drive a simulator; argv[0] may be an alias.
-        const buildOnly = argv?.every((arg) => !XCODE_TEST_ACTIONS.has(arg));
+        const executable = observedExecutable(observation, line, scanStartedAt);
+        // Only a kernel-proven JVM needs exact argv; a long prompt naming the entrypoint would exceed its cap.
         if (
-          birth.seconds !== exactBirth.seconds ||
-          birth.micros !== exactBirth.micros ||
-          !argv ||
-          (!buildOnly && !isDirectXcodeTest(argv, executable))
+          !controller &&
+          MAESTRO_JAVA_ENTRYPOINT_RE.test(line) &&
+          executable?.slice(executable.lastIndexOf('/') + 1) === 'java'
+        ) {
+          const argvRemaining = Math.floor(candidateDeadline - performance.now());
+          if (argvRemaining <= 0) return unknown('observer_timeout', pid);
+          observation = await observe(pid, argvRemaining, true);
+          if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
+          failed = observationFailure(observation);
+          if (failed) return unknown(failed, pid);
+          if (performance.now() >= candidateDeadline) return unknown('observer_timeout', pid);
+          if (observedExecutable(observation, line, scanStartedAt) !== executable)
+            return unknown('executable_identity_unproven', pid);
+        }
+        if (executable?.slice(executable.lastIndexOf('/') + 1) === 'xcodebuild') {
+          if (SIMULATOR_CONTAINER.test(executable))
+            return unknown('executable_identity_unproven', pid);
+          const argvRemaining = Math.floor(candidateDeadline - performance.now());
+          if (argvRemaining <= 0) return unknown('observer_timeout', pid);
+          const exact = await observe(pid, argvRemaining, true);
+          if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
+          const exactFailure = observationFailure(exact);
+          if (exactFailure) return unknown(exactFailure, pid);
+          if (performance.now() >= candidateDeadline) return unknown('observer_timeout', pid);
+          if (observedExecutable(exact, line, scanStartedAt) !== executable)
+            return unknown('executable_identity_unproven', pid);
+          const birth = (observation as { birth: Record<string, unknown> }).birth;
+          const exactBirth = (exact as { birth: Record<string, unknown> }).birth;
+          const argv = attestedXcodeArgv(exact, line);
+          // Without a test action xcodebuild cannot drive a simulator; argv[0] may be an alias.
+          const buildOnly = argv?.every((arg) => !XCODE_TEST_ACTIONS.has(arg));
+          if (
+            birth.seconds !== exactBirth.seconds ||
+            birth.micros !== exactBirth.micros ||
+            !argv ||
+            (!buildOnly && !isDirectXcodeTest(argv, executable))
+          )
+            return unknown('executable_identity_unproven', pid);
+          if (buildOnly) {
+            if (target.test(line)) {
+              if (!driverCheck) return busy(pid);
+              build ??= pid;
+            }
+            return undefined;
+          }
+          const devices = observedDriverDevices(exact, line, scanStartedAt);
+          if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
+          if (!devices) return unknown('executable_identity_unproven', pid);
+          if (devices.some((device) => device.toLowerCase() === udid.toLowerCase()))
+            return busy(pid, driverCheck ? 'xcodebuild_test' : undefined);
+          return undefined;
+        }
+        if (
+          !(
+            identityProvesMcpControl(observation, line, scanStartedAt) ||
+            (!controller && identityRulesOutDriver(observation, line, scanStartedAt))
+          )
         )
           return unknown('executable_identity_unproven', pid);
-        if (buildOnly) {
-          if (target.test(line)) return busy(pid);
-          continue;
-        }
-        const devices = observedDriverDevices(exact, line, scanStartedAt);
         if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
-        if (!devices) return unknown('executable_identity_unproven', pid);
-        if (devices.some((device) => device.toLowerCase() === udid.toLowerCase())) return busy(pid);
-        continue;
-      }
-      if (
-        !(
-          identityProvesMcpControl(observation, line, scanStartedAt) ||
-          (!controller && identityRulesOutDriver(observation, line, scanStartedAt))
-        )
-      )
-        return unknown('executable_identity_unproven', pid);
-      if (performance.now() >= deadline) return unknown('deadline_exceeded', pid);
+        return undefined;
+      })();
+      if (verdict === undefined || defer(verdict)) continue;
+      return verdict;
     }
-    return { status: 'clear' };
+    // Every candidate was resolved and no driver was found: a build is all that names the simulator.
+    if (firstUnproven) return firstUnproven;
+    return build === undefined ? { status: 'clear' } : busy(build, 'xcodebuild_build');
   } catch (error) {
     const failure = error as NodeJS.ErrnoException & { killed?: boolean };
     if (failure?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER')
