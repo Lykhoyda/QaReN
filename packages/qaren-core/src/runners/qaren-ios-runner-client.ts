@@ -2157,7 +2157,10 @@ async function postCommand(
   return (await postCommandWithRecovery(body, qaContext)).resp;
 }
 
-async function reapAndRelaunchFastRunner(state: FastRunnerState): Promise<RunnerPostMortem> {
+async function reapAndRelaunchFastRunner(
+  state: Pick<FastRunnerState, 'deviceId' | 'bundleId'>,
+  reapDisposition: 'reaped' | 'already-absent' = 'reaped',
+): Promise<RunnerPostMortem> {
   poisonReap ??= (async () => {
     relaunchCapturePending = true;
     await reapStaleFastRunner();
@@ -2173,7 +2176,7 @@ async function reapAndRelaunchFastRunner(state: FastRunnerState): Promise<Runner
       outcome: 'ok',
       at: timingStarted,
       relaunch: 'attempted',
-      reapDisposition: 'reaped',
+      reapDisposition,
     });
     try {
       await ensureFastRunner(state.deviceId, state.bundleId, {
@@ -2211,12 +2214,62 @@ async function reapAndRelaunchFastRunner(state: FastRunnerState): Promise<Runner
         at: timing?.now() ?? 0,
         ms: readerRelaunch.ms,
         relaunch: readerRelaunch.outcome,
-        reapDisposition: 'reaped',
+        reapDisposition,
       });
     }
     return postMortem;
   })();
   return poisonReap;
+}
+
+// A QA step that sent nothing found the runner not answering. Probes it; with `relaunch`, a runner that
+// stopped (never one refused for its identity, version or credential) gets the one bounded attach-only
+// start that a timeout containment uses, under the same single-flight guard.
+export async function recoverDownFastRunner(
+  deviceId: string,
+  bundleId: string,
+  relaunch: boolean,
+): Promise<'alive' | 'relaunched' | 'down'> {
+  // A timeout containment owns the runner until its own reap and relaunch have finished: wait for
+  // that one bounded relaunch (READY window), then judge the runner it left.
+  const owned = poisonReap;
+  const stateBefore = runnerState;
+  if (owned) {
+    try {
+      await owned;
+    } catch (error) {
+      if (isAbort(error)) throw error;
+    }
+  }
+  // Its reap is done; its own bookkeeping may still hold the poison for a tick. A new reap is not ours.
+  if (owned ? poisonReap !== null && poisonReap !== owned : runnerPoisoned) return 'down';
+  const first = await probeFastRunnerLivenessDetailed();
+  // A runner that answers is not down. One that answers for another identity, version or
+  // credential is not QaReN's to restart (a relaunch cannot fix it and could end another driver's
+  // runner): the step's own failure stands, as it does for a live one.
+  // A containment that replaced the runner while this step waited made the restart for it.
+  if (first.liveness === 'alive')
+    return owned && runnerState !== stateBefore && readerRelaunch?.outcome === 'ready'
+      ? 'relaunched'
+      : 'alive';
+  if (
+    first.liveness === 'stale' &&
+    (first.staleReason !== 'health' || first.healthDetail === 'http-4xx')
+  )
+    return 'alive';
+  if (!relaunch || runnerPoisoned || poisonReap) return 'down';
+  try {
+    await reapAndRelaunchFastRunner(
+      { deviceId, bundleId },
+      runnerState ? 'reaped' : 'already-absent',
+    );
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    return 'down';
+  } finally {
+    if (poisonHolders === 0) poisonReap = null;
+  }
+  return readerRelaunch?.outcome === 'ready' ? 'relaunched' : 'down';
 }
 
 async function containTypeTimeout(

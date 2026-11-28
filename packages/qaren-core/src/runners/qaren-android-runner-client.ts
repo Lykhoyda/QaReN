@@ -855,6 +855,8 @@ export async function waitForAndroidRunnerHealth(
 
 export interface AndroidHealthInfo {
   reachable: boolean;
+  // The HTTP status of a reply that was not a success; absent when nothing answered.
+  status?: number;
   ok?: boolean;
   protocolVersion?: number;
   runnerVersion?: string;
@@ -909,7 +911,7 @@ export async function probeAndroidRunnerHealthInfo(
       signal: controller.signal,
       headers: capability ? { authorization: `Bearer ${capability}` } : {},
     });
-    if (!resp.ok) return { reachable: false };
+    if (!resp.ok) return { reachable: false, status: resp.status };
     const body = (await resp.json()) as {
       ok?: boolean;
       protocolVersion?: number;
@@ -1932,6 +1934,40 @@ async function startAndroidRunnerAttempt(
       reject(error);
     });
   });
+}
+
+// A QA step that sent nothing found the runner not answering. Probes it; with `relaunch`, the start
+// path reaps what is left and starts it once. Mid-run it never rebuilds the runner's artifact.
+export async function recoverDownAndroidRunner(
+  serial: string,
+  bundleId: string,
+  relaunch: boolean,
+  start: (serial: string, bundleId: string) => Promise<AndroidRunnerState> = startAndroidRunner,
+  reap: (serial: string) => Promise<void> = reapActiveAndroidRunner,
+): Promise<'alive' | 'relaunched' | 'down'> {
+  const before = runnerState;
+  const info = before ? await probeAndroidRunnerHealthInfo(before.hostPort) : null;
+  if (before && runnerState === before && info?.reachable && info.ok) return 'alive';
+  // Something answered and refused this run's credential: it is not QaReN's runner to restart.
+  if (before && runnerState === before && (info?.status === 401 || info?.status === 403))
+    return 'alive';
+  if (!relaunch) return 'down';
+  try {
+    // The host's adb child can be gone while the device still holds the instrumentation and its one
+    // UiAutomation slot; the start path reaps only a runner it still knows, so this one is reaped first.
+    if (!runnerState)
+      await reap(serial).catch((error: unknown) => {
+        if (isAbort(error)) throw error;
+      });
+    const state = await start(serial, bundleId);
+    return state === before ? 'alive' : 'relaunched';
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    return 'down';
+  } finally {
+    // No result of a QA walk carries the start's note; a stale one must not reach a later open.
+    consumePendingAndroidUpgradeNote();
+  }
 }
 
 export async function stopAndroidRunner(deviceId?: string, signal?: AbortSignal): Promise<void> {

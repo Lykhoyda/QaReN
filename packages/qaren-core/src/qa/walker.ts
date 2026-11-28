@@ -227,6 +227,7 @@ import {
   projectPlanLine,
 } from './privacy.js';
 import { renderReason, segments, type Reason } from './untrusted.js';
+import type { RunnerRecovery } from './runner-recovery.js';
 import { NativeSnapshotIncomplete, PrivateInputCaptureError } from './private-input.js';
 import {
   AppProcessGoneError,
@@ -405,6 +406,8 @@ export interface WalkerDeps {
   dialog(action: 'accept' | 'dismiss', context: QaDispatchContext): Promise<ActResult>;
   screenshot(name: string): Promise<string | undefined>;
   comparisonScreenshot?(): Promise<Uint8Array | undefined>;
+  // Asks QaReN's own device runner when a step failed before sending anything; it may restart it once.
+  recoverRunner?(): Promise<RunnerRecovery>;
   now(): number;
   sleep(ms: number): Promise<void>;
   row(row: LedgerRow): void;
@@ -680,6 +683,8 @@ function markContinuity(
 
 export interface WalkSequence {
   observation: number;
+  // Authorized dispatches across this walk and every nested recovery or login walk that shares it.
+  authorizations?: number;
   captureUnknown?: boolean;
   devOverlayAccepted?: true;
   latch?: {
@@ -908,6 +913,9 @@ async function walkBlockScoped(
   let pressDispatch: PressRecord | undefined;
   let line = 0;
   let mutationStarted = false;
+  // The sequence's dispatch count when the current item started: a nested recovery walk that sent
+  // anything has moved it on, even before this item's own `mutationStarted` is set.
+  let itemAuthorizations = 0;
   // The Fill ladder rung of the current item's last fill dispatch, and when the item began.
   let fillMethod: FillMethod | undefined;
   let fillMismatch: EntryMismatch | undefined;
@@ -1605,6 +1613,7 @@ async function walkBlockScoped(
     const context = new (class extends QaDispatchContext {
       override authorize(): void {
         super.authorize();
+        sequence.authorizations = (sequence.authorizations ?? 0) + 1;
         mutationStarted = true;
         if (owner === 'step') stepDispatched = itemDispatched = true;
         diagnostic(
@@ -4290,6 +4299,7 @@ async function walkBlockScoped(
     pressMayHaveActed = false;
     pressReadbackStarted = false;
     mutationStarted = false;
+    itemAuthorizations = sequence.authorizations ?? 0;
     stepDispatched = false;
     itemDispatched = false;
     fillMethod = undefined;
@@ -4450,19 +4460,26 @@ async function walkBlockScoped(
           const waitStarted = itemStartedAt;
           const deadline = itemDeadline!;
           const held = cached?.item === item ? cached : undefined;
+          // Only a walk that can ask its runner measures the read it may refund.
+          const readFrom = deps.recoverRunner ? deps.now() : 0;
           let observation: Observation;
           try {
             observation =
               held?.observation ?? (await captureOnce(item, false, false, 'resolve', deadline));
           } catch (error) {
             if (!(error instanceof CaptureDeadline)) throw error;
-            return failed(
-              item,
-              1,
-              `TARGET_WAIT_TIMEOUT: target was not observed within ${budget}ms; no capture completed before the wait deadline; cause=capture-deadline; elapsed_ms=${Math.round(deps.now() - waitStarted)}; next_action=inspect_capture_health`,
-              { elements: [], visibleText: [], front: 'app' },
-              undefined,
-            );
+            const timedOut = (): WalkOutcome =>
+              failed(
+                item,
+                1,
+                `TARGET_WAIT_TIMEOUT: target was not observed within ${budget}ms; no capture completed before the wait deadline; cause=capture-deadline; elapsed_ms=${Math.round(deps.now() - waitStarted)}; next_action=inspect_capture_health`,
+                { elements: [], visibleText: [], front: 'app' },
+                undefined,
+              );
+            // Nothing is emitted yet: QaReN's runner is asked first, and this result stands if it answers.
+            if (deps.recoverRunner && opts.recover !== false && !deps.cancelled?.())
+              throw new RunnerQuestion(timedOut, Math.max(0, deps.now() - readFrom));
+            return timedOut();
           }
           cached = undefined;
           const probe = visibilityProbe(item, deadline);
@@ -6915,6 +6932,8 @@ async function walkBlockScoped(
             });
           } catch (pollError) {
             if (isAbort(pollError)) throw pollError;
+            // A poll that could not read keeps its allowance: a runner restart below resumes it.
+            launchWait = allowance;
             error = pollError;
           }
         }
@@ -6961,6 +6980,71 @@ async function walkBlockScoped(
             error = pauseError;
           }
         }
+        // QaReN's own runner may be what failed. A step that has sent nothing asks it before any
+        // verdict: a runner that came back starts the step again, one that stays down is the refusal.
+        if (
+          deps.recoverRunner &&
+          opts.recover !== false &&
+          !mutationStarted &&
+          (sequence.authorizations ?? 0) === itemAuthorizations &&
+          !pressTerminal &&
+          !postActionTried &&
+          !deps.cancelled?.()
+        ) {
+          const asked = deps.now();
+          const runner = await deps.recoverRunner();
+          if (runner === 'relaunched') {
+            // The restart is QaReN's own time, so the step's budgets resume where they stood.
+            const spent = deps.now() - asked + (error instanceof RunnerQuestion ? error.heldMs : 0);
+            budget.startedAt += spent;
+            if (budget.deadline !== undefined) budget.deadline += spent;
+            itemStartedAt = budget.startedAt;
+            itemDeadline = budget.deadline;
+            if (launchWait) launchWait.startedAt += spent;
+            emit({ ...base(item, currentAttempt), outcome: 'retry', reason: RUNNER_RELAUNCHED });
+            // Recovery returned without acting, so restore its state from before the probe.
+            if (priorRecovery) recovered.set(item, priorRecovery.state);
+            else recovered.delete(item);
+            // The next attempt is judged on reads of the restarted runner only, as a fresh pass is.
+            cached = undefined;
+            pixelBaselineTaken = false;
+            pixelBaseline = undefined;
+            enrichment = undefined;
+            pressVetoed = undefined;
+            if (interruptions.get(item.line)?.outcome !== 'dismissed')
+              interruptions.delete(item.line);
+            continue attempts;
+          }
+          if (runner === 'down') {
+            const code =
+              deps.platform === 'android' ? 'RN_ANDROID_RUNNER_DOWN' : 'RN_FAST_RUNNER_DOWN';
+            emit({
+              block: 'runner-down',
+              line: item.line,
+              text: RUNNER_DOWN,
+              attempt: currentAttempt,
+              kind: item.kind === 'check' ? 'check' : 'step',
+              resolvedBy,
+              t: deps.now(),
+              outcome: 'fail',
+              reason: code,
+            });
+            return {
+              block: { key: 'runner-down', outcome: 'fail', source: 'discovered' },
+              rows,
+              ...(privateFills.length ? { privateFills } : {}),
+              ...(recoveries ? { recoveries } : {}),
+              failure: { step: item.line, seen: RUNNER_DOWN },
+              refusal: { code, message: RUNNER_DOWN },
+            };
+          }
+          if (runner === 'app-changed') {
+            markContinuity(sequence, { signal: 'app-process-changed', line });
+            error = processChanged();
+          }
+        }
+        // The runner answered (or was not asked): the deferred result stands, emitted only now.
+        if (error instanceof RunnerQuestion) return error.answer();
         if (error instanceof RenderError)
           return failed(
             item,
@@ -7095,6 +7179,17 @@ async function walkBlockScoped(
   };
 }
 
+// A result decided before anything was sent, held back until QaReN's own runner has been asked.
+class RunnerQuestion extends Error {
+  constructor(
+    readonly answer: () => WalkOutcome,
+    readonly heldMs = 0,
+  ) {
+    super('the runner is asked before this result');
+    this.name = 'RunnerQuestion';
+  }
+}
+
 class RenderError extends Error {
   constructor() {
     super('the app is showing a React Native error screen');
@@ -7150,6 +7245,12 @@ function valueFree(row: Omit<LedgerRow, 'reason'>): LedgerRow {
     ...(reactConnections ? { reactConnections } : {}),
   };
 }
+
+// Fixed, value-free words for QaReN's own runner: nothing here comes from the app or the plan.
+const RUNNER_RELAUNCHED =
+  'QaReN restarted its own device runner, which had stopped answering before this step sent anything; the step starts again';
+const RUNNER_DOWN =
+  "QaReN's own device runner stopped answering before this step sent anything, and QaReN could not bring it back; nothing was sent to the app, and neither the app nor the plan is the cause";
 
 const processChanged = (): ResolutionError =>
   new ResolutionError({

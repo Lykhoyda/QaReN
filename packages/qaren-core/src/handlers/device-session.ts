@@ -218,6 +218,34 @@ export async function androidAppProcess(
   }
 }
 
+// The app's one process id, undefined when two empty reads a second apart show it is not running;
+// a failed read, or more than one id, rejects.
+export async function androidAppProcessId(
+  appId: string,
+  serial: string,
+  run: (args: string[]) => Promise<AndroidPidofRead> = adbPidof,
+  pause: (ms: number) => Promise<void> = sleep,
+): Promise<number | undefined> {
+  if (
+    typeof appId !== 'string' ||
+    !/^[A-Za-z0-9._]+$/.test(appId) ||
+    typeof serial !== 'string' ||
+    !serial
+  )
+    throw new Error('the app process read needs an exact app id and adb serial');
+  const args = [...resolveAndroidLifecycleTarget(serial), 'shell', 'pidof', appId];
+  for (let attempt = 1; ; attempt++) {
+    const read = await run(args);
+    const answer = androidPidofAnswer(read);
+    const pids = read.stdout.split(/\s+/).filter((token) => /^\d+$/.test(token));
+    if (answer === 'fault' || (answer === 'running' && pids.length !== 1))
+      throw new Error("the app's single process could not be read");
+    if (answer === 'running') return Number(pids[0]);
+    if (attempt === 2) return undefined;
+    await pause(1000);
+  }
+}
+
 export function buildAndroidAppLaunchArgs(deviceId: string, appId: string): string[] {
   // Keyless AVDs abort monkey with exit 251 when its default SYS_KEYS bucket is
   // non-empty. This invocation injects only the launcher event, so disabling

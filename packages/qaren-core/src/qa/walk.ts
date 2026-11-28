@@ -9,7 +9,10 @@ import type { PressEvidence } from './selection-press.js';
 import { devOverlayDeadline } from '../domain/dev-overlay.js';
 import { QaDispatchError } from '../domain/qa-dispatch.js';
 import { ownedLogin, parseInputPreflight } from './input-preflight.js';
-import { readAndroidLabelProvenance } from '../runners/qaren-android-runner-client.js';
+import {
+  readAndroidLabelProvenance,
+  recoverDownAndroidRunner,
+} from '../runners/qaren-android-runner-client.js';
 import { ObservedPrivacy } from './privacy.js';
 import { InputPrivacyRefusal, withInputs, currentInputs, type RunInputs } from './inputs.js';
 import {
@@ -50,6 +53,7 @@ import {
 import { captureQaScreenshot } from './screenshot.js';
 import {
   createDeviceSnapshotHandler,
+  androidAppProcessId,
   androidFirstScreen,
   iosAppProcessId,
   isAppRunning,
@@ -72,6 +76,7 @@ import {
   observeAppProcess,
   observeRunnerDrivers,
   observeRunnerRelaunches,
+  recoverDownFastRunner,
 } from '../runners/qaren-ios-runner-client.js';
 import type { ToolResult } from '../utils.js';
 import type { QaDispatchContext } from '../domain/qa-dispatch.js';
@@ -87,6 +92,7 @@ import {
   type NativeObservation,
 } from './capture.js';
 import { createQaReactCapture } from './react-capture.js';
+import { createRunnerRecovery } from './runner-recovery.js';
 import type { LedgerRow, StepStart } from './ledger.js';
 import { parsePlanWithJev, planTitle, readPreparedPlan } from './plan.js';
 import { createJev } from './jev.js';
@@ -1062,6 +1068,19 @@ export async function openSession(
     log(`login block ${request.loginBlock} is missing or unreadable; a login wall fails the step`);
 
   const captureReact = createQaReactCapture(cdp);
+  // QaReN's own runner, asked when a step failed before it sent anything.
+  const runnerRecovery = createRunnerRecovery({
+    appProcess: () =>
+      platform === 'ios'
+        ? appProcessId(appId, target.deviceId)
+        : androidAppProcessId(appId, target.deviceId),
+    runner: (relaunch) =>
+      platform === 'ios'
+        ? recoverDownFastRunner(target.deviceId, appId, relaunch)
+        : recoverDownAndroidRunner(target.deviceId, appId, relaunch),
+    relaunched: (fromPid, toPid) => admittedSnapshots.runnerRelaunched(fromPid, toPid),
+    note: log,
+  });
   const deps: WalkerDeps = {
     platform,
     note: log,
@@ -1160,6 +1179,7 @@ export async function openSession(
             : dismiss({ platform, qaContext, note: log }),
         false,
       ),
+    recoverRunner: () => stop.track(() => runnerRecovery.recover()),
     async comparisonScreenshot() {
       const withheld = () =>
         stop.stopping ||
