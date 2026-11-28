@@ -1,4 +1,4 @@
-use crate::exec::CmdSpec;
+use crate::exec::{CmdOutput, CmdSpec};
 use std::path::{Path, PathBuf};
 
 pub fn holder(run_id: &str) -> String {
@@ -862,6 +862,11 @@ pub fn reverse_listed(stdout: &str, port: u16) -> bool {
         .any(|line| line.split_whitespace().nth(1) == Some(device.as_str()))
 }
 
+// adb joins the arguments of `shell` with spaces and the device shell parses the line.
+fn device_shell_quote(arg: &str) -> String {
+    format!("'{}'", arg.replace('\'', "'\\''"))
+}
+
 // The intent carries the app id as its package constraint so the deep link can
 // only resolve into the app this run installed, never a chooser or another
 // scheme handler.
@@ -872,6 +877,7 @@ pub fn am_start_deeplink_spec(
     url: &str,
     app_id: &str,
 ) -> CmdSpec {
+    let quoted_url = device_shell_quote(url);
     adb_client(
         "adb-am-start",
         adb,
@@ -889,7 +895,7 @@ pub fn am_start_deeplink_spec(
             "EXDevMenuDisableAutoLaunch",
             "true",
             "-d",
-            url,
+            &quoted_url,
             app_id,
         ],
         60,
@@ -1353,4 +1359,428 @@ pub fn parse_started(stdout: &str, slot: u8) -> Option<StartedSlot> {
 // claimed_at/avd metadata, so match the first token only.
 pub fn lease_holder_token(lease: &str) -> &str {
     lease.split_whitespace().next().unwrap_or("")
+}
+
+const DEVMENU_PREFS_PATH: &str = "shared_prefs/expo.modules.devmenu.sharedpreferences.xml";
+const DEVMENU_PREFS_TEMP_PATH: &str =
+    "shared_prefs/expo.modules.devmenu.sharedpreferences.xml.qaren";
+const DEVMENU_PREFS_XML_HEADER: &str = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>";
+const DEVMENU_SHOW_FAB_FALSE_LINE: &str = "    <boolean name=\"showFab\" value=\"false\" />";
+
+pub fn devmenu_pidof_spec(adb: &Path, server_port: u16, serial: &str, app_id: &str) -> CmdSpec {
+    adb_client(
+        "adb-devmenu-pidof",
+        adb,
+        server_port,
+        &["-s", serial, "shell", "pidof", app_id],
+        10,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessRead {
+    Absent,
+    Running,
+    Unreadable,
+}
+
+pub fn devmenu_process_read(output: &CmdOutput) -> ProcessRead {
+    if !output.timed_out
+        && output.exit_code == Some(1)
+        && output.stdout.trim().is_empty()
+        && output.stderr.trim().is_empty()
+    {
+        return ProcessRead::Absent;
+    }
+    let valid_pid = |token: &str| {
+        !token.is_empty()
+            && token.bytes().all(|b| b.is_ascii_digit())
+            && token.parse::<u32>().is_ok()
+    };
+    let mut tokens = output.stdout.split_whitespace();
+    if output.ok() && tokens.next().is_some_and(valid_pid) && tokens.all(valid_pid) {
+        return ProcessRead::Running;
+    }
+    ProcessRead::Unreadable
+}
+
+pub fn devmenu_prefs_read_spec(
+    adb: &Path,
+    server_port: u16,
+    serial: &str,
+    app_id: &str,
+) -> CmdSpec {
+    let script = device_shell_quote(&format!(
+        "if [ -e {DEVMENU_PREFS_PATH}.bak ]; then exit 5; elif [ -f {DEVMENU_PREFS_PATH} ] && [ -r {DEVMENU_PREFS_PATH} ]; then cat {DEVMENU_PREFS_PATH}; elif [ -e {DEVMENU_PREFS_PATH} ]; then exit 4; else exit 3; fi"
+    ));
+    adb_client(
+        "adb-devmenu-prefs-read",
+        adb,
+        server_port,
+        &["-s", serial, "shell", "run-as", app_id, "sh", "-c", &script],
+        10,
+    )
+}
+
+pub fn devmenu_current_user_spec(adb: &Path, server_port: u16, serial: &str) -> CmdSpec {
+    adb_client(
+        "adb-devmenu-user",
+        adb,
+        server_port,
+        &["-s", serial, "shell", "am", "get-current-user"],
+        10,
+    )
+}
+
+pub fn devmenu_prefs_write_script(bytes: usize) -> String {
+    device_shell_quote(&format!(
+        "umask 077; rm -f {DEVMENU_PREFS_TEMP_PATH}; mkdir -p shared_prefs && cat > {DEVMENU_PREFS_TEMP_PATH} && [ \"$(wc -c < {DEVMENU_PREFS_TEMP_PATH})\" -eq {bytes} ] && mv -f {DEVMENU_PREFS_TEMP_PATH} {DEVMENU_PREFS_PATH}; r=$?; rm -f {DEVMENU_PREFS_TEMP_PATH}; exit $r"
+    ))
+}
+
+pub fn devmenu_prefs_write_spec(
+    adb: &Path,
+    server_port: u16,
+    serial: &str,
+    app_id: &str,
+    bytes: usize,
+) -> CmdSpec {
+    let script = devmenu_prefs_write_script(bytes);
+    adb_client(
+        "adb-devmenu-prefs-write",
+        adb,
+        server_port,
+        &["-s", serial, "shell", "run-as", app_id, "sh", "-c", &script],
+        10,
+    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DevMenuPrefs {
+    Hidden,
+    Write(String),
+    Unrecognised,
+}
+
+enum ParsedDevMenuPrefs<'a> {
+    SelfClosing,
+    Entries {
+        lines: Vec<&'a str>,
+        show_fab: Option<(usize, bool)>,
+    },
+}
+
+fn valid_signed_digits(raw: &str) -> bool {
+    let digits = raw.strip_prefix('-').unwrap_or(raw);
+    !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn valid_float_value(raw: &str) -> bool {
+    if matches!(raw, "NaN" | "Infinity" | "-Infinity") {
+        return true;
+    }
+    let rest = raw.strip_prefix('-').unwrap_or(raw);
+    let (mantissa, exp) = match rest.split_once(['e', 'E']) {
+        Some((m, e)) => (m, Some(e)),
+        None => (rest, None),
+    };
+    let valid_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let mantissa_ok = match mantissa.split_once('.') {
+        Some((int_part, frac_part)) => valid_digits(int_part) && valid_digits(frac_part),
+        None => valid_digits(mantissa),
+    };
+    let exp_ok = match exp {
+        Some(e) => valid_digits(e.strip_prefix(['+', '-']).unwrap_or(e)),
+        None => true,
+    };
+    mantissa_ok && exp_ok
+}
+
+fn parse_devmenu_prefs(document: &str) -> Option<ParsedDevMenuPrefs<'_>> {
+    if !document.is_ascii() {
+        return None;
+    }
+    let trimmed = document.strip_suffix('\n').unwrap_or(document);
+    let lines: Vec<&str> = trimmed
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+        .collect();
+    if lines.len() < 2 || lines[0] != DEVMENU_PREFS_XML_HEADER {
+        return None;
+    }
+    if lines.len() == 2 && lines[1] == "<map />" {
+        return Some(ParsedDevMenuPrefs::SelfClosing);
+    }
+    if lines.len() < 3 || lines[1] != "<map>" || *lines.last()? != "</map>" {
+        return None;
+    }
+    let entry_lines = &lines[2..lines.len() - 1];
+    let mut seen = std::collections::HashSet::with_capacity(entry_lines.len());
+    let mut show_fab = None;
+    for (index, &line) in entry_lines.iter().enumerate() {
+        let rest = line.strip_prefix("    <")?.strip_suffix(" />")?;
+        let (ty, rest) = rest.split_once(" name=\"")?;
+        let (name, rest) = rest.split_once("\" value=\"")?;
+        let value = rest.strip_suffix('"')?;
+        if !matches!(ty, "boolean" | "int" | "long" | "float") {
+            return None;
+        }
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
+        {
+            return None;
+        }
+        let value_ok = match ty {
+            "boolean" => matches!(value, "true" | "false"),
+            "int" => valid_signed_digits(value) && value.parse::<i32>().is_ok(),
+            "long" => valid_signed_digits(value) && value.parse::<i64>().is_ok(),
+            "float" => valid_float_value(value),
+            _ => false,
+        };
+        if !value_ok || !seen.insert(name) {
+            return None;
+        }
+        if name == "showFab" {
+            if ty != "boolean" {
+                return None;
+            }
+            show_fab = Some((index, value == "true"));
+        }
+    }
+    Some(ParsedDevMenuPrefs::Entries {
+        lines: entry_lines.to_vec(),
+        show_fab,
+    })
+}
+
+fn render_devmenu_prefs(entries: &[&str]) -> String {
+    let mut out = Vec::with_capacity(entries.len() + 3);
+    out.push(DEVMENU_PREFS_XML_HEADER);
+    out.push("<map>");
+    out.extend_from_slice(entries);
+    out.push("</map>");
+    let mut doc = out.join("\n");
+    doc.push('\n');
+    doc
+}
+
+pub fn devmenu_prefs_fab_hidden(document: &str) -> bool {
+    matches!(
+        parse_devmenu_prefs(document),
+        Some(ParsedDevMenuPrefs::Entries {
+            show_fab: Some((_, false)),
+            ..
+        })
+    )
+}
+
+pub fn devmenu_prefs_hide_fab(existing: Option<&str>) -> DevMenuPrefs {
+    let Some(document) = existing else {
+        return DevMenuPrefs::Write(render_devmenu_prefs(&[DEVMENU_SHOW_FAB_FALSE_LINE]));
+    };
+    let Some(parsed) = parse_devmenu_prefs(document) else {
+        return DevMenuPrefs::Unrecognised;
+    };
+    match parsed {
+        ParsedDevMenuPrefs::SelfClosing => {
+            DevMenuPrefs::Write(render_devmenu_prefs(&[DEVMENU_SHOW_FAB_FALSE_LINE]))
+        }
+        ParsedDevMenuPrefs::Entries {
+            lines: _,
+            show_fab: Some((_, false)),
+        } => DevMenuPrefs::Hidden,
+        ParsedDevMenuPrefs::Entries {
+            mut lines,
+            show_fab: Some((index, true)),
+        } => {
+            lines[index] = DEVMENU_SHOW_FAB_FALSE_LINE;
+            DevMenuPrefs::Write(render_devmenu_prefs(&lines))
+        }
+        ParsedDevMenuPrefs::Entries {
+            mut lines,
+            show_fab: None,
+        } => {
+            lines.push(DEVMENU_SHOW_FAB_FALSE_LINE);
+            DevMenuPrefs::Write(render_devmenu_prefs(&lines))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    const FRESH_PREFS: &str = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n";
+
+    #[test]
+    fn devmenu_prefs_grammar_and_hide_transitions() {
+        assert_eq!(FRESH_PREFS.len(), 115);
+        assert_eq!(
+            devmenu_prefs_hide_fab(None),
+            DevMenuPrefs::Write(FRESH_PREFS.to_string())
+        );
+        assert!(devmenu_prefs_fab_hidden(FRESH_PREFS));
+        assert_eq!(
+            devmenu_prefs_hide_fab(Some(FRESH_PREFS)),
+            DevMenuPrefs::Hidden
+        );
+        // CRLF and a missing final newline are recognised.
+        let crlf_no_trailing_nl = FRESH_PREFS.trim_end_matches('\n').replace('\n', "\r\n");
+        assert!(devmenu_prefs_fab_hidden(&crlf_no_trailing_nl));
+        assert_eq!(
+            devmenu_prefs_hide_fab(Some(&crlf_no_trailing_nl)),
+            DevMenuPrefs::Hidden
+        );
+
+        // Self-closing <map /> form without showFab.
+        let self_closing = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map />\n";
+        assert!(!devmenu_prefs_fab_hidden(self_closing));
+        assert_eq!(
+            devmenu_prefs_hide_fab(Some(self_closing)),
+            DevMenuPrefs::Write(FRESH_PREFS.to_string())
+        );
+
+        // <map> form without showFab preserves existing entries and inserts before </map>.
+        let without_show_fab = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"isOnboardingFinished\" value=\"true\" />\n    <int name=\"count\" value=\"-42\" />\n    <long name=\"stamp\" value=\"9223372036854775807\" />\n    <float name=\"ratio\" value=\"1.5e-2\" />\n    <float name=\"nanVal\" value=\"NaN\" />\n    <float name=\"posInf\" value=\"Infinity\" />\n    <float name=\"negInf\" value=\"-Infinity\" />\n</map>\n";
+        assert!(!devmenu_prefs_fab_hidden(without_show_fab));
+        let expected_inserted = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"isOnboardingFinished\" value=\"true\" />\n    <int name=\"count\" value=\"-42\" />\n    <long name=\"stamp\" value=\"9223372036854775807\" />\n    <float name=\"ratio\" value=\"1.5e-2\" />\n    <float name=\"nanVal\" value=\"NaN\" />\n    <float name=\"posInf\" value=\"Infinity\" />\n    <float name=\"negInf\" value=\"-Infinity\" />\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n";
+        assert_eq!(
+            devmenu_prefs_hide_fab(Some(without_show_fab)),
+            DevMenuPrefs::Write(expected_inserted.to_string())
+        );
+        assert!(devmenu_prefs_fab_hidden(expected_inserted));
+
+        // showFab=true with two other booleans and two fabPosition floats: only showFab changes.
+        let with_true = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"isOnboardingFinished\" value=\"true\" />\n    <boolean name=\"showFab\" value=\"true\" />\n    <boolean name=\"showsAtLaunch\" value=\"false\" />\n    <float name=\"fabPositionX\" value=\"0.5\" />\n    <float name=\"fabPositionY\" value=\"0.75\" />\n</map>\n";
+        let expected_replaced = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"isOnboardingFinished\" value=\"true\" />\n    <boolean name=\"showFab\" value=\"false\" />\n    <boolean name=\"showsAtLaunch\" value=\"false\" />\n    <float name=\"fabPositionX\" value=\"0.5\" />\n    <float name=\"fabPositionY\" value=\"0.75\" />\n</map>\n";
+        assert!(!devmenu_prefs_fab_hidden(with_true));
+        assert_eq!(
+            devmenu_prefs_hide_fab(Some(with_true)),
+            DevMenuPrefs::Write(expected_replaced.to_string())
+        );
+        assert!(devmenu_prefs_fab_hidden(expected_replaced));
+
+        // Every unrecognised shape is left alone and never read as hidden.
+        for bad in [
+            "<?xml nonsense?>\n<map>\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <int name=\"other\" value=\"\" />\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <int name=\"other\" value=\"99999999999\" />\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <string name=\"other\">hello</string>\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <string name=\"other\"><![CDATA[<boolean name=\"showFab\" value=\"false\" />]]></string>\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <string name=\"other\">\n    <boolean name=\"showFab\" value=\"false\" />\n    </string>\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <!-- comment -->\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"showFab\" value=\"false\" />\n    <boolean name=\"showFab\" value=\"true\" />\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name='showFab' value='false' />\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"showFab\" value=\"false\"/>\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"showFab\" value=\"false\" />\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"showFäb\" value=\"false\" />\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <int name=\"showFab\" value=\"0\" />\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <float name=\"fabPositionX\" value=\"inf\" />\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <float name=\"fabPositionX\" value=\"nan\" />\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <float name=\"fabPositionX\" value=\"+Infinity\" />\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <int name=\"other\" value=\"+1\" />\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n",
+            "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"showFab\" value=\"false\" />\n</map>\n\n",
+        ] {
+            assert_eq!(devmenu_prefs_hide_fab(Some(bad)), DevMenuPrefs::Unrecognised, "{bad}");
+            assert!(!devmenu_prefs_fab_hidden(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn devmenu_process_read_distinguishes_absent_running_and_faults() {
+        assert_eq!(
+            devmenu_process_read(&CmdOutput::failed(1, "")),
+            ProcessRead::Absent
+        );
+        assert_eq!(
+            devmenu_process_read(&CmdOutput::failed(1, "error: device offline\n")),
+            ProcessRead::Unreadable
+        );
+        assert_eq!(
+            devmenu_process_read(&CmdOutput {
+                timed_out: true,
+                exit_code: Some(1),
+                ..Default::default()
+            }),
+            ProcessRead::Unreadable
+        );
+        assert_eq!(
+            devmenu_process_read(&CmdOutput::success("4242\n")),
+            ProcessRead::Running
+        );
+        assert_eq!(
+            devmenu_process_read(&CmdOutput::success("4242 4243\n")),
+            ProcessRead::Running
+        );
+        assert_eq!(
+            devmenu_process_read(&CmdOutput::success("")),
+            ProcessRead::Unreadable
+        );
+    }
+
+    #[test]
+    fn devmenu_prefs_write_script_replaces_only_after_full_byte_count() {
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let scratch = Scratch(
+            std::env::temp_dir().join(format!("qaren-devmenu-write-{}-{nonce}", std::process::id())),
+        );
+        let prefs_file = scratch.0.join(DEVMENU_PREFS_PATH);
+        let temp_file = scratch.0.join(DEVMENU_PREFS_TEMP_PATH);
+        std::fs::create_dir_all(prefs_file.parent().unwrap()).unwrap();
+
+        let original = "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\n<map>\n    <boolean name=\"showFab\" value=\"true\" />\n    <float name=\"fabPositionX\" value=\"0.5\" />\n</map>\n";
+        let quoted = devmenu_prefs_write_script(FRESH_PREFS.len());
+        let script = quoted
+            .strip_prefix('\'')
+            .and_then(|s| s.strip_suffix('\''))
+            .expect("outer single quotes");
+        assert!(!script.contains('\''));
+
+        let run_sh = |stdin_bytes: &[u8]| {
+            let mut child = Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .current_dir(&scratch.0)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(stdin_bytes)
+                .unwrap();
+            child.wait_with_output().unwrap()
+        };
+
+        // Full 115 bytes: replaces existing file and leaves no .qaren temporary file.
+        std::fs::write(&prefs_file, original).unwrap();
+        std::fs::write(&temp_file, "stale leftover").unwrap();
+        let full = run_sh(FRESH_PREFS.as_bytes());
+        assert!(full.status.success(), "{full:?}");
+        assert_eq!(std::fs::read_to_string(&prefs_file).unwrap(), FRESH_PREFS);
+        assert!(!temp_file.exists());
+
+        // Short transfer (40 bytes): non-zero exit, original file untouched byte-for-byte, no .qaren file.
+        std::fs::write(&prefs_file, original).unwrap();
+        let short = run_sh(&FRESH_PREFS.as_bytes()[..40]);
+        assert!(!short.status.success(), "{short:?}");
+        assert_eq!(std::fs::read_to_string(&prefs_file).unwrap(), original);
+        assert!(!temp_file.exists());
+    }
 }

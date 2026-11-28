@@ -9886,4 +9886,28 @@ fn android_reuse_dry_run_plans_the_request_probe_before_the_manifest() {
         receipt.planned_commands[at - 1],
         metro::request_probe_spec(8792).rendered()
     );
+    let adb = "<android_home>/platform-tools/adb -s 127.0.0.1:<adb_port>";
+    let read_cmd = format!(
+        "{adb} shell run-as com.rndevagent.testapp sh -c 'if [ -e shared_prefs/expo.modules.devmenu.sharedpreferences.xml.bak ]; then exit 5; elif [ -f shared_prefs/expo.modules.devmenu.sharedpreferences.xml ] && [ -r shared_prefs/expo.modules.devmenu.sharedpreferences.xml ]; then cat shared_prefs/expo.modules.devmenu.sharedpreferences.xml; elif [ -e shared_prefs/expo.modules.devmenu.sharedpreferences.xml ]; then exit 4; else exit 3; fi'"
+    );
+    let write_cmd = format!(
+        "{adb} shell run-as com.rndevagent.testapp sh -c 'umask 077; rm -f shared_prefs/expo.modules.devmenu.sharedpreferences.xml.qaren; mkdir -p shared_prefs && cat > shared_prefs/expo.modules.devmenu.sharedpreferences.xml.qaren && [ \"$(wc -c < shared_prefs/expo.modules.devmenu.sharedpreferences.xml.qaren)\" -eq 115 ] && mv -f shared_prefs/expo.modules.devmenu.sharedpreferences.xml.qaren shared_prefs/expo.modules.devmenu.sharedpreferences.xml; r=$?; rm -f shared_prefs/expo.modules.devmenu.sharedpreferences.xml.qaren; exit $r'"
+    );
+    let pidof_cmd = format!("{adb} shell pidof com.rndevagent.testapp");
+    let am_start_cmd = format!(
+        "{adb} shell am start -a android.intent.action.VIEW --ez EXDevMenuDisableAutoLaunch true -d 'rndatest://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8792%2F%3FdisableOnboarding%3D1&disableFab=1&__expo_disable_fab=1&__expo_disable_auto_launch=1' com.rndevagent.testapp"
+    );
+    assert_eq!(
+        &receipt.planned_commands[at + 1..],
+        &[
+            format!("{adb} shell am get-current-user"),
+            pidof_cmd.clone(),
+            read_cmd.clone(),
+            pidof_cmd.clone(),
+            write_cmd,
+            read_cmd,
+            pidof_cmd,
+            am_start_cmd,
+        ]
+    );
 }

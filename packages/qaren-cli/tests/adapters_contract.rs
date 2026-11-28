@@ -2157,15 +2157,17 @@ fn expo_fingerprint_evaluates_config_in_the_ios_build_environment() {
 
 #[test]
 fn android_launch_deactivates_the_dev_menu_auto_launch() {
+    let raw = "rndatest://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8791%2F%3FdisableOnboarding%3D1&disableFab=1&__expo_disable_fab=1&__expo_disable_auto_launch=1";
     let spec = android::am_start_deeplink_spec(
         Path::new("/sdk/adb"),
         5038,
         "127.0.0.1:15555",
-        "rndatest://expo-development-client/?url=x",
+        raw,
         "com.rndevagent.testapp",
     );
     let args: Vec<&str> = spec.args.iter().map(String::as_str).collect();
     let start = args.iter().position(|a| *a == "start").unwrap();
+    let quoted = format!("'{raw}'");
     assert_eq!(
         &args[start..],
         [
@@ -2176,7 +2178,7 @@ fn android_launch_deactivates_the_dev_menu_auto_launch() {
             "EXDevMenuDisableAutoLaunch",
             "true",
             "-d",
-            "rndatest://expo-development-client/?url=x",
+            quoted.as_str(),
             "com.rndevagent.testapp",
         ]
     );

@@ -3633,7 +3633,7 @@ A second signal exits immediately after one line on stderr; the next run must re
 Before each iOS launch, `prepare` writes the app's Expo dev-menu preferences with
 `simctl spawn <udid> defaults write <app-id>`: no floating action button, no menu
 at launch, onboarding finished. A failed write is recorded as
-`dev_menu_defaults: unconfirmed` and the launch continues. At walk start the core
+`dev_menu_defaults: unconfirmed` and the launch continues. Before the launch that `prepare` issues for an Android dev client, QaReN tries to turn the floating button off in the app's saved dev-menu preferences (`shared_prefs/expo.modules.devmenu.sharedpreferences.xml`, key `showFab`) through `adb shell run-as <app-id>`. It does so only for the device's main user, only while the app is not running, and only when the file holds nothing but number and boolean entries and Android has left no recovery copy beside it; it keeps every other entry, writes through a temporary file that replaces the old one when complete, and reads the result back. The file is read privately: its contents are not written to logs or the receipt. A step that is skipped or not confirmed is recorded as `dev_menu_defaults: unconfirmed (<step>)` and the launch continues. A confirmed write holds for every later start of the app in the run. The launch URL also carries `disableFab=1`, `__expo_disable_fab=1` and `__expo_disable_auto_launch=1`; expo-dev-launcher 57.0.20 and later acts on the first, expo-dev-launcher and expo-dev-menu 58.0.7 and later on the other two. As on iOS, a confirmed write leaves the button off on that install after the run; switch the tools button back on in the app's dev menu. A `prepare` that lets Expo CLI start the app gets neither the write nor the parameters. At walk start the core
 closes an open menu first, hides the floating button through Expo's
 `DevMenuPreferences` module and reads the setting back, disables the shake
 gesture, and attempts to disable Fast Refresh through
@@ -6548,7 +6548,7 @@ holds the cached APK, kept under this worktree's `.qaren/native-cache/artifacts/
    Android installs with `adb install -r -d`, then starts Metro with
    `expo start --port` and launches with package-constrained `am start`,
    with Expo's `EXDevMenuDisableAutoLaunch` extra so the dev menu
-   does not open at launch. Fresh candidate JS always comes from Metro; the evidence
+   does not open at launch, after trying to turn the dev client's floating button off in its saved preferences. Fresh candidate JS always comes from Metro; the evidence
    records which candidate built the binary and which serves JS — native
    compatibility is proven by the fingerprint, never inferred from the sha.
 2. **Incremental** — reuse is invalid (committed native inputs changed, stored
