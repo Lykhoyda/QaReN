@@ -820,6 +820,8 @@ impl Failure {
                 "re-run once without --fresh-install or --restart-device; if build work is active, wait for it to finish first",
             "DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN" | "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED" =>
                 "re-run once without --fresh-install; if it persists, report the value-free refusal",
+            "DEV_MENU_HIDE_UNVERIFIED_NO_HIDE_METHOD" =>
+                "re-run once without --fresh-install or --restart-device; if it refuses again, open the app's dev menu on this install and switch the tools button off (it stays off), then re-run",
             // A development error overlay: the cause decides whether a restart may help.
             "DEV_REDBOX_REPEATED"
             | "DEV_REDBOX_DISMISS_FAILED"

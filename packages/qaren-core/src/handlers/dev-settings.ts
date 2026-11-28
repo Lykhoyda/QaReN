@@ -40,6 +40,9 @@ export const WALK_DEV_SETTINGS = [
 const DEV_FAB_READ_INTERVAL_MS = 250;
 // A loaded host can time out the preferences call once; a hide that keeps failing still refuses.
 const DEV_FAB_HIDE_ATTEMPTS = 3;
+// The button was in this many complete reads in a row, over at least this long, and the app has no call to hide it.
+const DEV_FAB_UNHIDEABLE_MS = 10_000;
+const DEV_FAB_UNHIDEABLE_READS = 3;
 
 // Android reloads the JS bundle whenever hot loading is set, so the walk must wait for the reloaded app.
 export interface FastRefreshReload {
@@ -50,6 +53,7 @@ export interface FastRefreshReload {
 }
 
 export interface DevOverlayDependencies {
+  platform?: 'ios' | 'android';
   devSettings(args: {
     action: (typeof WALK_DEV_SETTINGS)[number];
     timeoutMs?: number;
@@ -63,7 +67,12 @@ export interface DevOverlayDependencies {
   fastRefreshReload?: FastRefreshReload;
 }
 
-type OverlaySubreason = 'READ_FAILED' | 'NOT_HIDDEN' | 'EVALUATE_TIMEOUT' | 'EVALUATE_FAILED';
+type OverlaySubreason =
+  | 'READ_FAILED'
+  | 'NOT_HIDDEN'
+  | 'EVALUATE_TIMEOUT'
+  | 'EVALUATE_FAILED'
+  | 'NO_HIDE_METHOD';
 
 function envelopeCode(result: ToolResult): unknown {
   try {
@@ -110,6 +119,7 @@ async function clearOverlays(
   } = { phase: 'read', observation: { state: 'unknown', error: 'timeout' } };
   let readAttempts = 0;
   let evaluateAttempts = 0;
+  let fabHideUnavailable = false;
   let lastEvaluationSubreason: OverlaySubreason = 'EVALUATE_FAILED';
   let lastError: DevOverlayReadError | 'evaluation' | 'none' = 'none';
   const remaining = () => Math.max(0, deps.deadline - now());
@@ -182,6 +192,8 @@ async function clearOverlays(
         }
         throwIfCancelled();
         failed = result.isError === true;
+        if (action === 'hideDevMenuFab' && !failed && deps.platform === 'android' && !recovering)
+          fabHideUnavailable = envelopeData(result)?.executed === false;
         if (!failed && envelopeData(result)?.executed === true) await reload?.settled();
         if (!failed) break;
         subreason =
@@ -199,11 +211,20 @@ async function clearOverlays(
       deps.log(`${action}: failed`);
     }
     witness.phase = 'read';
+    let unhideable: { since: number; reads: number } | undefined;
     while (remaining() > 0) {
       const seen = await read();
       // An error overlay is no dev menu: the walk's first step dismisses it within its own bound.
       if (seen.state === 'clear' || (seen.state === 'shown' && seen.front === 'dev-redbox'))
         return okResult({ action: 'clearDevOverlays', executed: true });
+      if (fabHideUnavailable && seen.state === 'shown' && seen.front === 'dev-fab') {
+        unhideable = { since: unhideable?.since ?? now(), reads: (unhideable?.reads ?? 0) + 1 };
+        if (
+          unhideable.reads >= DEV_FAB_UNHIDEABLE_READS &&
+          now() - unhideable.since >= DEV_FAB_UNHIDEABLE_MS
+        )
+          return refused('NO_HIDE_METHOD');
+      } else unhideable = undefined;
       await pause();
     }
     throw expired;
@@ -250,6 +271,22 @@ const HIDE_DEV_MENU_FAB = `(async function () {
   await m.setPreferencesAsync({ showFloatingActionButton: false, showsAtLaunch: false, motionGestureEnabled: false, touchGestureEnabled: false });
   var p = typeof m.getPreferencesAsync === 'function' ? await m.getPreferencesAsync() : null;
   return p && p.showFloatingActionButton === false ? "ok" : "unverified";
+})()`;
+
+const HIDE_DEV_MENU_FAB_ANDROID = `(async function () {
+  var modules = globalThis.expo && globalThis.expo.modules;
+  var m = modules && modules.DevMenuPreferences;
+  if (m && typeof m.setPreferencesAsync === 'function') {
+    await m.setPreferencesAsync({ showFloatingActionButton: false, showsAtLaunch: false, motionGestureEnabled: false, touchGestureEnabled: false });
+    var p = typeof m.getPreferencesAsync === 'function' ? await m.getPreferencesAsync() : null;
+    return p && p.showFloatingActionButton === false ? "ok" : "unverified";
+  }
+  var menu = modules && modules.ExpoDevMenu;
+  if (menu && typeof menu.setToolsButtonVisible === 'function') {
+    await menu.setToolsButtonVisible(false);
+    return "requested";
+  }
+  return "no_method_available";
 })()`;
 
 const RESOLVE_DEV_SETTINGS = `(function() {
@@ -387,12 +424,20 @@ export function createDevSettingsHandler(
           'DEV_MENU_HIDE_UNVERIFIED_EVALUATE_TIMEOUT',
           { action: args.action },
         );
-      const result = await interruptible(() => client.evaluate(HIDE_DEV_MENU_FAB, true, timeoutMs));
+      const expression =
+        client.connectedTarget?.platform === 'android'
+          ? HIDE_DEV_MENU_FAB_ANDROID
+          : HIDE_DEV_MENU_FAB;
+      const result = await interruptible(() => client.evaluate(expression, true, timeoutMs));
       if (result.value === 'no_method_available')
         return warnResult(
           { action: args.action, executed: false },
           'hideDevMenuFab not available — no Expo dev-menu preferences module.',
         );
+      if (!result.error && result.value === 'requested') {
+        await interruptible(() => dependencies.settleAfterHide?.() ?? sleep(300));
+        return okResult({ action: args.action, executed: true, outcome: 'requested' });
+      }
       if (result.error || result.value !== 'ok')
         return failResult(
           `The Expo dev-client floating button could not be confirmed hidden: ${result.error ? 'the preferences call failed' : 'the preferences did not read back hidden'}.`,

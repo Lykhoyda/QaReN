@@ -2443,6 +2443,18 @@ mod block_start_tests {
         );
     }
 
+    #[test]
+    fn no_hide_method_refusal_names_the_setting() {
+        assert_eq!(
+            refusal_code("DEV_MENU_HIDE_UNVERIFIED_NO_HIDE_METHOD"),
+            FailureCode::CoreRefused
+        );
+        assert_eq!(
+            Failure::core_refusal_next_action("DEV_MENU_HIDE_UNVERIFIED_NO_HIDE_METHOD"),
+            "re-run once without --fresh-install or --restart-device; if it refuses again, open the app's dev menu on this install and switch the tools button off (it stays off), then re-run"
+        );
+    }
+
     fn home_with_reports(name: &str, coalitions: &[&str]) -> PathBuf {
         let home = std::env::temp_dir().join(format!("qaren-{name}-{}", std::process::id()));
         let reports = home.join("Library/Logs/DiagnosticReports");

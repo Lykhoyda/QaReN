@@ -240,6 +240,7 @@ export interface ReactObservation {
 }
 
 export interface CaptureDeps {
+  platform?: 'ios' | 'android';
   observation?: number;
   platformPresence?: boolean;
   timing?: TimingObserver;
@@ -621,14 +622,17 @@ function presenceCauses(
   ];
 }
 
-export function nativeDevOverlayObservation(observation: NativeObservation): DevOverlayObservation {
+export function nativeDevOverlayObservation(
+  observation: NativeObservation,
+  platform?: 'ios' | 'android',
+): DevOverlayObservation {
   const coverage = nativeCaptureCoverage(observation);
   if (coverage !== 'complete')
     return {
       state: 'unknown',
       error: coverage === 'incomplete' ? 'coverage_incomplete' : 'coverage_unknown',
     };
-  const front = frontFromSurface(observation.surface, observation.nodes ?? []);
+  const front = frontFromSurface(observation.surface, observation.nodes ?? [], platform);
   if (front === 'dev-fab' || front === 'dev-menu' || front === 'dev-redbox')
     return { state: 'shown', front };
   return { state: 'clear', front };
@@ -868,7 +872,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
             ? nodes[0]?.type === 'Alert'
               ? 'dialog'
               : 'app'
-            : frontFromSurface(native.surface, nodes),
+            : frontFromSurface(native.surface, nodes, deps.platform),
           {
             native: nativePresence
               ? 'complete'

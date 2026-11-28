@@ -996,7 +996,7 @@ export async function openSession(
       throw error;
     }
   };
-  const observeDevOverlay = async () => nativeDevOverlayObservation(await rawSnapshot());
+  const observeDevOverlay = async () => nativeDevOverlayObservation(await rawSnapshot(), platform);
   // Android reloads the bundle when hot loading is set: step 1 must read the reloaded, re-proven app.
   const reload =
     platform === 'android'
@@ -1011,6 +1011,7 @@ export async function openSession(
   const overlays = installed
     ? undefined
     : {
+        platform,
         devSettings: createDevSettingsHandler(getClient, {
           probeForegroundSurface: async () =>
             foregroundSurfaceFromSnapshot(
@@ -1088,6 +1089,7 @@ export async function openSession(
       stop.track(() =>
         boundedCapture(options?.budgetMs, () =>
           captureScreen({
+            platform,
             appId,
             requirePrivateInputs: true,
             releaseApp: installed,

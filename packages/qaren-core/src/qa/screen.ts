@@ -1954,7 +1954,11 @@ export function alertPressEffect(
   return 'unchanged';
 }
 
-export function frontFromSurface(surface: string | undefined, nodes: NativeNode[]): Front {
+export function frontFromSurface(
+  surface: string | undefined,
+  nodes: NativeNode[],
+  platform?: 'ios' | 'android',
+): Front {
   if (nodes[0]?.type === 'Alert') return 'dialog';
   switch (surface) {
     case 'expo_dev_menu':
@@ -1965,7 +1969,9 @@ export function frontFromSurface(surface: string | undefined, nodes: NativeNode[
       return 'picker';
     default:
       if (devErrorOverlay(nodes)) return 'dev-redbox';
-      return devFabWindow(nodes) ? 'dev-fab' : 'app';
+      return (platform === 'android' ? androidDevFab(nodes) : devFabWindow(nodes))
+        ? 'dev-fab'
+        : 'app';
   }
 }
 
@@ -2071,4 +2077,84 @@ function devFabWindow(nodes: NativeNode[]): boolean {
   return [...content.values()].some(
     (box) => !!box && box.x1 - box.x0 <= DEV_FAB_MAX_PT && box.y1 - box.y0 <= DEV_FAB_MAX_PT,
   );
+}
+
+const ANDROID_DEV_FAB_HOST = 'androidx.compose.ui.platform.ComposeView';
+const ANDROID_DEV_FAB_HOLDER = 'android.widget.LinearLayout';
+const ANDROID_FRAME = 'android.widget.FrameLayout';
+const ANDROID_DECOR_LAYOUTS = new Set([ANDROID_FRAME, ANDROID_DEV_FAB_HOLDER]);
+// The button's visible nodes fit in at most this share of its host, each way.
+const ANDROID_DEV_FAB_MAX_SHARE = 0.35;
+
+// Expo's floating dev-menu button on Android. Expo's dev-menu fragment host is a FrameLayout with two
+// children of its own size: the React surface (a FrameLayout) and a LinearLayout holding one Compose
+// host. The button is on when that host's visible leaves fit in one small box. Value-free: classes,
+// ancestry, rectangles and visibility only; nodes the device marks invisible do not count anywhere.
+function androidDevFab(nodes: NativeNode[]): boolean {
+  const visible = (node: NativeNode | undefined): node is NativeNode =>
+    !!node &&
+    node.visibleToUser !== false &&
+    !!node.rect &&
+    node.rect.width > 0 &&
+    node.rect.height > 0;
+  const same = (a: NativeNode, b: NativeNode | undefined) =>
+    visible(b) &&
+    a.rect!.x === b.rect!.x &&
+    a.rect!.y === b.rect!.y &&
+    a.rect!.width === b.rect!.width &&
+    a.rect!.height === b.rect!.height;
+  const kids = new Map<number, number[]>();
+  nodes.forEach((node, i) => {
+    if (!visible(node) || node.parentIndex === undefined) return;
+    kids.set(node.parentIndex, [...(kids.get(node.parentIndex) ?? []), i]);
+  });
+  // Below the host through visible nodes only: a visible node under an invisible one does not count.
+  const under = (index: number, ancestor: number) => {
+    let at = nodes[index]?.parentIndex;
+    for (let hops = 0; at !== undefined && hops < nodes.length; hops++) {
+      if (at === ancestor) return true;
+      if (!visible(nodes[at])) return false;
+      at = nodes[at]?.parentIndex;
+    }
+    return false;
+  };
+  return nodes.some((host, at) => {
+    if (host.type !== ANDROID_DEV_FAB_HOST || !visible(host)) return false;
+    const holderAt = host.parentIndex;
+    const holder = holderAt === undefined ? undefined : nodes[holderAt];
+    if (holder?.type !== ANDROID_DEV_FAB_HOLDER || kids.get(holderAt!)?.length !== 1) return false;
+    const fragmentAt = holder.parentIndex;
+    const fragmentHost = fragmentAt === undefined ? undefined : nodes[fragmentAt];
+    if (fragmentHost?.type !== ANDROID_FRAME) return false;
+    const others = (kids.get(fragmentAt!) ?? []).filter((i) => i !== holderAt);
+    if (others.length !== 1 || nodes[others[0]].type !== ANDROID_FRAME) return false;
+    if (![holder, fragmentHost, nodes[others[0]]].every((node) => same(host, node))) return false;
+    // Anchored to the window's own layout chain: an app view that repeats this nesting sits inside the React
+    // surface, under ViewGroup nodes. At most 12 hops; the captured chain has five layouts below the Window.
+    let chainAt = fragmentHost.parentIndex;
+    let hops = 0;
+    for (; chainAt !== undefined && nodes[chainAt]?.type !== 'Window'; hops++) {
+      const link = nodes[chainAt];
+      if (!link || !ANDROID_DECOR_LAYOUTS.has(link.type ?? '') || !visible(link) || hops >= 12)
+        return false;
+      chainAt = link.parentIndex;
+    }
+    if (chainAt === undefined) return false;
+    let box: { x0: number; y0: number; x1: number; y1: number } | undefined;
+    nodes.forEach((node, i) => {
+      if (!visible(node) || kids.has(i) || !under(i, at)) return;
+      const r = node.rect!;
+      box = {
+        x0: Math.min(box?.x0 ?? r.x, r.x),
+        y0: Math.min(box?.y0 ?? r.y, r.y),
+        x1: Math.max(box?.x1 ?? r.x + r.width, r.x + r.width),
+        y1: Math.max(box?.y1 ?? r.y + r.height, r.y + r.height),
+      };
+    });
+    return (
+      !!box &&
+      box.x1 - box.x0 <= host.rect!.width * ANDROID_DEV_FAB_MAX_SHARE &&
+      box.y1 - box.y0 <= host.rect!.height * ANDROID_DEV_FAB_MAX_SHARE
+    );
+  });
 }
