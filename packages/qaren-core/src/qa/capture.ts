@@ -240,7 +240,6 @@ export interface ReactObservation {
 }
 
 export interface CaptureDeps {
-  platform?: 'ios' | 'android';
   observation?: number;
   platformPresence?: boolean;
   timing?: TimingObserver;
@@ -872,7 +871,7 @@ async function capture(deps: CaptureDeps): Promise<Screen> {
             ? nodes[0]?.type === 'Alert'
               ? 'dialog'
               : 'app'
-            : frontFromSurface(native.surface, nodes, deps.platform),
+            : frontFromSurface(native.surface, nodes),
           {
             native: nativePresence
               ? 'complete'

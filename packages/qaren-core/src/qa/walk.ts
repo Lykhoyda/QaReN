@@ -996,7 +996,7 @@ export async function openSession(
       throw error;
     }
   };
-  const observeDevOverlay = async () => nativeDevOverlayObservation(await rawSnapshot(), platform);
+  const observeDevOverlay = async () => nativeDevOverlayObservation(await rawSnapshot());
   // Android reloads the bundle when hot loading is set: step 1 must read the reloaded, re-proven app.
   const reload =
     platform === 'android'
@@ -1038,6 +1038,7 @@ export async function openSession(
       unwrap(
         await clearDevOverlays({
           ...overlays,
+          observeDevOverlay: async () => nativeDevOverlayObservation(await rawSnapshot(), platform),
           deadline: devOverlayDeadline(performance.now(), request.attachBudgetMs, walkDeadline),
         }),
       );
@@ -1089,7 +1090,6 @@ export async function openSession(
       stop.track(() =>
         boundedCapture(options?.budgetMs, () =>
           captureScreen({
-            platform,
             appId,
             requirePrivateInputs: true,
             releaseApp: installed,

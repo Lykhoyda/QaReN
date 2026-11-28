@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { frontFromSurface } from '../../../dist/qa/screen.js';
 import type { NativeNode } from '../../../dist/qa/screen.js';
-import { nativeDevOverlayObservation } from '../../../dist/qa/capture.js';
+import { captureScreen, nativeDevOverlayObservation } from '../../../dist/qa/capture.js';
+import { recover } from '../../../dist/qa/recover.js';
 
 // Value-free shapes inferred from expo-dev-menu 55/56 source (DevMenuFABWindow, DevMenuFABView),
 // not recorded from a device: QA returns the recorded window list.
@@ -488,4 +489,53 @@ test('H10j: two Android windows do not trigger the iOS two-window rule, while iO
   // Existing iOS small-window cases still return dev-fab without a platform and with ios.
   assert.equal(frontAndroid(undefined, tree(appContent, fabPill)), 'dev-fab');
   assert.equal(frontAndroid(undefined, tree(appContent, fabPill), 'ios'), 'dev-fab');
+});
+
+test('H10m: a mid-walk Android capture showing the button stays app, and recovery never hides it', async () => {
+  for (const file of ['android-on-read1.json', 'android-on-read17.json']) {
+    const fixture = loadAi753Fixture(file);
+    const reactSurface = fixture.findIndex((n) => n.type === 'android.view.ViewGroup');
+    const nodes: NativeNode[] = [
+      ...fixture,
+      {
+        ref: `@e${fixture.length}`,
+        index: fixture.length,
+        parentIndex: reactSurface,
+        type: 'android.widget.TextView',
+        label: 'Sign in',
+        rect: rect(100, 1000, 400, 120),
+        visibleToUser: true,
+      },
+    ];
+    assert.deepEqual(observeOverlay(completeObservation(nodes), 'android'), {
+      state: 'shown',
+      front: 'dev-fab',
+    });
+    const screen = await captureScreen({
+      appId: 'com.test',
+      native: async () => completeObservation(nodes),
+      react: async () => ({
+        interactive: [],
+        verdict: { state: 'ok', path: 'interactive', complete: true },
+        hostEvidence: { hosts: [], complete: true },
+      }),
+    });
+    assert.equal(screen.front, 'app', file);
+    let loginReplays = 0;
+    const recovery = await recover(
+      screen,
+      {
+        dialog: async () => assert.fail('no dialog is in front'),
+        hideDevMenu: async () =>
+          assert.fail('the floating button must not reach dev-menu recovery'),
+        replayLogin: async () => {
+          loginReplays++;
+          return 'pass';
+        },
+      },
+      { text: 'Sign in' },
+    );
+    assert.deepEqual(recovery, { handled: 'login' }, file);
+    assert.equal(loginReplays, 1);
+  }
 });
