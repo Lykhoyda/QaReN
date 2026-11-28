@@ -14,13 +14,28 @@ import { describeError } from '../../dist/qa/adapt.js';
 import { RunCancelledError, withCancellation } from '../../dist/domain/cancellation.js';
 import { nativeDevOverlayObservation, type NativeObservation } from '../../dist/qa/capture.js';
 
-function run(preferences?: Record<string, unknown>) {
+function run(
+  preferences?: Record<string, unknown>,
+  menu?: Record<string, unknown>,
+  platform?: 'ios' | 'android',
+) {
   const calls: { awaitPromise?: boolean; value?: unknown }[] = [];
   const client = createMockClient({
+    ...(platform
+      ? {
+          _connectedTarget: {
+            id: 'page1',
+            title: 'React Native (Hermes)',
+            vm: 'Hermes',
+            webSocketDebuggerUrl: 'ws://127.0.0.1:8081/debugger/page1',
+            platform,
+          },
+        }
+      : {}),
     evaluate: async (expression: string, awaitPromise?: boolean) => {
       try {
         const value = await runInNewContext(expression, {
-          expo: { modules: { DevMenuPreferences: preferences } },
+          expo: { modules: { DevMenuPreferences: preferences, ExpoDevMenu: menu } },
         });
         calls.push({ awaitPromise, value });
         return { value };
@@ -168,14 +183,19 @@ function overlays(
   reads: Array<Overlay | Error> = [{ state: 'clear', front: 'app' }],
   settings: Partial<Record<DevAction, () => ToolResult>> = {},
   budgetMs = 2000,
+  platform?: 'ios' | 'android',
 ) {
   const calls: string[] = [];
   const sleeps: number[] = [];
   const controller = new AbortController();
   let clock = Math.ceil(performance.now());
   const deps = {
+    ...(platform ? { platform } : {}),
     deadline: clock + budgetMs,
     now: () => clock,
+    advance: (ms: number) => {
+      clock += ms;
+    },
     async devSettings({ action, timeoutMs }: { action: DevAction; timeoutMs?: number }) {
       assert.ok(timeoutMs! <= budgetMs);
       calls.push(action);
@@ -442,4 +462,144 @@ test('overlays: proven startup app exit preserves its public refusal code and ne
     assert.equal(result.code, 'APP_PROCESS_CHANGED');
     assert.match(result.message, /inspect the crash report and re-run the plan/);
   }
+});
+
+test('H11: Android calls ExpoDevMenu.setToolsButtonVisible(false) when DevMenuPreferences is absent', async () => {
+  const received: unknown[] = [];
+  const { calls, result } = run(
+    undefined,
+    {
+      setToolsButtonVisible: async (visible: unknown) => {
+        received.push(visible);
+      },
+    },
+    'android',
+  );
+  const env = parseEnvelope(await result);
+  assert.deepEqual(received, [false]);
+  assert.equal(env.ok, true);
+  assert.equal(env.data?.executed, true);
+  assert.equal(env.data?.outcome, 'requested');
+  assert.equal(calls[0]?.value, 'requested');
+
+  // Throwing setToolsButtonVisible reports DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED.
+  const throwing = run(
+    undefined,
+    {
+      setToolsButtonVisible: async () => {
+        throw new Error('setToolsButtonVisible failed');
+      },
+    },
+    'android',
+  );
+  const failedEnv = parseEnvelope(await throwing.result);
+  assert.equal(failedEnv.ok, false);
+  assert.equal(failedEnv.code, 'DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED');
+
+  // iOS control: never calls setToolsButtonVisible.
+  const iosReceived: unknown[] = [];
+  const ios = run(
+    undefined,
+    {
+      setToolsButtonVisible: async (visible: unknown) => {
+        iosReceived.push(visible);
+      },
+    },
+    'ios',
+  );
+  const iosEnv = parseEnvelope(await ios.result);
+  assert.deepEqual(iosReceived, []);
+  assert.equal(iosEnv.ok, true);
+  assert.equal(iosEnv.data?.executed, false);
+
+  // Default run() alone stays executed: false.
+  const plain = parseEnvelope(await run().result);
+  assert.equal(plain.ok, true);
+  assert.equal(plain.data?.executed, false);
+});
+
+test('H12: Android admission refuses with DEV_MENU_HIDE_UNVERIFIED_NO_HIDE_METHOD after 10 s of shown dev-fab reads when no hide method exists', async () => {
+  const fixture = overlays(
+    [shown],
+    { hideDevMenuFab: () => warnResult({ action: 'hideDevMenuFab', executed: false }, 'none') },
+    60_000,
+    'android',
+  );
+  const env = parseEnvelope(await fixture.run());
+  assert.equal(env.ok, false);
+  assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED_NO_HIDE_METHOD');
+  assert.match(env.error ?? '', /front=dev-fab/);
+  assert.equal(
+    fixture.sleeps.reduce((sum, ms) => sum + ms, 0),
+    10_000,
+  );
+});
+
+test('H13: Android early refusal requires three consecutive complete dev-fab reads spanning at least 10 s', async () => {
+  const unavailable = {
+    hideDevMenuFab: () => warnResult({ action: 'hideDevMenuFab', executed: false }, 'none'),
+  };
+
+  // (i) [shown, shown, clear] admits as ok.
+  const cleared = overlays([shown, shown, clear], unavailable, 60_000, 'android');
+  assert.equal(parseEnvelope(await cleared.run()).ok, true);
+
+  // (ii) [shown, unknown, shown...] resets at unknown and sleeps 10 000 ms from the read after unknown.
+  const reset = overlays([shown, unknown, shown], unavailable, 60_000, 'android');
+  const resetEnv = parseEnvelope(await reset.run());
+  assert.equal(resetEnv.code, 'DEV_MENU_HIDE_UNVERIFIED_NO_HIDE_METHOD');
+  const sleepsAfterReset = reset.sleeps.slice(2).reduce((sum, ms) => sum + ms, 0);
+  assert.equal(sleepsAfterReset, 10_000);
+
+  // (iii) Slow reads (11 000 ms per observeDevOverlay): refuses on the third read, not the second.
+  const slow = overlays([shown], unavailable, 60_000, 'android');
+  const baseObserve = slow.deps.observeDevOverlay;
+  slow.deps.observeDevOverlay = async () => {
+    slow.deps.advance(11_000);
+    return baseObserve();
+  };
+  const slowEnv = parseEnvelope(await slow.run());
+  assert.equal(slowEnv.code, 'DEV_MENU_HIDE_UNVERIFIED_NO_HIDE_METHOD');
+  assert.equal(slow.calls.filter((call) => call === 'read').length, 3);
+});
+
+test('H14: executed Android hide, iOS, and unspecified platform keep NOT_HIDDEN at the deadline', async () => {
+  const unavailable = {
+    hideDevMenuFab: () => warnResult({ action: 'hideDevMenuFab', executed: false }, 'none'),
+  };
+  const executedAndroid = overlays(
+    [shown],
+    {
+      hideDevMenuFab: () =>
+        okResult({ action: 'hideDevMenuFab', executed: true, outcome: 'requested' }),
+    },
+    60_000,
+    'android',
+  );
+  const iosUnavailable = overlays([shown], unavailable, 60_000, 'ios');
+  const noPlatformUnavailable = overlays([shown], unavailable, 60_000);
+
+  for (const fixture of [executedAndroid, iosUnavailable, noPlatformUnavailable]) {
+    const env = parseEnvelope(await fixture.run());
+    assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN');
+    assert.equal(
+      fixture.sleeps.reduce((sum, ms) => sum + ms, 0),
+      60_000,
+    );
+  }
+});
+
+test('H15: mid-walk Android recovery keeps NOT_HIDDEN at the 15 000 ms deadline', async () => {
+  const fixture = overlays(
+    [shown],
+    { hideDevMenuFab: () => warnResult({ action: 'hideDevMenuFab', executed: false }, 'none') },
+    15_000,
+    'android',
+  );
+  const env = parseEnvelope(await fixture.run(true));
+  assert.equal(env.code, 'DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN');
+  assert.equal(
+    fixture.sleeps.reduce((sum, ms) => sum + ms, 0),
+    15_000,
+  );
 });

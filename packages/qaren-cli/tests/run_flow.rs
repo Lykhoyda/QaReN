@@ -4483,6 +4483,10 @@ fn every_core_refusal_code_ends_through_teardown() {
             "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED",
             FailureCode::CoreRefused,
         ),
+        (
+            "DEV_MENU_HIDE_UNVERIFIED_NO_HIDE_METHOD",
+            FailureCode::CoreRefused,
+        ),
     ] {
         let (repo, app) = app_repo();
         let mut mock = MockRunner::new();
@@ -4493,11 +4497,19 @@ fn every_core_refusal_code_ends_through_teardown() {
         let refusal = serde_json::json!({
             "verdict": "REFUSED", "code": code, "message": "walk refused"
         });
-        let stdout = format!(
-            "{}\n{}\n",
-            envelope(2, "admitted", "{}"),
-            envelope(3, "result", &refusal.to_string())
-        );
+        let stdout = if code == "DEV_MENU_HIDE_UNVERIFIED_NO_HIDE_METHOD" {
+            format!(
+                "{}\n{}\n",
+                envelope(2, "row", &row(0, "step")),
+                envelope(3, "result", &refusal.to_string())
+            )
+        } else {
+            format!(
+                "{}\n{}\n",
+                envelope(2, "admitted", "{}"),
+                envelope(3, "result", &refusal.to_string())
+            )
+        };
         mock.expect_spawn_piped("walk.js", 9000, &stdout, Some(4));
         script_core_identity(&mut mock);
         script_teardown(&mut mock);
@@ -4512,6 +4524,8 @@ fn every_core_refusal_code_ends_through_teardown() {
                 "re-run once without --fresh-install or --restart-device; if build work is active, wait for it to finish first",
             "DEV_MENU_HIDE_UNVERIFIED_NOT_HIDDEN" | "DEV_MENU_HIDE_UNVERIFIED_EVALUATE_FAILED" =>
                 "re-run once without --fresh-install; if it persists, report the value-free refusal",
+            "DEV_MENU_HIDE_UNVERIFIED_NO_HIDE_METHOD" =>
+                "re-run once without --fresh-install or --restart-device; if it refuses again, open the app's dev menu on this install and switch the tools button off (it stays off), then re-run",
             _ => "resolve the refusal, then re-run",
         };
         assert_eq!(failure.next_action, expected_action, "{code}");

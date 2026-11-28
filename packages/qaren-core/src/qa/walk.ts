@@ -1011,6 +1011,7 @@ export async function openSession(
   const overlays = installed
     ? undefined
     : {
+        platform,
         devSettings: createDevSettingsHandler(getClient, {
           probeForegroundSurface: async () =>
             foregroundSurfaceFromSnapshot(
@@ -1037,6 +1038,7 @@ export async function openSession(
       unwrap(
         await clearDevOverlays({
           ...overlays,
+          observeDevOverlay: async () => nativeDevOverlayObservation(await rawSnapshot(), platform),
           deadline: devOverlayDeadline(performance.now(), request.attachBudgetMs, walkDeadline),
         }),
       );
