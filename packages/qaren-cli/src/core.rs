@@ -1994,6 +1994,307 @@ pub fn fresh_install_admission(
     }
 }
 
+// The tool classes the driver check may name: fixed words, never a process name, path or argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForeignDriverClass {
+    MaestroIosRunner,
+    Webdriveragent,
+    XctestRunner,
+    XcodebuildTest,
+    MaestroCli,
+    XcodebuildBuild,
+    MaestroAndroid,
+    Uiautomator,
+}
+
+impl ForeignDriverClass {
+    fn words(self) -> &'static str {
+        match self {
+            Self::MaestroIosRunner => "a Maestro iOS UI-test runner",
+            Self::Webdriveragent => "a WebDriverAgent runner",
+            Self::XctestRunner => "an XCTest UI-test runner",
+            Self::XcodebuildTest => "an xcodebuild test session",
+            Self::MaestroCli => "a Maestro command-line session",
+            Self::XcodebuildBuild => "an xcodebuild build",
+            Self::MaestroAndroid => "a Maestro driver app",
+            Self::Uiautomator => "a UIAutomator process",
+        }
+    }
+
+    fn word(self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|word| word.as_str().map(str::to_string))
+            .unwrap_or_default()
+    }
+
+    fn android(self) -> bool {
+        matches!(self, Self::MaestroAndroid | Self::Uiautomator)
+    }
+}
+
+// A UI driver the check before dependencies proved on the selected device. `pid` is its host process id; an
+// Android driver is a process of the device and has none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForeignDriver {
+    pub class: ForeignDriverClass,
+    pub pid: Option<u32>,
+}
+
+// What one scan of the check before dependencies established.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DriverObservation {
+    // The scan was complete and found no UI driver.
+    Clear,
+    // The scan was complete and found only a build that names the simulator.
+    BuildOnly,
+    Driver(ForeignDriver),
+    // Nothing was established; the word says why.
+    Unproven(String),
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DriverCheckEvidence {
+    reason: AdmissionProbeReason,
+    pid: Option<u32>,
+    candidates: Option<u32>,
+    driver: Option<ForeignDriverClass>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct DriverCheckAnswer {
+    v: u8,
+    platform: String,
+    device_id: String,
+    check: String,
+    status: String,
+    evidence: Option<Value>,
+}
+
+impl DriverObservation {
+    // Only an answer of this check, for this device, whose members agree with each other is read; anything else
+    // establishes nothing.
+    fn read(output: &CmdOutput, android: bool, device_id: &str) -> Self {
+        let unproven = |word: &str| Self::Unproven(word.to_string());
+        if output.timed_out {
+            return unproven("scan_timeout");
+        }
+        // The scanner writes no null member, in the envelope or in its evidence.
+        let Some(answer) = serde_json::from_str::<Value>(&output.stdout)
+            .ok()
+            .filter(|sent| sent.as_object().is_some_and(|o| o.values().all(|v| !v.is_null())))
+            .and_then(|sent| serde_json::from_value::<DriverCheckAnswer>(sent).ok())
+        else {
+            return unproven("invalid_response");
+        };
+        if answer.v != 1
+            || answer.platform != if android { "android" } else { "ios" }
+            || answer.device_id != device_id
+            || answer.check != "driver"
+        {
+            return unproven("envelope_mismatch");
+        }
+        let evidence = match &answer.evidence {
+            None => None,
+            Some(sent) if sent.as_object().is_some_and(|o| o.values().all(|v| !v.is_null())) => {
+                match serde_json::from_value::<DriverCheckEvidence>(sent.clone()) {
+                    Ok(evidence) => Some(evidence),
+                    Err(_) => return unproven("invalid_evidence"),
+                }
+            }
+            Some(_) => return unproven("invalid_evidence"),
+        };
+        match (output.exit_code, answer.status.as_str(), evidence) {
+            (Some(0), "clear", None) => Self::Clear,
+            (Some(4), "busy", Some(e)) => match (e.reason, e.driver, e.pid, e.candidates) {
+                (AdmissionProbeReason::DriverOnSelectedDevice, Some(class), None, None)
+                    if android && class.android() =>
+                {
+                    Self::Driver(ForeignDriver { class, pid: None })
+                }
+                (AdmissionProbeReason::DriverOnSelectedDevice, Some(class), Some(pid), None)
+                    if !android && !class.android() && pid != 0 =>
+                {
+                    if class == ForeignDriverClass::XcodebuildBuild {
+                        Self::BuildOnly
+                    } else {
+                        Self::Driver(ForeignDriver { class, pid: Some(pid) })
+                    }
+                }
+                _ => unproven("invalid_evidence"),
+            },
+            (Some(4), "unknown", None) => unproven("unavailable"),
+            (Some(4), "unknown", Some(e))
+                if e.driver.is_none() && e.reason != AdmissionProbeReason::DriverOnSelectedDevice =>
+            {
+                Self::Unproven(
+                    serde_json::to_value(&e.reason)
+                        .ok()
+                        .and_then(|word| word.as_str().map(str::to_string))
+                        .unwrap_or_default(),
+                )
+            }
+            _ => unproven("invalid_response"),
+        }
+    }
+
+    fn word(&self) -> &str {
+        match self {
+            Self::Clear => "clear",
+            Self::BuildOnly => "build_only",
+            Self::Driver(_) => "driver",
+            Self::Unproven(word) => word,
+        }
+    }
+}
+
+// No answer of the check before dependencies is read after this long; stopping a scan that does not answer can
+// take a few seconds more. From the first scan that finds a driver, at most DRIVER_PREFLIGHT_ANSWERS answers are
+// read, DRIVER_PREFLIGHT_PAUSE_MS apart.
+const DRIVER_PREFLIGHT_ALLOWANCE_MS: u64 = 12_000;
+const DRIVER_PREFLIGHT_ANSWERS: u8 = 3;
+const DRIVER_PREFLIGHT_PAUSE_MS: u64 = 2_000;
+
+// The check before dependencies, for a run that holds the device lease and makes no strict admission of its own.
+// A UI driver proven on the device, and not proven gone by a later complete scan, refuses; every other outcome
+// lets the run go on, and the walk's own check at attach still applies. Returns the receipt notes.
+pub fn foreign_driver_preflight(
+    runner: &mut dyn Runner,
+    node: &Path,
+    runtime_dir: &Path,
+    worktree: &Path,
+    device_id: &str,
+    android: Option<&AndroidEnv>,
+) -> Result<Vec<(String, String)>, Failure> {
+    let started = runner.monotonic_ms();
+    let deadline_ms = started.saturating_add(DRIVER_PREFLIGHT_ALLOWANCE_MS);
+    let script = runtime_dir
+        .join("qa/fresh-install-preflight.js")
+        .to_string_lossy()
+        .into_owned();
+    // Only the iOS scan needs the native observer; without one it can prove no driver.
+    let observer = match android {
+        Some(_) => None,
+        None => std::env::current_exe()
+            .ok()
+            .filter(|path| path.is_absolute())
+            .and_then(|path| path.into_os_string().into_string().ok()),
+    };
+    let mut args = vec![
+        script.as_str(),
+        "--platform",
+        if android.is_some() { "android" } else { "ios" },
+        "--device",
+        device_id,
+        "--check",
+        "driver",
+    ];
+    if let Some(observer) = &observer {
+        args.extend(["--process-observer", observer.as_str()]);
+    }
+    let mut scans = 0u8;
+    // The driver last found, how many scans found one, and the answers read from the first of them on.
+    let mut seen: Option<ForeignDriver> = None;
+    let mut driver_scans = 0u8;
+    let mut answers = 0u8;
+    loop {
+        if let Some(reason) = runner.cancellation() {
+            return Err(Failure::cancelled("preflight", &reason));
+        }
+        let now = runner.monotonic_ms();
+        let command_seconds = deadline_ms.saturating_sub(now) / 1000;
+        let observation = if command_seconds == 0 {
+            DriverObservation::Unproven("deadline_exceeded".into())
+        } else {
+            let spec = CmdSpec::new(
+                "driver-preflight",
+                &node.to_string_lossy(),
+                &args,
+                command_seconds.min(10),
+            )
+            .cwd(worktree);
+            let spec = match android {
+                Some(android) => with_android_env(spec, android),
+                None => spec,
+            };
+            scans += 1;
+            let output = runner.run(&spec);
+            if runner.monotonic_ms() >= deadline_ms {
+                DriverObservation::Unproven("deadline_exceeded".into())
+            } else {
+                DriverObservation::read(&output, android.is_some(), device_id)
+            }
+        };
+        if let Some(reason) = runner.cancellation() {
+            return Err(Failure::cancelled("preflight", &reason));
+        }
+        let now = runner.monotonic_ms();
+        let notes = |result: &str| {
+            vec![
+                ("driver_preflight".to_string(), result.to_string()),
+                (
+                    "driver_preflight_detail".to_string(),
+                    format!(
+                        "scans={scans}; elapsed_ms={}; last_answer={}",
+                        now.saturating_sub(started),
+                        observation.word()
+                    ),
+                ),
+            ]
+        };
+        match &observation {
+            // A complete scan without a UI driver also proves an earlier one gone.
+            DriverObservation::Clear | DriverObservation::BuildOnly => {
+                return Ok(notes(match (&seen, &observation) {
+                    (Some(_), _) => "clear_after_recheck",
+                    (None, DriverObservation::BuildOnly) => "build_only",
+                    (None, _) => "clear",
+                }));
+            }
+            DriverObservation::Driver(driver) => {
+                seen = Some(*driver);
+                driver_scans += 1;
+            }
+            DriverObservation::Unproven(_) if seen.is_none() => return Ok(notes("unproven")),
+            DriverObservation::Unproven(_) => {}
+        }
+        answers += 1;
+        // After the pause a scan needs at least a second of its own; with less left there is no next scan.
+        if answers >= DRIVER_PREFLIGHT_ANSWERS
+            || now.saturating_add(DRIVER_PREFLIGHT_PAUSE_MS + 1_000) > deadline_ms
+        {
+            let driver = seen.expect("a scan found a driver");
+            let host = driver
+                .pid
+                .map(|pid| format!(" (host process {pid})"))
+                .unwrap_or_default();
+            let pid = driver
+                .pid
+                .map(|pid| format!("; driver_pid={pid}"))
+                .unwrap_or_default();
+            let mut failure = Failure::new(
+                "preflight",
+                FailureCode::DeviceBusy,
+                format!(
+                    "{}{host} was found on the selected device before dependencies and no later scan proved it gone; driver={}{pid}; scans={scans}; driver_scans={driver_scans}; last_answer={}; observed_ms={}",
+                    driver.class.words(),
+                    driver.class.word(),
+                    observation.word(),
+                    now.saturating_sub(started),
+                ),
+                "wait for the other automation session on this device to finish, then run the same command again; QaReN did not stop it and did not restart the device",
+            )
+            .with_recovery(crate::failure::RecoveryReason::ForeignAdmissionUnresolved);
+            failure.subreason = Some("foreign-driver".to_string());
+            return Err(failure);
+        }
+        runner.sleep(Duration::from_millis(DRIVER_PREFLIGHT_PAUSE_MS));
+    }
+}
+
 enum Msg {
     Line(String),
     Oversize,

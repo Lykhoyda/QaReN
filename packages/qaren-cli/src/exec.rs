@@ -1309,7 +1309,7 @@ impl Runner for MockRunner {
         // Unscripted diagnostics stay unavailable in fixtures for unrelated run behavior.
         if matches!(
             spec.label.as_str(),
-            "host-sample" | "device-helpers" | crate::host_capacity::BUILD_PROBE
+            "host-sample" | "device-helpers" | "driver-preflight" | crate::host_capacity::BUILD_PROBE
         ) && !self
             .script
             .front()

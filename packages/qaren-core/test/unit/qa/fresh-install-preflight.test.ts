@@ -9,6 +9,7 @@ import {
   detectIosExternalRunner,
   isIosExternalRunnerProcessLine,
   probeAndroidExternalRunnerAdmission,
+  probeAndroidForeignDriver,
   probeIosExternalRunnerStrict,
   probeIosExternalRunnerAdmission,
 } from '../../../dist/runners/external-runner-detect.js';
@@ -2125,5 +2126,482 @@ test('AI-511: the real Android execFile is given the wait the preflight was told
         calls: [],
       });
     }
+  });
+});
+
+// AI-469: the check before dependencies. Its busy answer needs kernel identity and names a closed
+// class; process-table text alone never makes it busy. Strict admission keeps its own answers.
+const inSimulator = (pid: number, name: string, device = UDID) =>
+  `${pid} ${simulatorPath(name, device)}\n`;
+const simulatorPath = (name: string, device = UDID) =>
+  `/Users/test/Library/Developer/CoreSimulator/Devices/${device}/data/Containers/Bundle/Application/9D2C/${name}.app/${name}`;
+const XCODEBUILD = '/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild';
+// What the kernel observer returns for each pid; a pid it does not know is a failed read.
+const kernel = (argvByPid: Record<number, string[]>, asked: number[] = []) =>
+  (async (pid: number, _timeout: number, withArgv?: boolean) => {
+    asked.push(pid);
+    const argv = argvByPid[pid];
+    if (!argv) return { observationFailure: 'observer_failed' };
+    return {
+      v: 1,
+      pid,
+      birth: { seconds: 1, micros: 0 },
+      executable: argv[0],
+      ...(withArgv ? { argv } : {}),
+    };
+  }) as never;
+const driverCheck = (table: string, observe?: never) =>
+  probeIosExternalRunnerAdmission(fakePs(`${ordinary}${table}`), UDID, observe, undefined, true);
+const strict = (table: string, observe?: never) =>
+  probeIosExternalRunnerAdmission(fakePs(`${ordinary}${table}`), UDID, observe);
+const found = (pid: number, driver: string) => ({
+  status: 'busy',
+  evidence: { reason: 'driver_on_selected_device', pid, driver },
+});
+
+test('AI-469: the driver check names a runner inside the simulator from its kernel executable', async () => {
+  for (const [name, driver] of [
+    ['maestro-driver-iosUITests-Runner', 'maestro_ios_runner'],
+    ['WebDriverAgentRunner-Runner', 'webdriveragent'],
+    ['XCTRunner', 'xctest_runner'],
+    // The runner of an app's own UI tests: the app's name is in the file name and never in the answer.
+    ['PrivateBankingUITests-Runner', 'xctest_runner'],
+  ]) {
+    const row = inSimulator(4242, name);
+    const answer = await driverCheck(row, kernel({ 4242: [simulatorPath(name)] }));
+    assert.deepEqual(answer, found(4242, driver), name);
+    assert.doesNotMatch(JSON.stringify(answer), /PrivateBanking|CoreSimulator|9D2C/);
+    // Process-table text is not enough: without kernel identity nothing is established.
+    assert.deepEqual(await driverCheck(row), {
+      status: 'unknown',
+      evidence: { reason: 'observer_unavailable', candidates: 1 },
+    });
+    assert.deepEqual(await driverCheck(row, kernel({})), {
+      status: 'unknown',
+      evidence: { reason: 'observer_failed', pid: 4242 },
+    });
+    // The row says this simulator, the kernel says another one: not this device's driver.
+    assert.deepEqual(await driverCheck(row, kernel({ 4242: [simulatorPath(name, OTHER)] })), {
+      status: 'clear',
+    });
+    // The row has a runner's name, the kernel executable is some other program in the simulator.
+    assert.deepEqual(await driverCheck(row, kernel({ 4242: [simulatorPath('PrivateBanking')] })), {
+      status: 'unknown',
+      evidence: { reason: 'driver_identity_unproven', pid: 4242 },
+    });
+    // Strict admission is unchanged: busy from the row's text, with no class.
+    assert.deepEqual(await strict(row), {
+      status: 'busy',
+      evidence: { reason: 'driver_on_selected_device', pid: 4242 },
+    });
+  }
+});
+
+test("AI-469: the driver check never refuses QaReN's own runner app", async () => {
+  for (const name of ['QaReN-Runner', 'QarenIosRunner', 'QarenIosRunnerUITests-Runner']) {
+    const row = inSimulator(4242, name);
+    assert.deepEqual(await driverCheck(row, kernel({ 4242: [simulatorPath(name)] })), {
+      status: 'clear',
+    });
+    assert.equal((await strict(row)).status, 'busy', `${name}: strict admission still refuses it`);
+  }
+  // Beside it, a foreign runner is still found.
+  const both =
+    inSimulator(4241, 'QaReN-Runner') + inSimulator(4242, 'maestro-driver-iosUITests-Runner');
+  assert.deepEqual(
+    await driverCheck(
+      both,
+      kernel({
+        4241: [simulatorPath('QaReN-Runner')],
+        4242: [simulatorPath('maestro-driver-iosUITests-Runner')],
+      }),
+    ),
+    found(4242, 'maestro_ios_runner'),
+  );
+  // The host xcodebuild of QaReN's own runner, in the argv its launcher passes: not a refusal either.
+  const host = [
+    XCODEBUILD,
+    'test-without-building',
+    '-project',
+    '/private/runtime/QarenIosRunner/QarenIosRunner.xcodeproj',
+    '-scheme',
+    'QarenIosRunner',
+    '-destination',
+    `platform=iOS Simulator,id=${UDID}`,
+    '-derivedDataPath',
+    '/private/derived',
+    '-only-testing:QarenIosRunnerUITests/QarenIosRunnerTests/testCommand',
+  ];
+  const hostRow = `4100 ${host.join(' ')}\n`;
+  assert.deepEqual(await driverCheck(hostRow, kernel({ 4100: host })), { status: 'clear' });
+  assert.equal((await strict(hostRow, kernel({ 4100: host }))).status, 'busy');
+  // With the runner it serves inside the simulator: still clear.
+  const served = hostRow + inSimulator(4242, 'QarenIosRunnerUITests-Runner');
+  assert.deepEqual(
+    await driverCheck(
+      served,
+      kernel({ 4100: host, 4242: [simulatorPath('QarenIosRunnerUITests-Runner')] }),
+    ),
+    { status: 'clear' },
+  );
+  // The scheme alone, or the test alone, is not QaReN's runner: a test session for this simulator.
+  for (const drop of [
+    '-only-testing:QarenIosRunnerUITests/QarenIosRunnerTests/testCommand',
+    'QarenIosRunner',
+  ]) {
+    const other = host.filter((arg) => arg !== drop);
+    assert.deepEqual(
+      await driverCheck(`4100 ${other.join(' ')}\n`, kernel({ 4100: other })),
+      found(4100, 'xcodebuild_test'),
+      drop,
+    );
+  }
+});
+
+test('AI-469: the driver check names a host tool only from its kernel arguments', async () => {
+  const test = [XCODEBUILD, 'test-without-building', '-xctestrun', '/tmp/d.xctestrun'];
+  const cases: Array<[string, string[], object, string]> = [
+    [
+      'an action-first test for this simulator',
+      [...test, '-destination', `id=${UDID}`],
+      found(4100, 'xcodebuild_test'),
+      'busy',
+    ],
+    [
+      'a Maestro command for this simulator',
+      ['/opt/homebrew/bin/maestro', 'test', '--device', UDID, 'flow.yaml'],
+      found(4100, 'maestro_cli'),
+      'busy',
+    ],
+    [
+      'its Java form',
+      [
+        '/usr/bin/java',
+        '-classpath',
+        '/opt/m/lib/*',
+        'maestro.cli.AppKt',
+        'test',
+        '--device',
+        UDID,
+      ],
+      found(4100, 'maestro_cli'),
+      'busy',
+    ],
+    [
+      // The other simulator is the target; this one only appears in a result path.
+      'a test for another simulator that mentions this one in a path',
+      [...test, '-destination', `id=${OTHER}`, '-resultBundlePath', `/tmp/${UDID}/result`],
+      { status: 'clear' },
+      'busy',
+    ],
+    [
+      // `test` here is the scheme's name, not an action.
+      'a build whose scheme is named test',
+      [XCODEBUILD, 'build', '-scheme', 'test', '-destination', `id=${UDID}`],
+      { status: 'unknown', evidence: { reason: 'driver_identity_unproven', pid: 4100 } },
+      'busy',
+    ],
+    [
+      // The action is last: it cannot be told from an option's value, so nothing is established.
+      'a test whose action comes last',
+      [XCODEBUILD, '-scheme', 'App', '-destination', `id=${UDID}`, 'test'],
+      { status: 'unknown', evidence: { reason: 'driver_identity_unproven', pid: 4100 } },
+      'busy',
+    ],
+  ];
+  for (const [what, argv, expected, strictStatus] of cases) {
+    const row = `4100 ${argv.join(' ')}\n`;
+    assert.deepEqual(await driverCheck(row, kernel({ 4100: argv })), expected, what);
+    assert.equal((await strict(row, kernel({ 4100: argv }))).status, strictStatus, what);
+  }
+});
+
+test('AI-469: the driver check reports a build only when every candidate is resolved', async () => {
+  const build = [XCODEBUILD, 'build', '-scheme', 'App', '-destination', `id=${UDID}`];
+  const buildRow = `4300 ${build.join(' ')}\n`;
+  // A second Xcode whose path has a space: its row is not a driver row by text, only by identity.
+  const spaced = '/Applications/Xcode 26.app/Contents/Developer/usr/bin/xcodebuild';
+  const test = [spaced, 'test-without-building', '-destination', `id=${UDID}`];
+  const testRow = `4400 ${test.join(' ')}\n`;
+
+  assert.deepEqual(
+    await driverCheck(buildRow, kernel({ 4300: build })),
+    found(4300, 'xcodebuild_build'),
+  );
+  // Strict admission still answers at once, with no class.
+  assert.deepEqual(await strict(buildRow, kernel({ 4300: build })), {
+    status: 'busy',
+    evidence: { reason: 'driver_on_selected_device', pid: 4300 },
+  });
+  // A test session later in the table wins over a build seen first, in either order.
+  for (const table of [buildRow + testRow, testRow + buildRow]) {
+    assert.deepEqual(
+      await driverCheck(table, kernel({ 4300: build, 4400: test })),
+      found(4400, 'xcodebuild_test'),
+    );
+  }
+  // A candidate that cannot be resolved leaves nothing established, build or not.
+  assert.deepEqual(await driverCheck(buildRow + testRow, kernel({ 4300: build })), {
+    status: 'unknown',
+    evidence: { reason: 'observer_failed', pid: 4400 },
+  });
+  // A build for another simulator is nothing.
+  const elsewhere = [XCODEBUILD, 'build', '-scheme', 'App', '-destination', `id=${OTHER}`];
+  assert.deepEqual(
+    await driverCheck(`4300 ${elsewhere.join(' ')}\n`, kernel({ 4300: elsewhere })),
+    { status: 'clear' },
+  );
+});
+
+test('AI-469: a process the driver check cannot judge does not hide a proven driver after it', async () => {
+  const runnerName = 'maestro-driver-iosUITests-Runner';
+  const runner = inSimulator(4242, runnerName);
+  const runnerKernel = { 4242: [simulatorPath(runnerName)] };
+  const unscoped = ['/opt/homebrew/bin/maestro', 'test', 'flow.yaml'];
+  const actionLast = [XCODEBUILD, '-scheme', 'App', '-destination', `id=${UDID}`, 'test'];
+  // Each first row alone is unproven; before a runner inside the simulator it does not hide it.
+  for (const [what, first, kernelFirst, alone] of [
+    [
+      'a Maestro session that names no device',
+      `4100 ${unscoped.join(' ')}\n`,
+      { 4100: unscoped },
+      { status: 'unknown', evidence: { reason: 'driver_identity_unproven', pid: 4100 } },
+    ],
+    [
+      'an xcodebuild test whose action is last',
+      `4100 ${actionLast.join(' ')}\n`,
+      { 4100: actionLast },
+      { status: 'unknown', evidence: { reason: 'driver_identity_unproven', pid: 4100 } },
+    ],
+    [
+      'a driver row whose identity cannot be read',
+      `4100 ${unscoped.join(' ')}\n`,
+      {},
+      { status: 'unknown', evidence: { reason: 'observer_failed', pid: 4100 } },
+    ],
+  ] as const) {
+    assert.deepEqual(await driverCheck(first, kernel({ ...kernelFirst })), alone, what);
+    assert.deepEqual(
+      await driverCheck(first + runner, kernel({ ...kernelFirst, ...runnerKernel })),
+      found(4242, 'maestro_ios_runner'),
+      what,
+    );
+  }
+  // The same for a candidate that is not a driver row: a direct test session after it is still found.
+  const spaced = '/Applications/Xcode 26.app/Contents/Developer/usr/bin/xcodebuild';
+  const test = [spaced, 'test-without-building', '-destination', `id=${UDID}`];
+  const shell = `4300 /bin/zsh -c ${spaced}\n`;
+  assert.deepEqual(
+    await driverCheck(shell + `4400 ${test.join(' ')}\n`, kernel({ 4400: test })),
+    found(4400, 'xcodebuild_test'),
+  );
+  // With nothing proven, the first answer it could not judge is the answer, and a build is not enough.
+  const build = [XCODEBUILD, 'build', '-scheme', 'App', '-destination', `id=${UDID}`];
+  const buildRow = `4500 ${build.join(' ')}\n`;
+  for (const table of [buildRow + shell, shell + buildRow]) {
+    assert.deepEqual(await driverCheck(table, kernel({ 4500: build })), {
+      status: 'unknown',
+      evidence: { reason: 'observer_failed', pid: 4300 },
+    });
+  }
+  // Strict admission still stops at the first such process.
+  assert.deepEqual(
+    await strict(
+      `4100 ${unscoped.join(' ')}\n` + `4101 ${unscoped.join(' ')}\n`,
+      kernel({ 4101: unscoped }),
+    ),
+    { status: 'unknown', evidence: { reason: 'observer_failed', pid: 4100 } },
+  );
+});
+
+test('AI-469: the Android driver check is busy only for an exact known driver name', async () => {
+  const table = (...names: string[]) =>
+    fakeAdb({ stdout: androidIdle + names.map(androidRow).join('') });
+  assert.deepEqual(await probeAndroidForeignDriver(SERIAL, fakeAdb({ stdout: androidIdle })), {
+    status: 'clear',
+  });
+  for (const [name, driver] of [
+    ['uiautomator', 'uiautomator'],
+    ['io.appium.uiautomator2.server', 'uiautomator'],
+    ['io.appium.uiautomator2.server.test', 'uiautomator'],
+    ['dev.mobile.maestro', 'maestro_android'],
+    ['dev.mobile.maestro.test', 'maestro_android'],
+  ]) {
+    assert.deepEqual(await probeAndroidForeignDriver(SERIAL, table('com.example.app', name)), {
+      status: 'busy',
+      driver,
+    });
+  }
+  // A name that only resembles a driver proves nothing here; strict admission still refuses it.
+  for (const name of [
+    'com.example.instrumentation',
+    'com.maestro.music',
+    'org.fans.uiautomator.wallpaper',
+    'AgentDeviceRunner',
+    'uiautomator2',
+  ]) {
+    assert.deepEqual(await probeAndroidForeignDriver(SERIAL, table(name)), {
+      status: 'unknown',
+      reason: 'driver_identity_unproven',
+    });
+    assert.equal((await probeAndroidExternalRunnerAdmission(SERIAL, table(name))).status, 'busy');
+  }
+  // A name with spaces in an unrelated row is one name; it neither hides a driver nor blocks a clear.
+  const spacedName = 'shell 4243 1 0 0 0 0 Z [sh] <defunct>\n';
+  assert.deepEqual(
+    await probeAndroidForeignDriver(SERIAL, fakeAdb({ stdout: androidIdle + spacedName })),
+    {
+      status: 'clear',
+    },
+  );
+  assert.deepEqual(
+    await probeAndroidForeignDriver(
+      SERIAL,
+      fakeAdb({ stdout: androidIdle + spacedName + androidRow('uiautomator') }),
+    ),
+    { status: 'busy', driver: 'uiautomator' },
+  );
+  // A table cut short (no final newline) proves nothing, whatever its last name looks like.
+  for (const cut of ['uiautomator', 'dev.mobile.maestr']) {
+    assert.deepEqual(
+      await probeAndroidForeignDriver(
+        SERIAL,
+        fakeAdb({ stdout: androidIdle + androidRow(cut).trimEnd() }),
+      ),
+      { status: 'unknown', reason: 'scan_incomplete' },
+    );
+  }
+  // An exact driver wins over a lookalike in the same table.
+  assert.deepEqual(
+    await probeAndroidForeignDriver(SERIAL, table('com.maestro.music', 'uiautomator')),
+    { status: 'busy', driver: 'uiautomator' },
+  );
+  // Output that is not a process table proves nothing, and can never clear a device.
+  for (const stdout of [
+    '',
+    ' \n\n',
+    ANDROID_HEADER,
+    androidRow('com.example.app'),
+    `${ANDROID_HEADER}shell 4242 1 S com.example.app\n`,
+    `error: device offline\n`,
+  ]) {
+    assert.deepEqual(await probeAndroidForeignDriver(SERIAL, fakeAdb({ stdout })), {
+      status: 'unknown',
+      reason: 'scan_incomplete',
+    });
+  }
+  assert.deepEqual(await probeAndroidForeignDriver(SERIAL, fakeAdb(killedForTime())), {
+    status: 'unknown',
+    reason: 'scan_timeout',
+  });
+  assert.deepEqual(
+    await probeAndroidForeignDriver(SERIAL, fakeAdb(new Error('adb: device offline'))),
+    {
+      status: 'unknown',
+    },
+  );
+});
+
+test('AI-469: the entry answers the driver check only when asked, and marks its answer', async () => {
+  // Android, through the real entry and a stand-in adb.
+  const root = await mkdtemp(join(tmpdir(), 'qaren-driver-check-'));
+  try {
+    await writeFile(
+      join(root, 'adb'),
+      `#!${process.execPath}\nprocess.stdout.write(process.env.FAKE_ADB_STDOUT || '');\n`,
+      { mode: 0o755 },
+    );
+    const run = (argv: string[], stdout: string) =>
+      new Promise<{ code: number | string | null; answer: unknown }>((resolve) => {
+        execFile(
+          process.execPath,
+          [entry, ...argv],
+          {
+            env: { ...process.env, PATH: root, FAKE_ADB_STDOUT: stdout },
+            timeout: 8_000,
+            encoding: 'utf8',
+          },
+          (error, out) =>
+            resolve({ code: error ? (error.code ?? null) : 0, answer: JSON.parse(out) }),
+        );
+      });
+    const android = ['--platform', 'android', '--device', SERIAL];
+    const envelope = { v: 1, platform: 'android', deviceId: SERIAL, check: 'driver' };
+    const lookalike = androidIdle + androidRow('com.example.instrumentation');
+    assert.deepEqual(await run([...android, '--check', 'driver'], androidIdle), {
+      code: 0,
+      answer: { ...envelope, status: 'clear' },
+    });
+    assert.deepEqual(
+      await run([...android, '--check', 'driver'], androidIdle + androidRow('uiautomator')),
+      {
+        code: 4,
+        answer: {
+          ...envelope,
+          status: 'busy',
+          evidence: { reason: 'driver_on_selected_device', driver: 'uiautomator' },
+        },
+      },
+    );
+    assert.deepEqual(await run([...android, '--check', 'driver'], lookalike), {
+      code: 4,
+      answer: { ...envelope, status: 'unknown', evidence: { reason: 'driver_identity_unproven' } },
+    });
+    // Without the argument the same table gets the strict answer, unmarked.
+    assert.deepEqual(await run(android, lookalike), {
+      code: 4,
+      answer: { v: 1, platform: 'android', deviceId: SERIAL, status: 'busy' },
+    });
+    // Another value, a repeated key, or an observer on Android: the invalid answer.
+    for (const bad of [
+      [...android, '--check', 'strict'],
+      [...android, '--check', 'driver', '--check', 'driver'],
+      [...android, '--check', 'driver', '--process-observer', '/usr/bin/true'],
+    ]) {
+      assert.deepEqual(await run(bad, androidIdle), {
+        code: 4,
+        answer: { v: 1, platform: 'ios', deviceId: '', status: 'unknown' },
+      });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+
+  // iOS, through the real entry, a stand-in ps and a stand-in observer.
+  await fixture(async (root, marker) => {
+    const runner = simulatorPath('maestro-driver-iosUITests-Runner');
+    const observer = join(root, 'observer');
+    await writeFile(
+      observer,
+      `#!${process.execPath}
+const pid = Number(process.argv[3]);
+process.stdout.write(JSON.stringify({ v: 1, pid, birth: { seconds: 1, micros: 0 }, executable: ${JSON.stringify(runner)}, argv: [${JSON.stringify(runner)}] }));
+`,
+      { mode: 0o755 },
+    );
+    const table = { FAKE_PS_STDOUT: `${ordinary}4242 ${runner}\n` };
+    const checked = await invoke(
+      root,
+      marker,
+      [...args, '--process-observer', observer, '--check', 'driver'],
+      table,
+    );
+    assert.equal(checked.code, 4);
+    assert.deepEqual(JSON.parse(checked.stdout), {
+      v: 1,
+      platform: 'ios',
+      deviceId: UDID,
+      check: 'driver',
+      status: 'busy',
+      evidence: { reason: 'driver_on_selected_device', pid: 4242, driver: 'maestro_ios_runner' },
+    });
+    const admitted = await invoke(root, marker, [...args, '--process-observer', observer], table);
+    assert.deepEqual(JSON.parse(admitted.stdout), {
+      v: 1,
+      platform: 'ios',
+      deviceId: UDID,
+      status: 'busy',
+      evidence: { reason: 'driver_on_selected_device', pid: 4242 },
+    });
   });
 });

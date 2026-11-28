@@ -1167,6 +1167,358 @@ fn fresh_admission_cancelled_while_pausing_before_a_longer_scan_stops() {
     }
 }
 
+// AI-469: the check before dependencies. It reads its own answers; strict admission is not involved.
+fn driver_answer(platform: &str, status: &str, evidence: Option<serde_json::Value>) -> CmdOutput {
+    let device = if platform == "ios" { "AAAA-1111" } else { "emulator-5554" };
+    let mut answer = serde_json::json!({"v": 1, "platform": platform, "deviceId": device, "check": "driver", "status": status});
+    if let Some(evidence) = evidence {
+        answer["evidence"] = evidence;
+    }
+    CmdOutput {
+        exit_code: Some(if status == "clear" { 0 } else { 4 }),
+        stdout: answer.to_string(),
+        ..Default::default()
+    }
+}
+
+fn found(platform: &str, driver: &str) -> CmdOutput {
+    let mut evidence = serde_json::json!({"reason": "driver_on_selected_device", "driver": driver});
+    if platform == "ios" {
+        evidence["pid"] = 4242.into();
+    }
+    driver_answer(platform, "busy", Some(evidence))
+}
+
+fn driver_preflight(
+    mock: &mut MockRunner,
+    platform: &str,
+) -> Result<Vec<(String, String)>, qaren::failure::Failure> {
+    let android = core::AndroidEnv {
+        serial: "emulator-5554".into(),
+        server_port: 5038,
+        platform_tools: "/android/platform-tools".into(),
+    };
+    core::foreign_driver_preflight(
+        mock,
+        Path::new("/node"),
+        Path::new("/runtime"),
+        Path::new("/app"),
+        if platform == "ios" { "AAAA-1111" } else { "emulator-5554" },
+        (platform == "android").then_some(&android),
+    )
+}
+
+// The result word and the detail note.
+fn preflight_notes(notes: &[(String, String)]) -> (&str, &str) {
+    assert_eq!(
+        notes.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(),
+        ["driver_preflight", "driver_preflight_detail"]
+    );
+    (notes[0].1.as_str(), notes[1].1.as_str())
+}
+
+const DRIVER_NEXT_ACTION: &str = "wait for the other automation session on this device to finish, then run the same command again; QaReN did not stop it and did not restart the device";
+
+#[test]
+fn driver_preflight_clear_is_one_scan_of_its_own() {
+    let observer = std::env::current_exe().unwrap().into_os_string().into_string().unwrap();
+    for platform in ["ios", "android"] {
+        let mut mock = MockRunner::new();
+        let started = mock.now_epoch_ms();
+        mock.expect_run("fresh-install-preflight.js", driver_answer(platform, "clear", None));
+        let notes = driver_preflight(&mut mock, platform).unwrap();
+        assert_eq!(
+            preflight_notes(&notes),
+            ("clear", "scans=1; elapsed_ms=0; last_answer=clear")
+        );
+        assert_eq!(mock.calls.len(), 1);
+        let device = if platform == "ios" { "AAAA-1111" } else { "emulator-5554" };
+        let mut args = vec![
+            "/runtime/qa/fresh-install-preflight.js",
+            "--platform",
+            platform,
+            "--device",
+            device,
+            "--check",
+            "driver",
+        ];
+        if platform == "ios" {
+            args.extend(["--process-observer", observer.as_str()]);
+        }
+        let spec = CmdSpec::new("driver-preflight", "/node", &args, 10).cwd(Path::new("/app"));
+        assert_eq!(mock.calls[0].label, spec.label);
+        assert_eq!(mock.calls[0].args, spec.args);
+        assert_eq!(mock.calls[0].timeout_seconds, 10);
+        assert_eq!(mock.calls[0].cwd, spec.cwd);
+        // The Android scan goes through the run's adb server to the borrowed device only.
+        let env = |name: &str| mock.calls[0].env.iter().find(|(key, _)| key == name).map(|(_, value)| value.as_str());
+        assert_eq!(env("ANDROID_SERIAL"), (platform == "android").then_some("emulator-5554"));
+        assert_eq!(env("ADB_SERVER_SOCKET").is_some(), platform == "android");
+        assert_eq!(mock.now_epoch_ms(), started, "no pause after a clear answer");
+    }
+}
+
+#[test]
+fn driver_preflight_refuses_a_driver_that_stays_and_names_its_class() {
+    for (platform, driver, opening) in [
+        (
+            "ios",
+            "maestro_ios_runner",
+            "a Maestro iOS UI-test runner (host process 4242) was found on the selected device before dependencies and no later scan proved it gone; driver=maestro_ios_runner; driver_pid=4242; ",
+        ),
+        (
+            "ios",
+            "xcodebuild_test",
+            "an xcodebuild test session (host process 4242) was found on the selected device before dependencies and no later scan proved it gone; driver=xcodebuild_test; driver_pid=4242; ",
+        ),
+        (
+            "android",
+            "uiautomator",
+            "a UIAutomator process was found on the selected device before dependencies and no later scan proved it gone; driver=uiautomator; ",
+        ),
+    ] {
+        let mut mock = MockRunner::new();
+        let started = mock.now_epoch_ms();
+        for _ in 0..3 {
+            mock.expect_run("fresh-install-preflight.js", found(platform, driver));
+        }
+        // A fourth answer is never asked for.
+        mock.expect_run("fresh-install-preflight.js", driver_answer(platform, "clear", None));
+        let failure = driver_preflight(&mut mock, platform).unwrap_err();
+        assert_eq!((mock.calls.len(), mock.remaining()), (3, 1), "{driver}");
+        assert!(mock.calls.iter().all(|call| call.label == "driver-preflight"));
+        assert_eq!(mock.now_epoch_ms() - started, 4_000, "two pauses of two seconds");
+        assert_eq!(
+            (failure.phase.as_str(), failure.code, failure.subreason.as_deref()),
+            ("preflight", FailureCode::DeviceBusy, Some("foreign-driver"))
+        );
+        assert_eq!(
+            failure.detail.as_str(),
+            format!("{opening}scans=3; driver_scans=3; last_answer=driver; observed_ms=4000")
+        );
+        assert_eq!(failure.next_action.as_str(), DRIVER_NEXT_ACTION);
+        assert!(failure.evidence.is_empty());
+        let recovery = failure.build_recovery().unwrap();
+        assert_eq!(recovery.reason, qaren::failure::RecoveryReason::ForeignAdmissionUnresolved);
+        assert_eq!(recovery.action, qaren::failure::RecoveryAction::WaitForOwner);
+        assert_eq!(recovery.next_rung, Some(0));
+        assert!(!recovery.destroys_state && !recovery.requires_user_ok);
+    }
+}
+
+#[test]
+fn driver_preflight_goes_on_when_a_later_complete_scan_finds_no_driver() {
+    // One or two scans with the driver, then a complete scan without it: clear, or only a build.
+    for (driver_scans, last, last_word) in [
+        (1, driver_answer("ios", "clear", None), "clear"),
+        (2, driver_answer("ios", "clear", None), "clear"),
+        (1, found("ios", "xcodebuild_build"), "build_only"),
+    ] {
+        let mut mock = MockRunner::new();
+        let started = mock.now_epoch_ms();
+        for _ in 0..driver_scans {
+            mock.expect_run("fresh-install-preflight.js", found("ios", "maestro_ios_runner"));
+        }
+        mock.expect_run("fresh-install-preflight.js", last);
+        let notes = driver_preflight(&mut mock, "ios").unwrap();
+        let (result, detail) = preflight_notes(&notes);
+        assert_eq!(result, "clear_after_recheck");
+        assert_eq!(
+            detail,
+            format!("scans={}; elapsed_ms={}; last_answer={last_word}", driver_scans + 1, 2_000 * driver_scans)
+        );
+        assert_eq!(mock.now_epoch_ms() - started, 2_000 * driver_scans as u64);
+        assert_eq!(mock.remaining(), 0);
+    }
+}
+
+#[test]
+fn driver_preflight_goes_on_past_a_build_and_past_an_answer_that_proves_nothing() {
+    let unknown = |evidence: serde_json::Value| driver_answer("ios", "unknown", Some(evidence));
+    let strict_busy = CmdOutput {
+        exit_code: Some(4),
+        stdout: r#"{"v":1,"platform":"ios","deviceId":"AAAA-1111","status":"busy","evidence":{"reason":"driver_on_selected_device","pid":812}}"#.into(),
+        ..Default::default()
+    };
+    let mut other_device = driver_answer("ios", "clear", None);
+    other_device.stdout = other_device.stdout.replace("AAAA-1111", "BBBB-2222");
+    let mut other_check = driver_answer("ios", "clear", None);
+    other_check.stdout = other_check.stdout.replace("\"check\":\"driver\"", "\"check\":\"strict\"");
+    for (answer, result, word) in [
+        (found("ios", "xcodebuild_build"), "build_only", "build_only"),
+        (unknown(serde_json::json!({"reason": "driver_identity_unproven", "pid": 20})), "unproven", "driver_identity_unproven"),
+        (unknown(serde_json::json!({"reason": "scan_timeout"})), "unproven", "scan_timeout"),
+        (unknown(serde_json::json!({"reason": "candidate_budget_exceeded", "candidates": 65})), "unproven", "candidate_budget_exceeded"),
+        (driver_answer("ios", "unknown", None), "unproven", "unavailable"),
+        // An answer of strict admission, as a runtime without this check would give for the same command.
+        (strict_busy, "unproven", "invalid_response"),
+        (other_device, "unproven", "envelope_mismatch"),
+        (other_check, "unproven", "envelope_mismatch"),
+        (CmdOutput::failed(1, "not scripted"), "unproven", "invalid_response"),
+        (CmdOutput { timed_out: true, ..Default::default() }, "unproven", "scan_timeout"),
+    ] {
+        let mut mock = MockRunner::new();
+        let started = mock.now_epoch_ms();
+        mock.expect_run("fresh-install-preflight.js", answer);
+        mock.expect_run("fresh-install-preflight.js", driver_answer("ios", "clear", None));
+        let notes = driver_preflight(&mut mock, "ios").unwrap();
+        assert_eq!(
+            preflight_notes(&notes),
+            (result, format!("scans=1; elapsed_ms=0; last_answer={word}").as_str())
+        );
+        assert_eq!((mock.calls.len(), mock.remaining()), (1, 1), "{word}: one scan, no re-check");
+        assert_eq!(mock.now_epoch_ms(), started);
+    }
+}
+
+#[test]
+fn driver_preflight_keeps_a_driver_it_found_until_a_complete_scan_clears_it() {
+    let unknown = || driver_answer("ios", "unknown", Some(serde_json::json!({"reason": "scan_timeout"})));
+    // Found once, then two answers that prove nothing: refused, and the refusal says what the scans saw.
+    let mut mock = MockRunner::new();
+    mock.expect_run("fresh-install-preflight.js", found("ios", "maestro_ios_runner"));
+    mock.expect_run("fresh-install-preflight.js", unknown());
+    mock.expect_run("fresh-install-preflight.js", unknown());
+    mock.expect_run("fresh-install-preflight.js", driver_answer("ios", "clear", None));
+    let failure = driver_preflight(&mut mock, "ios").unwrap_err();
+    assert_eq!((mock.calls.len(), mock.remaining()), (3, 1));
+    assert_eq!(failure.code, FailureCode::DeviceBusy);
+    assert!(failure.detail.ends_with("; driver=maestro_ios_runner; driver_pid=4242; scans=3; driver_scans=1; last_answer=scan_timeout; observed_ms=4000"), "{}", failure.detail);
+
+    // Found, an answer that proves nothing, then a complete scan without it: the run goes on.
+    let mut mock = MockRunner::new();
+    mock.expect_run("fresh-install-preflight.js", found("ios", "maestro_ios_runner"));
+    mock.expect_run("fresh-install-preflight.js", unknown());
+    mock.expect_run("fresh-install-preflight.js", driver_answer("ios", "clear", None));
+    let notes = driver_preflight(&mut mock, "ios").unwrap();
+    assert_eq!(preflight_notes(&notes).0, "clear_after_recheck");
+    assert_eq!(mock.remaining(), 0);
+
+    // Another driver found later is the one named.
+    let mut mock = MockRunner::new();
+    mock.expect_run("fresh-install-preflight.js", found("ios", "maestro_ios_runner"));
+    mock.expect_run("fresh-install-preflight.js", found("ios", "webdriveragent"));
+    mock.expect_run("fresh-install-preflight.js", found("ios", "webdriveragent"));
+    let failure = driver_preflight(&mut mock, "ios").unwrap_err();
+    assert!(failure.detail.starts_with("a WebDriverAgent runner (host process 4242) was found"), "{}", failure.detail);
+    assert!(failure.detail.contains("; driver=webdriveragent; driver_pid=4242; scans=3; driver_scans=3; "));
+}
+
+#[test]
+fn driver_preflight_reads_no_answer_after_its_allowance() {
+    // Each scan takes five seconds: the second answer arrives at the twelfth second and is not read.
+    let mut mock = MockRunner::new();
+    let started = mock.now_epoch_ms();
+    mock.advance_on = Some(("fresh-install-preflight.js".into(), 5_000));
+    mock.expect_run("fresh-install-preflight.js", found("ios", "maestro_ios_runner"));
+    mock.expect_run("fresh-install-preflight.js", driver_answer("ios", "clear", None));
+    mock.expect_run("fresh-install-preflight.js", driver_answer("ios", "clear", None));
+    let failure = driver_preflight(&mut mock, "ios").unwrap_err();
+    assert_eq!((mock.calls.len(), mock.remaining()), (2, 1));
+    assert_eq!(mock.now_epoch_ms() - started, 12_000);
+    assert_eq!(
+        mock.calls.iter().map(|call| call.timeout_seconds).collect::<Vec<_>>(),
+        [10, 5],
+        "a scan's command gets what the allowance leaves, at most ten seconds"
+    );
+    assert!(failure.detail.ends_with("; scans=2; driver_scans=1; last_answer=deadline_exceeded; observed_ms=12000"), "{}", failure.detail);
+
+    // A driver found when no further scan fits after a pause: refused at once, naming what that scan saw.
+    let mut mock = MockRunner::new();
+    let started = mock.now_epoch_ms();
+    mock.advance_on = Some(("fresh-install-preflight.js".into(), 9_500));
+    mock.expect_run("fresh-install-preflight.js", found("ios", "maestro_ios_runner"));
+    mock.expect_run("fresh-install-preflight.js", driver_answer("ios", "clear", None));
+    let failure = driver_preflight(&mut mock, "ios").unwrap_err();
+    assert_eq!((mock.calls.len(), mock.remaining()), (1, 1));
+    assert_eq!(mock.now_epoch_ms() - started, 9_500, "no pause before a refusal");
+    assert!(failure.detail.ends_with("; scans=1; driver_scans=1; last_answer=driver; observed_ms=9500"), "{}", failure.detail);
+
+    // The same late answer with no driver seen before it: nothing is established and the run goes on.
+    let mut mock = MockRunner::new();
+    mock.advance_on = Some(("fresh-install-preflight.js".into(), 12_000));
+    mock.expect_run("fresh-install-preflight.js", found("ios", "maestro_ios_runner"));
+    let notes = driver_preflight(&mut mock, "ios").unwrap();
+    assert_eq!(
+        preflight_notes(&notes),
+        ("unproven", "scans=1; elapsed_ms=12000; last_answer=deadline_exceeded")
+    );
+}
+
+#[test]
+fn driver_preflight_cancelled_in_the_pause_stops_before_another_scan() {
+    let mut mock = MockRunner::new();
+    let started = mock.now_epoch_ms();
+    mock.cancel_at_ms = Some((started + 1_000, "SIGINT".into()));
+    mock.expect_run("fresh-install-preflight.js", found("ios", "maestro_ios_runner"));
+    mock.expect_run("fresh-install-preflight.js", driver_answer("ios", "clear", None));
+    let failure = driver_preflight(&mut mock, "ios").unwrap_err();
+    assert_eq!((failure.phase.as_str(), failure.code), ("preflight", FailureCode::RunCancelled));
+    assert_eq!((mock.calls.len(), mock.remaining()), (1, 1));
+}
+
+#[test]
+fn driver_preflight_reads_only_an_answer_whose_members_agree() {
+    let busy = |platform: &str, evidence: serde_json::Value| driver_answer(platform, "busy", Some(evidence));
+    let d = "driver_on_selected_device";
+    let mut exit_zero = found("ios", "maestro_ios_runner");
+    exit_zero.exit_code = Some(0);
+    let mut clear_exit_four = driver_answer("ios", "clear", None);
+    clear_exit_four.exit_code = Some(4);
+    // A null envelope member: the closed type would read it as absent.
+    let mut evidence_null = driver_answer("ios", "clear", None);
+    evidence_null.stdout = evidence_null.stdout.replace("\"v\":1", "\"v\":1,\"evidence\":null");
+    let mut extra_member = driver_answer("ios", "clear", None);
+    extra_member.stdout = extra_member.stdout.replace("\"v\":1", "\"v\":1,\"note\":\"/private/tool\"");
+    for (platform, answer, word) in [
+        // A class outside the list, a class of the other platform, a pid where none belongs or none where one does.
+        ("ios", busy("ios", serde_json::json!({"reason": d, "pid": 5, "driver": "/private/tool"})), "invalid_evidence"),
+        ("ios", busy("ios", serde_json::json!({"reason": d, "pid": 5, "driver": "uiautomator"})), "invalid_evidence"),
+        ("ios", busy("ios", serde_json::json!({"reason": d, "driver": "maestro_ios_runner"})), "invalid_evidence"),
+        ("ios", busy("ios", serde_json::json!({"reason": d, "pid": 0, "driver": "maestro_ios_runner"})), "invalid_evidence"),
+        ("ios", busy("ios", serde_json::json!({"reason": d, "pid": 5})), "invalid_evidence"),
+        ("ios", busy("ios", serde_json::json!({"reason": d, "pid": 5, "driver": "maestro_ios_runner", "candidates": 2})), "invalid_evidence"),
+        ("ios", busy("ios", serde_json::json!({"reason": d, "pid": 5, "driver": "maestro_ios_runner", "command": "/private/tool"})), "invalid_evidence"),
+        ("ios", busy("ios", serde_json::json!({"reason": d, "pid": null, "driver": "maestro_ios_runner"})), "invalid_evidence"),
+        // A null member that the closed type would read as absent: still not an answer of the scanner.
+        ("ios", busy("ios", serde_json::json!({"reason": d, "pid": 5, "driver": "maestro_ios_runner", "candidates": null})), "invalid_evidence"),
+        ("ios", busy("ios", serde_json::json!({"reason": "scan_failed", "pid": 5, "driver": "maestro_ios_runner"})), "invalid_evidence"),
+        ("ios", busy("ios", serde_json::json!([d])), "invalid_evidence"),
+        ("android", busy("android", serde_json::json!({"reason": d, "driver": "maestro_ios_runner"})), "invalid_evidence"),
+        ("android", busy("android", serde_json::json!({"reason": d, "driver": "xcodebuild_build"})), "invalid_evidence"),
+        ("android", busy("android", serde_json::json!({"reason": d, "pid": 5, "driver": "uiautomator"})), "invalid_evidence"),
+        // Status, exit code and evidence that do not belong together.
+        ("ios", driver_answer("ios", "unknown", Some(serde_json::json!({"reason": d, "pid": 5}))), "invalid_response"),
+        ("ios", driver_answer("ios", "unknown", Some(serde_json::json!({"reason": "scan_failed", "driver": "maestro_cli"}))), "invalid_response"),
+        ("ios", driver_answer("ios", "clear", Some(serde_json::json!({"reason": "scan_failed"}))), "invalid_response"),
+        ("ios", driver_answer("ios", "busy", None), "invalid_response"),
+        ("ios", exit_zero, "invalid_response"),
+        ("ios", clear_exit_four, "invalid_response"),
+        ("ios", extra_member, "invalid_response"),
+        ("ios", evidence_null, "invalid_response"),
+        ("android", driver_answer("ios", "clear", None), "envelope_mismatch"),
+    ] {
+        let mut mock = MockRunner::new();
+        mock.expect_run("fresh-install-preflight.js", answer.clone());
+        let notes = driver_preflight(&mut mock, platform).unwrap();
+        let (result, detail) = preflight_notes(&notes);
+        assert_eq!(
+            (result, detail),
+            ("unproven", format!("scans=1; elapsed_ms=0; last_answer={word}").as_str()),
+            "{}",
+            answer.stdout
+        );
+        assert!(!detail.contains("/private/tool"));
+    }
+    // The same answers after a driver was found: they neither clear it nor replace it.
+    let mut mock = MockRunner::new();
+    mock.expect_run("fresh-install-preflight.js", found("android", "uiautomator"));
+    mock.expect_run("fresh-install-preflight.js", busy("android", serde_json::json!({"reason": d, "driver": "xcodebuild_build"})));
+    mock.expect_run("fresh-install-preflight.js", driver_answer("ios", "clear", None));
+    let failure = driver_preflight(&mut mock, "android").unwrap_err();
+    assert!(failure.detail.ends_with("; driver=uiautomator; scans=3; driver_scans=1; last_answer=envelope_mismatch; observed_ms=4000"), "{}", failure.detail);
+}
+
 fn request() -> CoreRequest {
     CoreRequest {
         video_policy: Default::default(),

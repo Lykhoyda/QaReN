@@ -6988,6 +6988,369 @@ fn ios_fresh_install_out_of_time_admission_releases_the_lease() {
     assert_eq!(&timed_out, other.build_recovery().unwrap());
 }
 
+// AI-469: a UI driver already on the device is found right after the lease, before dependencies and the build.
+fn driver_check_answer(platform: &str, status: &str, evidence: Option<serde_json::Value>) -> CmdOutput {
+    let device = if platform == "ios" { UDID } else { EMULATOR };
+    let mut answer = serde_json::json!({
+        "v": 1, "platform": platform, "deviceId": device, "check": "driver", "status": status
+    });
+    if let Some(evidence) = evidence {
+        answer["evidence"] = evidence;
+    }
+    CmdOutput {
+        exit_code: Some(if status == "clear" { 0 } else { 4 }),
+        stdout: answer.to_string(),
+        ..Default::default()
+    }
+}
+
+// The answer a real scanner gives for a driver on each platform: a host pid on iOS, none on Android.
+fn driver_found(platform: &str) -> CmdOutput {
+    driver_check_answer(
+        platform,
+        "busy",
+        Some(if platform == "ios" {
+            serde_json::json!({"reason": "driver_on_selected_device", "pid": 4242, "driver": "maestro_ios_runner"})
+        } else {
+            serde_json::json!({"reason": "driver_on_selected_device", "driver": "uiautomator"})
+        }),
+    )
+}
+
+fn script_driver_check(mock: &mut MockRunner, platform: &str, answer: CmdOutput) {
+    let device = if platform == "ios" { UDID } else { EMULATOR };
+    mock.expect_run(
+        &format!("fresh-install-preflight.js --platform {platform} --device {device} --check driver"),
+        answer,
+    );
+}
+
+// A plain check up to the held lease and the free Metro port: the driver check is the next command.
+fn driver_preflight_check(platform: &str) -> (RunRequest, MockRunner, common::TempRepo) {
+    let (repo, app) = app_repo();
+    if platform == "android" {
+        let req = android_request(&repo, &app);
+        let mut mock = android_mock();
+        script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+        (req, mock, repo)
+    } else {
+        let mut mock = MockRunner::new();
+        script_preflight(&mut mock, &repo);
+        (request(&repo, &app, 30), mock, repo)
+    }
+}
+
+fn driver_check_scans(mock: &MockRunner) -> usize {
+    mock.calls.iter().filter(|c| c.label == "driver-preflight").count()
+}
+
+#[test]
+fn check_refuses_a_foreign_driver_before_dependencies_and_releases_the_lease() {
+    for (platform, opening) in [
+        (
+            "ios",
+            "a Maestro iOS UI-test runner (host process 4242) was found on the selected device before dependencies and no later scan proved it gone; driver=maestro_ios_runner; driver_pid=4242; scans=3; driver_scans=3; last_answer=driver; observed_ms=",
+        ),
+        (
+            "android",
+            "a UIAutomator process was found on the selected device before dependencies and no later scan proved it gone; driver=uiautomator; scans=3; driver_scans=3; last_answer=driver; observed_ms=",
+        ),
+    ] {
+        let (req, mut mock, repo) = driver_preflight_check(platform);
+        for _ in 0..3 {
+            script_driver_check(&mut mock, platform, driver_found(platform));
+        }
+        // On iOS every scan is dispatched while the saved record and the lock hold this run's lease.
+        let mut runner = LeaseObservedRunner {
+            mock,
+            repo: repo.to_path_buf(),
+            wire: None,
+            observed: Vec::new(),
+            expect_fresh_install: false,
+        };
+        let receipt = if platform == "ios" {
+            let receipt = run(&mut runner, &req);
+            assert_eq!(runner.observed, vec!["driver-preflight"; 3]);
+            receipt
+        } else {
+            run(&mut runner.mock, &req)
+        };
+        let mock = &runner.mock;
+
+        assert_eq!(receipt.result, ReceiptResult::Refused, "{platform}");
+        assert_eq!(mock.remaining(), 0);
+        assert_eq!(driver_check_scans(mock), 3);
+        let ran = labels(mock);
+        for later in ["pnpm-install", "expo-ios-build-help", "expo-run-ios", "metro", "core-walk", "fresh-install-admission"] {
+            assert!(!ran.iter().any(|l| l == later), "{platform}: {later} ran after the refusal");
+        }
+        assert_eq!(receipt.cleanup["device_lease"], "removed");
+        for stage in ["preflight", "deps", "plan", "build_and_ready", "walk"] {
+            assert!(!receipt.timings_ms.contains_key(stage), "{platform}: {stage} was timed");
+        }
+        assert!(!receipt.outcomes.contains_key("driver_preflight"));
+        assert_eq!(
+            receipt.next_action.as_str(),
+            "wait for the other automation session on this device to finish, then run the same command again; QaReN did not stop it and did not restart the device"
+        );
+        let failure = receipt.failure.unwrap();
+        assert_eq!(
+            (failure.phase.as_str(), failure.code, failure.subreason.as_deref()),
+            ("preflight", FailureCode::DeviceBusy, Some("foreign-driver"))
+        );
+        assert!(failure.detail.starts_with(opening), "{}", failure.detail);
+        let recovery = failure.build_recovery().unwrap();
+        assert_eq!(recovery.action, qaren::failure::RecoveryAction::WaitForOwner);
+        assert_eq!(recovery.next_rung, Some(0));
+        // As for every refusal at this point: an iOS record keeps the simulator's description, an emulator's nothing.
+        assert_eq!(recovery.own_cleanup_required, platform == "ios");
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert_eq!(record.phase, Phase::Failed);
+        assert!(record.resources.lease.is_none());
+    }
+}
+
+#[test]
+fn check_goes_on_to_dependencies_when_the_driver_check_finds_no_driver() {
+    for platform in ["ios", "android"] {
+        let unknown = |reason: &str| {
+            driver_check_answer(platform, "unknown", Some(serde_json::json!({ "reason": reason })))
+        };
+        let cases: [(&str, Vec<CmdOutput>, &str, &str); 5] = [
+            ("clear", vec![driver_check_answer(platform, "clear", None)], "clear", "clear"),
+            (
+                "a driver that leaves",
+                vec![driver_found(platform), driver_check_answer(platform, "clear", None)],
+                "clear_after_recheck",
+                "clear",
+            ),
+            (
+                "identity unproven",
+                vec![unknown("driver_identity_unproven")],
+                "unproven",
+                "driver_identity_unproven",
+            ),
+            ("a read stopped for time", vec![unknown("scan_timeout")], "unproven", "scan_timeout"),
+            // A fixture that scripts no scan gets the mock's failed command.
+            ("not scripted", vec![], "unproven", "invalid_response"),
+        ];
+        for (case, answers, result, last) in cases {
+            let (req, mut mock, _repo) = driver_preflight_check(platform);
+            let scans = answers.len();
+            for answer in answers {
+                script_driver_check(&mut mock, platform, answer);
+            }
+            mock.expect_run("pnpm install --frozen-lockfile", CmdOutput::failed(1, "fixture stop"));
+
+            let receipt = run(&mut mock, &req);
+
+            assert_eq!(mock.remaining(), 0, "{platform} {case}");
+            assert_eq!(receipt.failure.as_ref().unwrap().code, FailureCode::DepsInstallFailed, "{platform} {case}");
+            assert_eq!(receipt.outcomes["driver_preflight"], result, "{platform} {case}");
+            let detail = &receipt.outcomes["driver_preflight_detail"];
+            assert!(detail.starts_with("scans=1; ") || detail.starts_with("scans=2; "), "{detail}");
+            assert!(detail.ends_with(&format!("; last_answer={last}")), "{platform} {case}: {detail}");
+            assert_eq!(driver_check_scans(&mock), scans, "{platform} {case}");
+            if scans > 0 {
+                assert_subsequence(&labels(&mock), &["driver-preflight", "pnpm-install"]);
+            }
+            assert!(receipt.timings_ms.contains_key("preflight"));
+            assert_eq!(receipt.cleanup["device_lease"], "removed");
+        }
+    }
+}
+
+#[test]
+fn a_check_cancelled_between_two_driver_scans_ends_cancelled_and_releases_the_lease() {
+    for platform in ["ios", "android"] {
+        let (req, mut mock, _repo) = driver_preflight_check(platform);
+        script_driver_check(&mut mock, platform, driver_found(platform));
+        // The signal arrives during the two-second pause; no second scan is dispatched.
+        mock.cancel_at_ms = Some((mock.now_epoch_ms() + 1_000, "SIGINT".into()));
+
+        let receipt = run(&mut mock, &req);
+
+        assert_eq!(mock.remaining(), 0, "{platform}");
+        assert_eq!(driver_check_scans(&mock), 1);
+        let failure = receipt.failure.as_ref().unwrap();
+        assert_eq!((failure.phase.as_str(), failure.code), ("preflight", FailureCode::RunCancelled));
+        assert!(failure.subreason.is_none());
+        assert!(!labels(&mock).iter().any(|l| l == "pnpm-install"));
+        assert_eq!(receipt.cleanup["device_lease"], "removed");
+        let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+        assert!(record.resources.lease.is_none());
+    }
+}
+
+#[test]
+fn a_run_with_its_own_strict_admission_makes_no_driver_check() {
+    let strict_unknown = |platform: &str, device: &str| CmdOutput {
+        exit_code: Some(4),
+        stdout: serde_json::json!({"v": 1, "platform": platform, "deviceId": device, "status": "unknown"})
+            .to_string(),
+        ..Default::default()
+    };
+    // (platform, fresh install, boot, restart, shutdown on exit)
+    for (platform, fresh, boot, restart, shutdown) in [
+        ("ios", true, false, false, false),
+        ("ios", false, true, false, false),
+        ("ios", false, false, true, false),
+        ("ios", false, false, false, true),
+        ("android", true, false, false, false),
+    ] {
+        let (repo, app) = app_repo();
+        let (mut req, mut mock) = if platform == "android" {
+            let mut mock = android_mock();
+            script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+            (android_request(&repo, &app), mock)
+        } else {
+            let mut mock = MockRunner::new();
+            if boot || restart || shutdown {
+                script_preflight_inventory(
+                    &mut mock,
+                    &repo,
+                    "simctl list devices -j",
+                    &available_inventory(if boot { "Shutdown" } else { "Booted" }),
+                );
+            } else {
+                script_preflight(&mut mock, &repo);
+            }
+            (request(&repo, &app, 30), mock)
+        };
+        let device = if platform == "ios" { UDID } else { EMULATOR };
+        mock.expect_run(
+            &format!("fresh-install-preflight.js --platform {platform} --device {device}"),
+            strict_unknown(platform, device),
+        );
+        req.fresh_install = fresh;
+        req.boot_device = boot;
+        req.restart_device = restart;
+        req.shutdown_device_on_exit = shutdown;
+        if boot || restart || shutdown {
+            req.device = Some(UDID.to_string());
+        }
+
+        let receipt = run(&mut mock, &req);
+
+        let flags = format!("{platform} fresh={fresh} boot={boot} restart={restart} shutdown={shutdown}");
+        assert_eq!(mock.remaining(), 0, "{flags}");
+        assert_eq!(driver_check_scans(&mock), 0, "{flags}");
+        assert_eq!(labels(&mock).iter().filter(|l| *l == "fresh-install-admission").count(), 1, "{flags}");
+        assert!(!mock.calls.iter().any(|c| c.args.iter().any(|a| a == "--check")), "{flags}");
+        assert!(!receipt.outcomes.contains_key("driver_preflight"), "{flags}");
+        let failure = receipt.failure.unwrap();
+        assert_eq!(
+            (failure.phase.as_str(), failure.code),
+            ("fresh_install", FailureCode::FreshInstallAdmissionUnknown),
+            "{flags}"
+        );
+    }
+}
+
+// AI-469: on a USB phone every driver scan is dispatched while the run holds both the lease and the phone's claim.
+struct ClaimObservedRunner {
+    mock: MockRunner,
+    runs: PathBuf,
+    claims: Vec<PathBuf>,
+}
+
+impl Runner for ClaimObservedRunner {
+    fn env_var(&self, name: &str) -> Option<String> {
+        self.mock.env_var(name)
+    }
+    fn env_names(&self) -> Vec<String> {
+        self.mock.env_names()
+    }
+    fn adb_server_absent(&self, port: u16) -> bool {
+        self.mock.adb_server_absent(port)
+    }
+    fn adb_server_version(&self, port: u16) -> Result<u32, String> {
+        self.mock.adb_server_version(port)
+    }
+    fn adb_server_devices(&self, port: u16) -> Result<String, String> {
+        self.mock.adb_server_devices(port)
+    }
+    fn execute(&mut self, spec: &CmdSpec, interruptible: bool) -> CmdOutput {
+        if spec.label == "driver-preflight" {
+            let record = RunRecord::load(&self.runs, &run_id()).unwrap();
+            let lease = record.resources.lease.as_ref().expect("lease held at the driver check");
+            assert_eq!(qaren::buildplan::read_holder(&lease.lock_dir).unwrap().run_id, run_id());
+            let usb = record.resources.usb_device.as_ref().expect("phone claimed before the driver check");
+            assert_eq!(qaren::buildplan::read_holder(&usb.lock_dir).unwrap().run_id, run_id());
+            self.claims.push(usb.lock_dir.clone());
+        }
+        self.mock.execute(spec, interruptible)
+    }
+    fn execute_private(
+        &mut self,
+        spec: &CmdSpec,
+        input: &[u8],
+        interruptible: bool,
+    ) -> qaren::exec::PrivateOutput {
+        self.mock.execute_private(spec, input, interruptible)
+    }
+    fn spawn_group_unchecked(&mut self, spec: &CmdSpec, log: &Path) -> std::io::Result<Spawned> {
+        self.mock.spawn_group_unchecked(spec, log)
+    }
+    fn spawn_piped_unchecked(&mut self, spec: &CmdSpec, log: &Path) -> std::io::Result<PipedChild> {
+        self.mock.spawn_piped_unchecked(spec, log)
+    }
+    fn sleep(&mut self, duration: std::time::Duration) {
+        self.mock.sleep(duration);
+    }
+    fn log_lines(&mut self, log: &std::path::Path) -> Option<u64> {
+        self.mock.log_lines(log)
+    }
+    fn now_epoch_ms(&self) -> u64 {
+        self.mock.now_epoch_ms()
+    }
+    fn commands_executed(&self) -> u64 {
+        self.mock.commands_executed()
+    }
+    fn cancellation(&self) -> Option<String> {
+        self.mock.cancellation()
+    }
+}
+
+#[test]
+fn a_phone_check_scans_under_its_lease_and_claim_and_releases_both_on_refusal() {
+    let (repo, app) = app_repo();
+    let req = android_request(&repo, &app);
+    let mut mock = android_mock();
+    android_until_borrow(&repo, &mut mock);
+    script_phone_borrow(&mut mock, PHONE_BESIDE_OFFLINE_EMULATOR);
+    script_android_after_borrow(&mut mock, &repo);
+    for _ in 0..3 {
+        mock.expect_run(
+            &format!("fresh-install-preflight.js --platform android --device {PHONE} --check driver"),
+            CmdOutput {
+                exit_code: Some(4),
+                stdout: serde_json::json!({
+                    "v": 1, "platform": "android", "deviceId": PHONE, "check": "driver", "status": "busy",
+                    "evidence": {"reason": "driver_on_selected_device", "driver": "uiautomator"}
+                })
+                .to_string(),
+                ..Default::default()
+            },
+        );
+    }
+    let mut runner = ClaimObservedRunner { mock, runs: req.runs_root.clone(), claims: Vec::new() };
+
+    let receipt = run(&mut runner, &req);
+
+    assert_eq!(runner.mock.remaining(), 0, "{:?}", labels(&runner.mock));
+    assert_eq!(runner.claims.len(), 3);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(
+        (failure.phase.as_str(), failure.code, failure.subreason.as_deref()),
+        ("preflight", FailureCode::DeviceBusy, Some("foreign-driver"))
+    );
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(qaren::buildplan::read_holder(&runner.claims[0]).is_none(), "the phone claim was released");
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    assert!(record.resources.lease.is_none());
+}
+
 #[test]
 fn android_fresh_install_failures_use_the_ios_reset_codes() {
     let failed_list = CmdOutput::failed(1, "error: device offline");
@@ -7326,7 +7689,10 @@ impl LeaseObservedRunner {
         if spec.label == "host-sample" {
             return;
         }
-        if spec.label != "fresh-install-admission" && self.wire.is_none() {
+        // AI-469: the check before dependencies is dispatched under the durable lease too.
+        if !matches!(spec.label.as_str(), "fresh-install-admission" | "driver-preflight")
+            && self.wire.is_none()
+        {
             return;
         }
         let record = RunRecord::load(&self.repo.join("runs"), &run_id()).unwrap();
@@ -10184,6 +10550,46 @@ fn a_pr_record_keeps_divergent_ordinary_value_verdicts_and_no_config_path() {
         std::fs::remove_dir_all(repo).unwrap();
     }
 }
+
+// AI-469: `qaren pr` makes the same check, after its worktree exists and the lease is held.
+#[test]
+fn pr_refuses_a_foreign_driver_before_dependencies_and_removes_its_worktree() {
+    let (repo, app) = app_repo();
+    let mut req = pr_request(&repo, &app);
+    req.runs_root = repo.join(".qaren/runs");
+    let wt = req.runs_root.join(run_id()).join("wt");
+    let mut runner = PrRunner {
+        inner: MockRunner::new(),
+        app: app.clone(),
+        recorder_persisted_before_spawn: None,
+        fail_core_spawn: false,
+        planted_worktree_config: None,
+        worktree_config_planted: false,
+        fail_host_checkpoint: false,
+    };
+    let mock = &mut runner.inner;
+    script_pr_preflight(mock, &repo, &wt);
+    for _ in 0..3 {
+        script_driver_check(mock, "ios", driver_found("ios"));
+    }
+    mock.expect_run("du -sk", CmdOutput::success("4\n"));
+    mock.expect_run("worktree remove --force", CmdOutput::success(""));
+
+    let receipt = run(&mut runner, &req);
+
+    assert_eq!(runner.inner.remaining(), 0, "{:?}", labels(&runner.inner));
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(driver_check_scans(&runner.inner), 3);
+    let failure = receipt.failure.as_ref().unwrap();
+    assert_eq!(
+        (failure.phase.as_str(), failure.code, failure.subreason.as_deref()),
+        ("preflight", FailureCode::DeviceBusy, Some("foreign-driver"))
+    );
+    assert!(!labels(&runner.inner).iter().any(|l| l == "pnpm-install"));
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(receipt.cleanup["pr_worktree"].starts_with("removed"), "{:?}", receipt.cleanup);
+}
+
 #[test]
 fn recording_start_failures_remain_failed_through_cleanup_and_the_viewer() {
     for retained in [false, true] {

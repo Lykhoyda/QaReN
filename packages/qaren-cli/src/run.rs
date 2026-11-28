@@ -911,6 +911,25 @@ fn run_inner(
                 return finish_failed(ctx, f);
             }
         }
+        // A UI driver already on the device is found here, before dependencies, the build and the launch. A run
+        // that removes the app or changes the device makes its own strict admission before dependencies below.
+        if !(req.fresh_install
+            || req.boot_device
+            || req.restart_device
+            || req.shutdown_device_on_exit)
+        {
+            match core::foreign_driver_preflight(
+                ctx.runner,
+                &node,
+                &req.runtime_dir,
+                &project_root,
+                &device.id,
+                android_env.as_ref(),
+            ) {
+                Ok(notes) => ctx.notes.extend(notes),
+                Err(f) => return finish_failed(ctx, f),
+            }
+        }
         let t = ctx.mark("preflight", started_ms);
         events::stage("preflight", StageState::Passed, None, None);
         events::stage("deps", StageState::Running, None, None);

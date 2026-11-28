@@ -50,7 +50,11 @@ import {
   isAbort,
 } from '../domain/cancellation.js';
 import { promisify } from 'node:util';
-import { isIosSimulatorUdid } from './external-runner-detect.js';
+import {
+  isIosSimulatorUdid,
+  QAREN_IOS_RUNNER_ONLY_TESTING,
+  QAREN_IOS_RUNNER_SCHEME,
+} from './external-runner-detect.js';
 import type { ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { randomBytes, randomUUID } from 'node:crypto';
@@ -926,10 +930,10 @@ export async function startFastRunner(
   if (artifacts.note) pendingFastRunnerArtifactNote = artifacts.note;
   const plan = resolveRunnerStartPlan({
     projectPath,
-    scheme: 'QarenIosRunner',
+    scheme: QAREN_IOS_RUNNER_SCHEME,
     deviceId,
     derivedDataPath,
-    onlyTesting: 'QarenIosRunnerUITests/QarenIosRunnerTests/testCommand',
+    onlyTesting: QAREN_IOS_RUNNER_ONLY_TESTING,
     hasBuiltTestProduct: hasBuiltTestProduct(derivedDataPath),
   });
 

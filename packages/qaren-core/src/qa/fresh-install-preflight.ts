@@ -9,6 +9,7 @@ import {
   isAndroidUsbSerial,
   isIosSimulatorUdid,
   probeAndroidExternalRunnerAdmission,
+  probeAndroidForeignDriver,
   probeIosExternalRunnerAdmission,
   type IosStrictRunnerStatus,
   type IosAdmissionProbeEvidence,
@@ -20,6 +21,8 @@ export interface FreshInstallPreflightResult {
   deviceId: string;
   status: IosStrictRunnerStatus;
   evidence?: IosAdmissionProbeEvidence;
+  // Present only in the answer of the check before dependencies.
+  check?: 'driver';
 }
 
 async function observeProcess(
@@ -65,12 +68,14 @@ export async function freshInstallPreflight(args: string[]): Promise<FreshInstal
     deviceId: '',
     status: 'unknown',
   };
-  if (![4, 6, 8].includes(args.length)) return invalid;
+  if (![4, 6, 8, 10].includes(args.length)) return invalid;
   const options = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
     const key = args[i];
     if (
-      !['--platform', '--device', '--process-observer', '--scan-timeout-ms'].includes(key) ||
+      !['--platform', '--device', '--process-observer', '--scan-timeout-ms', '--check'].includes(
+        key,
+      ) ||
       options.has(key)
     )
       return invalid;
@@ -86,7 +91,35 @@ export async function freshInstallPreflight(args: string[]): Promise<FreshInstal
       scanTimeoutMs > ADMISSION_SCAN_TIMEOUT_MS.max)
   )
     return invalid;
+  // `--check driver` asks for the check before dependencies instead of strict admission.
+  const check = options.get('--check');
+  if (check !== undefined && check !== 'driver') return invalid;
   const deviceId = options.get('--device');
+  if (
+    check === 'driver' &&
+    options.get('--platform') === 'android' &&
+    deviceId &&
+    (isAndroidEmulatorSerial(deviceId) || isAndroidUsbSerial(deviceId)) &&
+    !options.has('--process-observer')
+  ) {
+    const { status, reason, driver } = await probeAndroidForeignDriver(
+      deviceId,
+      undefined,
+      scanTimeoutMs,
+    );
+    return {
+      v: 1,
+      platform: 'android',
+      deviceId,
+      check,
+      status,
+      ...(status === 'busy' && driver
+        ? { evidence: { reason: 'driver_on_selected_device', driver } }
+        : reason
+          ? { evidence: { reason } }
+          : {}),
+    };
+  }
   if (
     options.get('--platform') === 'android' &&
     deviceId &&
@@ -115,6 +148,7 @@ export async function freshInstallPreflight(args: string[]): Promise<FreshInstal
     v: 1,
     platform: 'ios',
     deviceId,
+    ...(check ? { check } : {}),
     ...(await probeIosExternalRunnerAdmission(
       undefined,
       deviceId,
@@ -123,6 +157,7 @@ export async function freshInstallPreflight(args: string[]): Promise<FreshInstal
             observeProcess(observer, pid, timeout, withArgv, inspection)
         : undefined,
       scanTimeoutMs,
+      check === 'driver',
     )),
   };
 }
