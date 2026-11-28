@@ -6946,6 +6946,127 @@ fn android_fresh_install_refuses_busy_or_unknown_admission_before_any_uninstall(
     }
 }
 
+// AI-511: a scan that keeps timing out refuses out of time after the scans the allowance holds. The check's own
+// teardown releases the lease and nothing is uninstalled; the advice and recovery are those of an unknown refusal.
+#[test]
+fn android_fresh_install_out_of_time_admission_releases_the_lease() {
+    let (repo, app) = app_repo();
+    let mut req = android_request(&repo, &app);
+    req.fresh_install = true;
+    let mut mock = android_mock();
+    script_android_preflight(&mut mock, &repo, ONE_EMULATOR, EMULATOR);
+    for _ in 0..53 {
+        mock.expect_run(
+            &format!("fresh-install-preflight.js --platform android --device {EMULATOR}"),
+            CmdOutput {
+                exit_code: Some(4),
+                stdout: serde_json::json!({
+                    "v": 1, "platform": "android", "deviceId": EMULATOR, "status": "unknown",
+                    "evidence": { "reason": "scan_timeout" }
+                })
+                .to_string(),
+                ..Default::default()
+            },
+        );
+    }
+
+    let receipt = run(&mut mock, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(mock.remaining(), 0);
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(receipt
+        .next_action
+        .starts_with("run qaren doctor; restore process observation"));
+    let failure = receipt.failure.unwrap();
+    assert!(failure.detail.contains("; attempts=53; scan_timeouts_ms=2000,4000,8000,16000,"));
+    assert_eq!(
+        (failure.phase.as_str(), failure.code),
+        ("fresh_install", FailureCode::FreshInstallAdmissionUnknown)
+    );
+    assert!(failure
+        .detail
+        .starts_with("the process-table read timed out before admission could prove the device clear; "));
+    let recovery = failure.build_recovery().unwrap();
+    assert_eq!(recovery.action, qaren::failure::RecoveryAction::RestoreProcessObservation);
+    assert!(!recovery.own_cleanup_required && recovery.own_run_id.is_none());
+    assert!(!adb_calls(&mock)
+        .iter()
+        .any(|c| c.contains("pm list packages") || c.contains("uninstall")));
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    assert!(record.resources.fresh_install.is_none() && record.resources.lease.is_none());
+}
+
+// The same on a borrowed iOS simulator. Its record keeps the simulator's description, so the recovery names the
+// run's own cleanup, as it does for every other admission refusal of an iOS check; the lease is released.
+#[test]
+fn ios_fresh_install_out_of_time_admission_releases_the_lease() {
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    let answer = |reason: &str| CmdOutput {
+        exit_code: Some(4),
+        stdout: serde_json::json!({
+            "v": 1, "platform": "ios", "deviceId": UDID, "status": "unknown",
+            "evidence": { "reason": reason }
+        })
+        .to_string(),
+        ..Default::default()
+    };
+    for _ in 0..53 {
+        mock.expect_run("fresh-install-preflight.js", answer("scan_timeout"));
+    }
+    let mut req = request(&repo, &app, 30);
+    req.fresh_install = true;
+    let mut runner = LeaseObservedRunner {
+        mock,
+        repo: repo.to_path_buf(),
+        wire: None,
+        observed: Vec::new(),
+        expect_fresh_install: true,
+    };
+
+    let receipt = run(&mut runner, &req);
+
+    assert_eq!(receipt.result, ReceiptResult::Refused);
+    assert_eq!(runner.mock.remaining(), 0);
+    assert_eq!(runner.observed, vec!["fresh-install-admission"; 53]);
+    assert_eq!(receipt.cleanup["device_lease"], "removed");
+    assert!(receipt
+        .next_action
+        .starts_with("run qaren doctor; restore process observation"));
+    let failure = receipt.failure.unwrap();
+    assert_eq!(failure.code, FailureCode::FreshInstallAdmissionUnknown);
+    assert!(failure
+        .detail
+        .starts_with("the process-table read timed out before admission could prove the device clear; "));
+    let timed_out = failure.build_recovery().unwrap().clone();
+    assert_eq!(timed_out.action, qaren::failure::RecoveryAction::RestoreProcessObservation);
+    // The borrowed simulator's description stays in the record, so the recovery names this run's cleanup.
+    assert!(timed_out.own_cleanup_required);
+    assert_eq!(timed_out.own_run_id.as_deref(), Some(run_id().as_str()));
+    let record = RunRecord::load(&req.runs_root, &run_id()).unwrap();
+    assert_eq!(record.phase, Phase::Failed);
+    assert!(record.resources.lease.is_none());
+
+    // The recovery object is what a scan that failed for another reason gets on the same simulator.
+    let (repo, app) = app_repo();
+    let mut mock = MockRunner::new();
+    script_preflight(&mut mock, &repo);
+    mock.expect_run("fresh-install-preflight.js", answer("scan_failed"));
+    let mut req = request(&repo, &app, 30);
+    req.fresh_install = true;
+    let mut runner = LeaseObservedRunner {
+        mock,
+        repo: repo.to_path_buf(),
+        wire: None,
+        observed: Vec::new(),
+        expect_fresh_install: true,
+    };
+    let other = run(&mut runner, &req).failure.unwrap();
+    assert_eq!(&timed_out, other.build_recovery().unwrap());
+}
+
 #[test]
 fn android_fresh_install_failures_use_the_ios_reset_codes() {
     let failed_list = CmdOutput::failed(1, "error: device offline");

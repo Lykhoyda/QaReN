@@ -7232,7 +7232,9 @@ fn borrowed_dry_run_plans_the_exact_target_without_creating_leasing_or_recording
 
 #[test]
 fn fresh_admission_prepare_preserves_cause_specific_recovery_and_retains_the_lease() {
-    for foreign in [true, false] {
+    // AI-511: "timeout" is a scan that timed out on every wait the allowance fits.
+    for case in ["foreign", "unknown", "timeout"] {
+        let foreign = case == "foreign";
         let repo = common::temp_repo();
         let scenario_path = write_scenario(&repo, &ios_scenario_yaml(8791));
         let mut mock = MockRunner::new();
@@ -7242,18 +7244,25 @@ fn fresh_admission_prepare_preserves_cause_specific_recovery_and_retains_the_lea
             "simctl list devices -j",
             CmdOutput::success(&borrowed_inventory("Booted")),
         );
-        mock.expect_run(
-        "fresh-install-preflight.js --platform ios --device",
-        CmdOutput {
-            exit_code: Some(4),
-            ..CmdOutput::success(
-                &serde_json::json!({"v":1,"platform":"ios","deviceId":BORROWED,
-                    "status":if foreign { "busy" } else { "unknown" },
-                    "evidence":{"reason":if foreign { "driver_on_selected_device" } else { "scan_unavailable" },"pid":812}})
-                    .to_string(),
-            )
-        },
-    );
+        // Scans that cost no time: 53 fit before the room for a 2 s wait is gone.
+        for _ in 0..if case == "timeout" { 53 } else { 1 } {
+            mock.expect_run(
+                "fresh-install-preflight.js --platform ios --device",
+                CmdOutput {
+                    exit_code: Some(4),
+                    ..CmdOutput::success(
+                        &serde_json::json!({"v":1,"platform":"ios","deviceId":BORROWED,
+                            "status":if foreign { "busy" } else { "unknown" },
+                            "evidence": match case {
+                                "foreign" => serde_json::json!({"reason":"driver_on_selected_device","pid":812}),
+                                "unknown" => serde_json::json!({"reason":"scan_unavailable","pid":812}),
+                                _ => serde_json::json!({"reason":"scan_timeout"}),
+                            }})
+                        .to_string(),
+                    )
+                },
+            );
+        }
 
         let receipt = prepare(&mut mock, &borrowed_args(&scenario_path, true));
 
@@ -7277,10 +7286,11 @@ fn fresh_admission_prepare_preserves_cause_specific_recovery_and_retains_the_lea
                 .run_id,
             receipt.run_id
         );
-        assert!(receipt.next_action.contains(if foreign {
-            "wait for the foreign process owner"
-        } else {
-            "qaren doctor"
+        assert!(receipt.next_action.contains(match case {
+            "foreign" => "wait for the foreign process owner",
+            // An out-of-time refusal keeps the advice of the other unknown refusals; it is not replaced by a
+            // cleanup command.
+            _ => "qaren doctor; restore process observation",
         }));
         let recovery = receipt.failure.as_ref().unwrap().build_recovery().unwrap();
         assert!(recovery.own_cleanup_required);
@@ -7290,10 +7300,10 @@ fn fresh_admission_prepare_preserves_cause_specific_recovery_and_retains_the_lea
         );
         assert_eq!(
             recovery.action,
-            if foreign {
-                qaren::failure::RecoveryAction::WaitForOwner
-            } else {
-                qaren::failure::RecoveryAction::RestoreProcessObservation
+            match case {
+                "foreign" => qaren::failure::RecoveryAction::WaitForOwner,
+                // An out-of-time refusal keeps the recovery of the other unknown refusals.
+                _ => qaren::failure::RecoveryAction::RestoreProcessObservation,
             }
         );
     }
