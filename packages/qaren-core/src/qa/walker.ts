@@ -4460,7 +4460,8 @@ async function walkBlockScoped(
           const waitStarted = itemStartedAt;
           const deadline = itemDeadline!;
           const held = cached?.item === item ? cached : undefined;
-          const readFrom = deps.now();
+          // Only a walk that can ask its runner measures the read it may refund.
+          const readFrom = deps.recoverRunner ? deps.now() : 0;
           let observation: Observation;
           try {
             observation =
