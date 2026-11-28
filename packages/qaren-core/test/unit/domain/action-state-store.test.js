@@ -7,6 +7,7 @@
 //   - persist() dual-writes BOTH sidecar AND a DB row, and APPENDS history
 //   - a DB mirror failure never throws and never corrupts the sidecar
 //   - resetActionStore() allows reopening after close
+import '../../helpers/private-tmp.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';

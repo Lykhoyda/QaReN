@@ -1,3 +1,4 @@
+import '../../helpers/private-tmp.ts';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

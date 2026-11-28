@@ -89,6 +89,9 @@ jobs:
       - name: using-qaren skill content unit test
         run: node --test scripts/test/using-qaren-scope.test.ts
 
+      - name: Test temp folder guard unit test
+        run: node --test scripts/test/test-tmp-guard.test.ts
+
       - name: qaren tarball, SessionStart hook and install unit tests
         run: |
           node --test scripts/test/build-qaren-tarball.test.ts
@@ -182,8 +185,9 @@ jobs:
       - name: Build core for CLI integration tests
         run: corepack yarn build:core
       - uses: dtolnay/rust-toolchain@stable
+      # The guard gives the run an empty temp folder and fails a passing run that leaves an entry in it.
       - name: cargo test (locked)
-        run: cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked
+        run: node scripts/test-tmp-guard.mts -- cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked
 
   qaren-tarball:
     name: qaren tarball smoke (macOS)

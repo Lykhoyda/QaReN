@@ -1,4 +1,5 @@
 // GH #397 Phase 1 — engine pin manifest + pure classification truth table.
+import '../helpers/private-tmp.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';

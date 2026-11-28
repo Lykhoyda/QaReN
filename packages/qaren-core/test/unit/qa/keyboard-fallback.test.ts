@@ -1,3 +1,4 @@
+import '../../helpers/private-tmp.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';

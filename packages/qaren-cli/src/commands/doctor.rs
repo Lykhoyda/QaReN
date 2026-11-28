@@ -4623,14 +4623,8 @@ mod lane_row_tests {
         )
     }
 
-    fn log_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "qaren-doctor-lane-log-{name}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        root.canonicalize().unwrap()
+    fn log_root(name: &str) -> crate::test_tmp::TestDir {
+        crate::test_tmp::TestDir::new(&format!("qaren-doctor-lane-log-{name}"))
     }
 
     const DETAIL: &str = "simulator AAAABBBB-1111-2222-3333-444455556666 keeps typed and displayed field text in its system log; QaReN removes the log of a simulator it did not create only after a run started with --shutdown-device-on-exit shuts it down";
@@ -4662,10 +4656,12 @@ mod lane_row_tests {
 
     #[test]
     fn lane_log_row_without_a_checked_path_gives_the_generic_fix() {
-        let quoted = log_root("quote").join("it's");
+        let quote_root = log_root("quote");
+        let quoted = quote_root.join("it's");
         let quoted_data = quoted.join("CoreSimulator/Devices").join(UDID).join("data");
         std::fs::create_dir_all(&quoted_data).unwrap();
-        let outside = log_root("outside").join("data");
+        let outside_root = log_root("outside");
+        let outside = outside_root.join("data");
         std::fs::create_dir_all(&outside).unwrap();
         for list in [
             log_list(&quoted_data),

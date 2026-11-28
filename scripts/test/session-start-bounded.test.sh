@@ -43,7 +43,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$tmp/plugin/scripts" "$tmp/bin" "$tmp/home"
+mkdir -p "$tmp/plugin/scripts" "$tmp/bin" "$tmp/home" "$tmp/tmp"
+# A hook this test kills cannot remove its own temp file; keep those under the folder removed above.
+export TMPDIR="$tmp/tmp"
 cp "$SCRIPT" "$tmp/plugin/scripts/ensure-qaren.sh"
 # Substitute the hardware adapter only in the test copy.
 TEST_SYSCTL="$tmp/bin/sysctl" perl -pi -e 's{/usr/sbin/sysctl}{$ENV{TEST_SYSCTL}}g' "$tmp/plugin/scripts/ensure-qaren.sh"

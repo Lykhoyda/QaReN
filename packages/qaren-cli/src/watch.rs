@@ -1665,9 +1665,8 @@ mod tests {
         assert!(!out.iter().any(|l| l.starts_with("        line")));
     }
 
-    fn temp_runs(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("qaren-watch-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+    fn temp_runs(name: &str) -> crate::test_tmp::TestDir {
+        let root = crate::test_tmp::TestDir::new(&format!("qaren-watch-{name}"));
         std::fs::create_dir_all(root.join("check-1").join("logs")).unwrap();
         root
     }

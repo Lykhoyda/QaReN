@@ -7,6 +7,7 @@
 // gate correctly, so the new guard fires only for new callers that
 // miss the contract — exactly the threat model the issue describes
 // (e.g. the planned #104 auto-repair-on-failure wiring).
+import '../helpers/private-tmp.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, utimesSync, mkdirSync, readFileSync } from 'node:fs';

@@ -147,11 +147,8 @@ mod tests {
     const OLD: &str = "1d9e04aa1d9e04aa1d9e04aa1d9e04aa1d9e04aa1d9e04aa1d9e04aa1d9e04aa";
     const NEW: &str = "7f3a2c1e7f3a2c1e7f3a2c1e7f3a2c1e7f3a2c1e7f3a2c1e7f3a2c1e7f3a2c1e";
 
-    fn scratch(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("qaren-update-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        root
+    fn scratch(name: &str) -> crate::test_tmp::TestDir {
+        crate::test_tmp::TestDir::new(&format!("qaren-update-{name}"))
     }
 
     fn git(dir: &Path, args: &[&str]) -> String {

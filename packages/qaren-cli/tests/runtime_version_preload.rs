@@ -1,4 +1,6 @@
 // Runs QaReN's runtime-version preload in real Node against a fake expo / @expo/cli install.
+mod common;
+
 use qaren::adapters::metro;
 use qaren::expo_updates::{write_preload, PIN_FILE, RESOLVED_MARKER};
 use std::path::{Path, PathBuf};
@@ -37,6 +39,7 @@ module.exports.other = r.other;
 }
 
 struct Fixture {
+    _root: common::TempRepo,
     app: PathBuf,
     run_dir: PathBuf,
     store_cli: PathBuf,
@@ -45,8 +48,7 @@ struct Fixture {
 // pnpm's isolated layout: `node_modules/expo` links into the store, where @expo/cli is expo's sibling;
 // a hoisted duplicate CLI at the app's top level must stay untouched.
 fn fixture(name: &str) -> Fixture {
-    let root = std::env::temp_dir().join(format!("qaren-preload-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = common::temp_dir(&format!("qaren-preload-{name}"));
     let app = root.join("app");
     let store = app.join("node_modules/.pnpm/expo@1.0.0/node_modules");
     write(&store.join("expo/package.json"), r#"{"name":"expo"}"#);
@@ -66,6 +68,7 @@ fn fixture(name: &str) -> Fixture {
     let run_dir = root.join("runs/run one");
     std::fs::create_dir_all(&run_dir).unwrap();
     Fixture {
+        _root: root,
         app,
         run_dir,
         store_cli,

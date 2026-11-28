@@ -363,14 +363,7 @@ mod tests {
         assert!(write_preload(&dir.join("missing"), &dir).is_none());
     }
 
-    fn tempfile_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "qaren-expo-updates-{name}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn tempfile_dir(name: &str) -> crate::test_tmp::TestDir {
+        crate::test_tmp::TestDir::new(&format!("qaren-expo-updates-{name}"))
     }
 }

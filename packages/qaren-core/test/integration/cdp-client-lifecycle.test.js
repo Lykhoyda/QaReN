@@ -1,13 +1,11 @@
+import '../helpers/private-tmp.ts';
 import { before, after, test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startFakeCDP } from '../helpers/fake-cdp-server.js';
 import { CDPClient } from '../../dist/cdp-client.js';
-
-const tmpDir = mkdtempSync(join(tmpdir(), 'cdp-test-'));
-process.env.TMPDIR = tmpDir;
 
 async function poll(fn, timeoutMs = 12000, intervalMs = 200) {
   const deadline = Date.now() + timeoutMs;
@@ -34,6 +32,18 @@ describe('CDPClient lifecycle', () => {
     try {
       await client.autoConnect(server.port);
       assert.equal(client.isConnected, true);
+    } finally {
+      await client.disconnect();
+    }
+  });
+
+  // The client fixes its flag paths when its module loads, so the private temp folder must be in place first.
+  test("a connected client keeps its flag file in this process's private temp folder", async () => {
+    const client = new CDPClient(server.port);
+    try {
+      await client.autoConnect(server.port);
+      assert.match(tmpdir(), /\/qaren-node-test-[A-Za-z0-9]{6}$/);
+      assert.equal(existsSync(join(tmpdir(), 'qaren-cdp-active')), true);
     } finally {
       await client.disconnect();
     }

@@ -3,6 +3,7 @@
 // classifier emits the qualifier into the envelope, and RUNTIME_DEGRADED
 // advice is gated: verify-first caveat on a ledger-proven trailing
 // verification, verbatim reboot advice for early failures and true wedges.
+import '../helpers/private-tmp.ts';
 import { afterEach, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';

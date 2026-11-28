@@ -524,10 +524,8 @@ mod tests {
 
     const PLAN: &str = "# Add a task\n\n## QA\n\n### Add one\n1. Tap \"Add\"\n";
 
-    fn app(name: &str) -> PathBuf {
-        let root =
-            std::env::temp_dir().join(format!("qaren-recipes-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+    fn app(name: &str) -> crate::test_tmp::TestDir {
+        let root = crate::test_tmp::TestDir::new(&format!("qaren-recipes-{name}"));
         std::fs::create_dir_all(root.join(".qaren/plans")).unwrap();
         root
     }
@@ -569,17 +567,19 @@ mod tests {
     fn concurrent_platform_flags_keep_both_markers() {
         let app = app("both-platforms");
         let path = recipe(&app, "x.md", PLAN);
-        let threads: Vec<_> = ["ios", "android", "ios", "android"]
-            .into_iter()
-            .map(|platform| {
-                let path = path.clone();
-                std::thread::spawn(move || flag(&path, platform, PLAN).outcome)
-            })
-            .collect();
-        for thread in threads {
-            assert_ne!(thread.join().unwrap(), Outcome::NotMarked);
+        // Scoped, so every writer has ended before the folder's owner can drop.
+        let path = &path;
+        let outcomes: Vec<_> = std::thread::scope(|scope| {
+            let threads: Vec<_> = ["ios", "android", "ios", "android"]
+                .into_iter()
+                .map(|platform| scope.spawn(move || flag(path, platform, PLAN).outcome))
+                .collect();
+            threads.into_iter().map(|t| t.join().unwrap()).collect()
+        });
+        for outcome in outcomes {
+            assert_ne!(outcome, Outcome::NotMarked);
         }
-        let text = std::fs::read_to_string(&path).unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
         assert_eq!(
             broken(&text),
             vec!["ios".to_string(), "android".to_string()]
@@ -835,13 +835,13 @@ mod tests {
     #[test]
     fn concurrent_saves_of_one_recipe_leave_one_file() {
         let app = app("race");
-        let threads: Vec<_> = (0..8)
-            .map(|_| {
-                let app = app.clone();
-                std::thread::spawn(move || save(&app, "x", PLAN).outcome)
-            })
-            .collect();
-        let outcomes: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        // Scoped, so every writer has ended before the folder's owner can drop.
+        let outcomes: Vec<_> = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| save(&app, "x", PLAN).outcome))
+                .collect();
+            threads.into_iter().map(|t| t.join().unwrap()).collect()
+        });
         assert_eq!(outcomes.iter().filter(|o| **o == Outcome::Saved).count(), 1);
         let names: Vec<_> = std::fs::read_dir(app.join(".qaren/plans"))
             .unwrap()

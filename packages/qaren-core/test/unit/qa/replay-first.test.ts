@@ -1,3 +1,4 @@
+import '../../helpers/private-tmp.ts';
 import { renderReason } from '../../../dist/qa/untrusted.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';

@@ -62,7 +62,7 @@ corepack yarn format:check
 corepack yarn lint
 bash scripts/check-typescript-only.sh
 corepack yarn build && corepack yarn test
-cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked
+node scripts/test-tmp-guard.mts -- cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked
 ```
 
 The commands above need no simulator. For a docs site change, run
@@ -70,6 +70,14 @@ The commands above need no simulator. For a docs site change, run
 change, run `corepack yarn test:native:android` (needs a JDK and the Android SDK); the iOS
 runner's tests need a simulator, as the [repository guide](AGENTS.md#validation-commands)
 describes.
+
+A new test owns its temp folder. In `packages/qaren-cli` create it with
+`crate::test_tmp::TestDir::new` (`src`) or `common::temp_dir` (`tests`) and keep the
+returned owner bound until the test ends; in `packages/qaren-core` a test file that writes
+under `os.tmpdir()` imports `test/helpers/private-tmp.ts` first. `scripts/test-tmp-guard.mts`
+runs a command in an empty temp folder and fails a passing run that leaves an entry there
+(`TEST_TMP_LEFTOVER`; two tool caches are exempt); the core test scripts and CI's `cargo test`
+step run through it.
 
 If your change affects what happens on a device, say in the
 pull request whether you tried it on a simulator, and how.

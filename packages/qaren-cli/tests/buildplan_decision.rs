@@ -1,3 +1,5 @@
+mod common;
+
 use qaren::buildplan::{
     claim_lock, decide, lock_dir, release_lock, ArtifactKind, ArtifactStatus, BuildDecision,
     CachedArtifact, DecisionInputs, LockHolder, LockOutcome, LockPolicy, NativeCacheState,
@@ -6,20 +8,11 @@ use qaren::buildplan::{
 use qaren::exec::{CmdOutput, MockRunner};
 use qaren::runrecord::PidIdentity;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 
 static NO_PARTS: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
 
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-fn temp_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "qaren-lock-test-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::SeqCst)
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_dir() -> common::TempRepo {
+    common::temp_dir("qaren-lock-test")
 }
 
 const FP: &str = "rnfp1:aaaa";
@@ -761,16 +754,7 @@ fn a_stored_build_needs_verification_completeness_and_a_scheme_to_reuse() {
 fn store_records_name_their_artifact_relative_to_the_entry_and_are_written_once() {
     use qaren::buildplan::{load_store_record, publish_store_record, store_dir, STORE_RECORD};
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let fixture = std::env::temp_dir().join(format!(
-        "qaren-store-record-test-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::SeqCst)
-    ));
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(&fixture)
-        .unwrap();
-    let fixture = fixture.canonicalize().unwrap();
+    let fixture = common::temp_dir("qaren-store-record-test");
     let root = fixture.join("store");
     let store = qaren::buildplan::open_native_store_root(&root, true)
         .unwrap()

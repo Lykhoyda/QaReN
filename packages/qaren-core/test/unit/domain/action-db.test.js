@@ -1,6 +1,7 @@
 // Task 1: action-db — ESM loader + open + schema + PRAGMA + graceful degradation
 // Task 2: action-db — append-and-trim writes, upsertIndex (COALESCE), loadState, recentRepairCount
 // Task 3: action-db — migrateSidecars() one-time import of legacy JSON sidecars
+import '../../helpers/private-tmp.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';

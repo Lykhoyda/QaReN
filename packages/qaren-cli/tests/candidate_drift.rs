@@ -536,9 +536,10 @@ fn a_real_checkout_whose_path_or_repository_vanishes_is_unreadable_but_a_new_com
     assert!(verify_unchanged_with(&mut runner, &baseline, true).is_ok());
 
     let unmounted = repo.with_extension("unmounted");
-    std::fs::rename(&repo, &unmounted).unwrap();
-    let result = verify_unchanged_with(&mut runner, &baseline, true);
-    std::fs::rename(&unmounted, &repo).unwrap();
+    let result = {
+        let _away = common::rename_away(&repo, &unmounted);
+        verify_unchanged_with(&mut runner, &baseline, true)
+    };
     println!("path vanished: {result:?}");
     assert!(
         matches!(&result, Err(CandidateCheck::Unreadable(d)) if d.contains("repository root")),

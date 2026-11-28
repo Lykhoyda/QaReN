@@ -170,10 +170,10 @@ bash scripts/sync-versions.sh
 corepack yarn build && corepack yarn test
 corepack yarn test:integration
 corepack yarn workspace qaren-core test:contract
-cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked
+node scripts/test-tmp-guard.mts -- cargo test --manifest-path packages/qaren-cli/Cargo.toml --locked
 bash scripts/check-public-runner-assets.sh
 for t in scripts/test/*.test.sh; do bash "$t"; done
-node --test scripts/test/check-document-ownership.test.ts scripts/test/assert-qaren-check.test.ts scripts/test/gate-qaren-check.test.ts scripts/test/native-ios-command.test.ts
+node --test scripts/test/check-document-ownership.test.ts scripts/test/assert-qaren-check.test.ts scripts/test/gate-qaren-check.test.ts scripts/test/native-ios-command.test.ts scripts/test/test-tmp-guard.test.ts
 corepack yarn build:docs
 ```
 

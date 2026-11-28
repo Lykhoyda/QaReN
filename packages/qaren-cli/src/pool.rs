@@ -227,17 +227,8 @@ mod tests {
         .to_string()
     }
 
-    fn temp_root() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "qaren-pool-unit-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_root() -> crate::test_tmp::TestDir {
+        crate::test_tmp::TestDir::new("qaren-pool-unit")
     }
 
     #[test]

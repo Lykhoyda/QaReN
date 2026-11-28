@@ -2,6 +2,7 @@
 // reinstall, and cdp_run_action must be able to supply the `.app` at all —
 // its missing `appFile` parameter made the documented advice unfollowable.
 
+import '../helpers/private-tmp.ts';
 import { afterEach, beforeEach, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';

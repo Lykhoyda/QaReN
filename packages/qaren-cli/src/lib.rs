@@ -36,6 +36,8 @@ pub mod report;
 pub mod run;
 pub mod runrecord;
 pub mod scenario;
+#[cfg(test)]
+pub(crate) mod test_tmp;
 pub mod timefmt;
 pub mod watch;
 pub mod worktree;
