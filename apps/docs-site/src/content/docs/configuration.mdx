@@ -6,7 +6,8 @@ description: Every key in .qaren/config.yaml, with its type, default and meaning
 Your agent writes and runs this; here is what it means.
 
 `qaren check` and `qaren pr` read `.qaren/config.yaml` from the directory they run in;
-`--config <path>` selects another file. Unknown keys are rejected.
+`--config <path>` selects another file. Unknown keys are rejected; the refusal
+[states what it found](#when-the-file-is-refused).
 
 ```yaml
 appId: com.example.testapp
@@ -136,6 +137,10 @@ Out-of-range values are refused with `SCENARIO_INVALID`, rather than clamped.
 A null, tilde, blank, negative, fractional, quoted, boolean, list, or object
 field value is a parse refusal, as is an unknown key, a camelCase alias, or a
 duplicate key. Explicit `deadlines: null` and `deadlines: ~` are also refused.
+When the conditions below hold, the refusal names a misplaced or respelled
+deadline key, and for any loaded file it names a deadline outside its range by
+its key, but never a value of the wrong type or a key written twice; see
+[when the file is refused](#when-the-file-is-refused).
 `check` and `pr` store the effective budgets at `scenario.deadlines` in
 `run.json`. For `pr`, these budgets come from the operator-selected
 configuration, even if the candidate worktree contains different deadlines.
@@ -148,6 +153,46 @@ devClientScheme: testapp
 deadlines:
   build_seconds: 5400
 ```
+
+## When the file is refused
+
+A file that does not load stops `check` and `pr` before the plan is read or a
+device is chosen, with `SCENARIO_INVALID` (`SCENARIO_UNREADABLE` when the file
+is missing or cannot be read). Key faults are stated when the file contains no
+`!` and the second, untyped read of it succeeds (that read fails for a key
+written twice and for a number too large to read, wherever they are in the
+file); a reader stop is stated in any file, and value rules are checked in a
+fixed order for any file that loads, with or without `!`, reporting the first
+rule that fails. When those conditions hold, the refusal and the `config` row
+of `qaren doctor` state what is wrong, without quoting the file:
+
+| In the file | What the refusal states |
+| ----------- | ----------------------- |
+| `attach_seconds: 300` or `attachSeconds: 300` at the top level | the top level has a key for `attach_seconds`, which is read only under `deadlines:` |
+| `attachSeconds: 300` under `deadlines:` | `deadlines:` has a key for `attach_seconds` in another spelling |
+| `attach_seconds: 7201` under `deadlines:` | `deadlines.attach_seconds` is outside 30 through 7200 seconds |
+| a key its block does not read | its position in its block and the `qaren` version that read the file |
+| a tab used to indent, an unclosed bracket or quote | the line and column where the YAML reader stopped |
+
+```yaml
+appId: com.example.testapp
+devClientScheme: testapp
+deadlines:
+  attach_seconds: 300
+```
+
+For a key fault the refusal states the fact, and there is one next step for
+every stated parse fault, listing every key and where it is read; how to edit
+the file is yours to decide. A key inside a block that is itself stated as
+misplaced, respelled or unread is not looked at until that block is corrected.
+At most three statements are shown; further faults are counted, not described.
+Other faults keep the general refusal, which lists the keys: a missing `appId`,
+a value of the wrong type such as a quoted deadline, a key written twice, a
+number too large to read, and any key fault in a file that contains `!`. No
+second name is read for any key, and no key has been removed, renamed or moved
+since 2.0.0. For every fault class, its code and the keys added since 2.0.0,
+see the
+[configuration refusal contract](https://github.com/Lykhoyda/QaReN/blob/develop/packages/qaren-cli/README.md#check-a-plan).
 
 ## Environment
 

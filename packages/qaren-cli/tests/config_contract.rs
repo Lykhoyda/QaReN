@@ -61,6 +61,15 @@ fn load_raw(yaml: &str) -> Result<(CheckConfig, String), qaren::failure::Failure
     CheckConfig::load(&path)
 }
 
+// A refused file with the path it was written to, so a test can compare whole texts.
+fn refused(yaml: &str) -> (String, qaren::failure::Failure) {
+    let repo = common::temp_repo();
+    let path = repo.join("config.yaml");
+    std::fs::write(&path, yaml).unwrap();
+    let failure = CheckConfig::load(&path).unwrap_err();
+    (path.display().to_string(), failure)
+}
+
 #[test]
 fn login_block_and_marker_load_together() {
     let config = load("appId: a\nloginBlock: log-in\nloginMarker: { id: login-screen }\n").unwrap();
@@ -227,28 +236,33 @@ fn deadline_values_outside_30_through_7200_are_invalid() {
         ("device_boot_seconds", 29),
         ("device_boot_seconds", 7201),
         ("device_boot_seconds", u64::MAX),
+        ("manifest_warmup_seconds", 29),
+        ("manifest_warmup_seconds", 7201),
         ("attach_seconds", 29),
         ("attach_seconds", 7201),
     ] {
         let yaml = config_yaml(&format!("deadlines:\n  {field}: {value}\n"));
-        let failure = load(&yaml).unwrap_err();
+        let (path, failure) = refused(&yaml);
         assert_eq!(
             failure.code,
             FailureCode::ScenarioInvalid,
             "{field}={value}"
         );
-        let detail = failure.detail.to_string();
-        assert!(
-            detail.contains(&format!(
-                "deadlines.{field} = {value} must be within 30..=7200 seconds"
-            )),
-            "{detail}"
+        // The whole detail is fixed text: the value read is not in it.
+        assert_eq!(
+            failure.detail.to_string(),
+            format!("{path}: `deadlines.{field}` is outside 30 through 7200 seconds"),
+            "{field}={value}"
+        );
+        assert_eq!(
+            failure.next_action.to_string(),
+            format!("in the config file, set `deadlines.{field}` to a whole number of seconds from 30 through 7200; then run the same command again")
         );
     }
 }
 
 #[test]
-fn deadline_parse_refusals_stay_generic() {
+fn deadline_parse_refusals_never_echo_values() {
     let blocks = [
         "deadlines: null\n",
         "deadlines: ~\n",
@@ -422,4 +436,266 @@ fn manifest_deadline_defaults_to_420_seconds_and_validates_overrides() {
         )))
         .is_err());
     }
+}
+
+const AGAIN: &str = "; then run the same command again";
+
+// The one next step for every stated parse fault: no edit of its own, and where each key is read.
+const KEY_FAULT_NEXT: &str = "in the config file, correct what the detail identifies; this qaren reads, at the top level: appId, video, packageManager, registryAuthEnv, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, proofInDescription, depsCache, build, deadlines; under `ios:`: deviceType, runtime, build; under `ios:` then `build:`: workspace, scheme; under `android:`: avd; under `loginMarker:`: id, text; under `build:`: jobs, priority, arch; under `deadlines:`: install_deps_seconds, build_seconds, device_boot_seconds, manifest_warmup_seconds, attach_seconds; then run the same command again";
+
+#[test]
+fn the_documented_attach_limit_shape_loads_as_every_2_x_release_read_it() {
+    let yaml = config_yaml(
+        "deadlines:\n  install_deps_seconds: 600\n  build_seconds: 3600\n  device_boot_seconds: 240\n  attach_seconds: 300\n",
+    );
+    let (config, raw) = load_raw(&yaml).unwrap();
+    assert_eq!(raw, yaml);
+    assert_eq!(config.deadlines.attach_seconds, 300);
+    assert_eq!(config.deadlines.manifest_warmup_seconds, 420);
+    assert_deadline_values(&config, 600, 3600, 240);
+}
+
+#[test]
+fn a_misplaced_or_respelled_attach_limit_refuses_naming_the_key_and_its_place() {
+    let moved = |from: &str| {
+        format!("{from} has a key for `attach_seconds`, which is read only under `deadlines:`")
+    };
+    let respelled = "`deadlines:` has a key for `attach_seconds` in another spelling".to_string();
+    for (block, seen) in [
+        ("attach_seconds: 4271\n", moved("the top level")),
+        ("attachSeconds: 4271\n", moved("the top level")),
+        ("ios:\n  attach_seconds: 4271\n", moved("`ios:`")),
+        ("android:\n  attach_seconds: 4271\n", moved("`android:`")),
+        ("deadlines:\n  attachSeconds: 4271\n", respelled.clone()),
+        ("deadlines:\n  attach-seconds: 4271\n", respelled.clone()),
+        // Overlapping keys are each stated as they are; nothing says which to keep.
+        (
+            "deadlines:\n  attach_seconds: 300\n  attachSeconds: 4271\n",
+            respelled.clone(),
+        ),
+        (
+            "attach_seconds: 4271\ndeadlines:\n  attach_seconds: 300\n",
+            moved("the top level"),
+        ),
+        (
+            "deadlines:\n  attachSeconds: 4271\n  attach-seconds: 4272\n",
+            respelled.clone(),
+        ),
+        (
+            "Deadlines: {attach_seconds: 300}\nattach_seconds: 4271\n",
+            format!(
+                "the top level has a key for `deadlines` in another spelling; {}",
+                moved("the top level")
+            ),
+        ),
+        (
+            "build: &b {jobs: 2}\nios: *b\n",
+            "`ios:` has a key for `jobs`, which is read only under `build:`".to_string(),
+        ),
+        (
+            "ios:\n  deadlines: {video: strict, attach_seconds: 4271}\n",
+            "`ios:` has a key for `deadlines`, which is read only at the top level".to_string(),
+        ),
+    ] {
+        let (path, failure) = refused(&config_yaml(block));
+        assert_eq!(failure.code, FailureCode::ScenarioInvalid, "{block}");
+        assert_eq!(failure.phase, "config");
+        assert!(!failure.code.is_refusal());
+        assert_eq!(
+            failure.detail.to_string(),
+            format!("{path} does not parse as check configuration: {seen}"),
+            "{block}"
+        );
+        assert_eq!(failure.next_action.to_string(), KEY_FAULT_NEXT, "{block}");
+    }
+    // The reader stopping is given by position, with the same fixed next step.
+    let (path, failure) = refused(&config_yaml("deadlines:\n\tattach_seconds: 4271\n"));
+    assert_eq!(
+        failure.detail.to_string(),
+        format!("{path} does not parse as check configuration: the YAML reader stopped at line 4, column 1")
+    );
+    assert_eq!(failure.next_action.to_string(), KEY_FAULT_NEXT);
+    // No next step tells the user to remove a key or to keep one of several.
+    assert!(!KEY_FAULT_NEXT.contains("remove") && !KEY_FAULT_NEXT.contains("keep one"));
+}
+
+// Writing the key where the refusal says it is read is one edit that loads; the refusal itself
+// prescribes no edit, so this is a control on the fixtures, not a promise of the product.
+#[test]
+fn an_attach_limit_written_where_it_is_read_loads() {
+    for (bad, edited) in [
+        (
+            "attach_seconds: 300\n",
+            "deadlines:\n  attach_seconds: 300\n",
+        ),
+        (
+            "deadlines:\n  attachSeconds: 300\n",
+            "deadlines:\n  attach_seconds: 300\n",
+        ),
+    ] {
+        assert!(load(&config_yaml(bad)).is_err(), "{bad}");
+        let config = load(&config_yaml(edited)).unwrap();
+        assert_eq!(config.deadlines.attach_seconds, 300);
+    }
+}
+
+// What this change does not name keeps the general refusal, and that refusal speaks of the
+// file that was selected, not of the default path.
+#[test]
+fn faults_that_are_not_named_keep_the_general_refusal_for_the_selected_file() {
+    for block in [
+        "deadlines:\n  attach_seconds: \"4271\"\n",
+        "deadlines:\n  attach_seconds: 4271.5\n",
+        "deadlines:\n  attach_seconds: 300\n  attach_seconds: 4271\n",
+        "attach_seconds: !!str 4271\n",
+        "metroPort: private-canary\n",
+    ] {
+        let (path, failure) = refused(&config_yaml(block));
+        assert_eq!(failure.code, FailureCode::ScenarioInvalid, "{block}");
+        assert_eq!(
+            failure.detail.to_string(),
+            format!("{path} does not parse as check configuration"),
+            "{block}"
+        );
+        let next = failure.next_action.to_string();
+        assert!(
+            next.starts_with("fix the config file (video must be strict or non-strict; keys: "),
+            "{next}"
+        );
+        assert!(!next.contains(".qaren/config.yaml"), "{next}");
+    }
+    // A missing file is to be created; a path that exists and cannot be read is not.
+    let repo = common::temp_repo();
+    let missing = CheckConfig::load(&repo.join("other.yaml")).unwrap_err();
+    assert_eq!(missing.code, FailureCode::ScenarioUnreadable);
+    assert_eq!(
+        missing.next_action.to_string(),
+        "create the config file with at least `appId: <bundle id>` and `devClientScheme: <the app's registered URI scheme>` (.qaren/config.yaml unless --config selects another)"
+    );
+    for unreadable in ["a-directory", "not-utf8.yaml"] {
+        let path = repo.join(unreadable);
+        if unreadable == "a-directory" {
+            std::fs::create_dir(&path).unwrap();
+        } else {
+            std::fs::write(&path, [0xff, 0xfe, b'a']).unwrap();
+        }
+        let failure = CheckConfig::load(&path).unwrap_err();
+        assert_eq!(
+            failure.code,
+            FailureCode::ScenarioUnreadable,
+            "{unreadable}"
+        );
+        assert_eq!(
+            failure.next_action.to_string(),
+            "make the selected config path a readable UTF-8 text file, then run the same command again",
+            "{unreadable}"
+        );
+    }
+}
+
+#[test]
+fn a_key_this_build_does_not_read_is_counted_and_never_quoted() {
+    let (path, failure) = refused(&config_yaml(
+        "privateCanaryKey: private-canary-value\ndeadlines:\n  attach_seconds: 300\n  private_canary_limit: 300\n",
+    ));
+    assert_eq!(failure.code, FailureCode::ScenarioInvalid);
+    assert_eq!(
+        failure.detail.to_string(),
+        format!(
+            "{path} does not parse as check configuration: key 3 of 4 at the top level is not one qaren {v} reads; key 2 of 2 under `deadlines:` is not one qaren {v} reads",
+            v = qaren::VERSION
+        )
+    );
+    assert_eq!(failure.next_action.to_string(), KEY_FAULT_NEXT);
+}
+
+#[test]
+fn every_value_refusal_names_its_key_and_never_what_the_file_held() {
+    let cases = [
+        (
+            "registryAuthEnv: [QAREN_INPUT_PRIVATE_CANARY]\n",
+            "`registryAuthEnv` is not a list of at most 64 allowed environment names",
+            "list at most 64 names, each matching [A-Za-z_][A-Za-z0-9_]* and at most 128 ASCII bytes, and neither TYPESAFE_API_KEY nor a name starting with QAREN_INPUT_ (in any letter case)",
+        ),
+        (
+            "packageManager: private-canary\n",
+            "`packageManager` is not pnpm, the only package manager this release supports",
+            "set `packageManager: pnpm` or remove the key",
+        ),
+        (
+            "metroPort: 1023\n",
+            "`metroPort` is below 1024",
+            "set `metroPort` to a port from 1024 through 65535, or remove the key",
+        ),
+        (
+            "deadlines:\n  attach_seconds: 7201\n",
+            "`deadlines.attach_seconds` is outside 30 through 7200 seconds",
+            "set `deadlines.attach_seconds` to a whole number of seconds from 30 through 7200",
+        ),
+        (
+            "nodePath: private-canary/bin/node\n",
+            "`nodePath` is not an absolute path",
+            "set `nodePath` to the absolute path of a Node 24 or newer binary, or remove the key",
+        ),
+        (
+            "loginBlock: private-canary\n",
+            "`loginBlock` and `loginMarker` are not set together",
+            "set both `loginBlock` and `loginMarker`, or neither",
+        ),
+        (
+            "loginBlock: ../private-canary\nloginMarker: { id: m }\n",
+            "`loginBlock` is not a saved-block slug",
+            "set `loginBlock` to a slug of ASCII letters, digits, `_`, `.` or `-` that starts with a letter or digit, at most 64 characters, without `..`",
+        ),
+        (
+            "loginBlock: log-in\nloginMarker: { id: private-canary, text: private-canary }\n",
+            "`loginMarker` does not have exactly one of `id` and `text`, set to a non-empty value",
+            "set exactly one of `id` (testID) or `text` (label) in `loginMarker` to a non-empty value and omit the other",
+        ),
+        (
+            "loginBlock: log-in\nloginMarker: { id: private-canary, text: '' }\n",
+            "`loginMarker` does not have exactly one of `id` and `text`, set to a non-empty value",
+            "set exactly one of `id` (testID) or `text` (label) in `loginMarker` to a non-empty value and omit the other",
+        ),
+    ];
+    for (block, seen, fix) in cases {
+        let (path, failure) = refused(&config_yaml(block));
+        assert_eq!(failure.code, FailureCode::ScenarioInvalid, "{block}");
+        assert_eq!(failure.phase, "config");
+        assert_eq!(
+            failure.detail.to_string(),
+            format!("{path}: {seen}"),
+            "{block}"
+        );
+        assert_eq!(
+            failure.next_action.to_string(),
+            format!("in the config file, {fix}{AGAIN}"),
+            "{block}"
+        );
+    }
+    let (path, failure) = refused("appId: '  '\ndevClientScheme: testapp\n");
+    assert_eq!(failure.code, FailureCode::ScenarioInvalid);
+    assert_eq!(failure.phase, "config");
+    assert_eq!(
+        failure.detail.to_string(),
+        format!("{path}: `appId` is blank")
+    );
+    assert_eq!(
+        failure.next_action.to_string(),
+        format!("in the config file, set `appId` to the app's bundle ID or package name{AGAIN}")
+    );
+    // The workspace rule keeps the phase of the validator it shares with prepare.
+    let (path, failure) = refused(&config_yaml(
+        "ios:\n  build:\n    workspace: ../private-canary.xcworkspace\n    scheme: private-canary\n",
+    ));
+    assert_eq!(failure.code, FailureCode::ScenarioInvalid);
+    assert_eq!(failure.phase, "validate");
+    assert_eq!(
+        failure.detail.to_string(),
+        format!("{path}: `build:` under `ios:` is not a normal project-relative ios/*.xcworkspace path with a trimmed 1–256-byte scheme without controls or a leading hyphen")
+    );
+    assert_eq!(
+        failure.next_action.to_string(),
+        format!("in the config file, correct `workspace` and `scheme` under `ios:` then `build:`, or remove that `build:` block to use the default build route{AGAIN}")
+    );
 }

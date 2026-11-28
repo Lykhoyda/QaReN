@@ -344,8 +344,9 @@ impl Default for Deadlines {
 }
 
 impl Deadlines {
-    pub(crate) fn validate(&self) -> Result<(), String> {
-        for (field, value) in [
+    // The first limit outside 30..=7200, by its config path, with the value read.
+    pub(crate) fn out_of_range(&self) -> Option<(&'static str, u64)> {
+        [
             ("deadlines.install_deps_seconds", self.install_deps_seconds),
             ("deadlines.build_seconds", self.build_seconds),
             ("deadlines.device_boot_seconds", self.device_boot_seconds),
@@ -354,14 +355,18 @@ impl Deadlines {
                 self.manifest_warmup_seconds,
             ),
             ("deadlines.attach_seconds", self.attach_seconds),
-        ] {
-            if !(30..=7200).contains(&value) {
-                return Err(format!(
-                    "{field} = {value} must be within 30..=7200 seconds"
-                ));
-            }
+        ]
+        .into_iter()
+        .find(|(_, value)| !(30..=7200).contains(value))
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        match self.out_of_range() {
+            Some((field, value)) => Err(format!(
+                "{field} = {value} must be within 30..=7200 seconds"
+            )),
+            None => Ok(()),
         }
-        Ok(())
     }
 }
 

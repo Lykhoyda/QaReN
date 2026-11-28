@@ -83,7 +83,7 @@ applicable or its subject was not assessed, as explained in the row's detail.
 | `installed-build` | The runtime under `$QAREN_HOME/runtime/<version>/` and the runtime `check` would use (`QAREN_RUNTIME` when set) are complete; a binary outside it that `PATH` runs instead of an install fails |
 | `runtime-dirs` | Interrupted installs and other versions under `$QAREN_HOME/runtime/` |
 | `source-checkout` | From a QaReN checkout: its source version (`<version>-dev.<commit>`) matches this binary |
-| `config` | `.qaren/config.yaml` (or `--config`) loads and validates |
+| `config` | `.qaren/config.yaml` (or `--config`) loads and validates; a file it cannot see (including a missing one) is skipped; a failing row gives the code and, for the stated parse faults and value rules of the [configuration refusal contract](#check-a-plan), the statement and next step; it never prints a value from the file |
 | `ios-lane` | Only with `--device <simulator-UUID>`: read-only check of that simulator against the [warm-lane contract](#warm-lane) |
 | `ios-simulator-log` | Reports the [simulator system-log policy](#ios-admission-and-cleanup); this policy row does not inspect or clear a log |
 | `raw-logs` | Reports the process-log policy (see **Process logs** under [iOS admission and cleanup](#ios-admission-and-cleanup)); this policy row does not inspect any log |
@@ -579,6 +579,70 @@ The configuration keys, defaults and validation are owned by
 [`src/config.rs`](src/config.rs). Both platforms require `appId` and
 `devClientScheme`; only `pnpm` is supported as the app package manager.
 `--config` selects another configuration file.
+
+When the configuration file does not load, `check` and `pr` stop with result
+`failed` and exit code 1 before the Node check, before the plan is read, before
+a pull request is looked up or fetched, before a device is selected, and before
+a run record or a device lease exists.
+
+| Fault in the file | Code | What `failure.detail` says |
+|---|---|---|
+| The file is missing | `SCENARIO_UNREADABLE` | the path and the read error; `next_action` says to create it with `appId` and `devClientScheme` (`qaren doctor` skips a config file it cannot see, which includes a missing one) |
+| The path exists and cannot be read as UTF-8 text | `SCENARIO_UNREADABLE` | the path and the read error; `next_action` says to make it a readable text file |
+| YAML the reader cannot follow, such as a tab used to indent or an unclosed bracket or quote | `SCENARIO_INVALID` | the line and column where the reader stopped; the fault is at or before it |
+| A key that reads as a key of its own block in another case or with other separators: `attachSeconds` under `deadlines:` | `SCENARIO_INVALID` | the block and the key as this build spells it: `deadlines:` has a key for `attach_seconds` in another spelling |
+| A key that reads as a key of exactly one other block: a top-level `attach_seconds` or `attachSeconds` | `SCENARIO_INVALID` | where the key is and where that name is read: the top level has a key for `attach_seconds`, which is read only under `deadlines:` |
+| Any other key its block does not read, such as `build` under `android:` (a name read in two other blocks) | `SCENARIO_INVALID` | its position in its block (`key 3 of 4 at the top level`) and the `qaren` version that read the file |
+| A value that fails its rule: `ios.build`, `registryAuthEnv`, `packageManager`, `metroPort`, a deadline outside 30 through 7200 seconds, a blank `appId`, `nodePath`, `loginBlock`, `loginMarker` | `SCENARIO_INVALID` (`ios.build` in phase `validate`) | the key and the rule, never the value; `next_action` gives the rule to meet |
+| Anything else: a missing `appId`, a value of the wrong type (a quoted or fractional deadline, a bad `video` value), a key written twice, a number too large to read, more than one YAML document | `SCENARIO_INVALID` | "does not parse as check configuration"; `next_action` lists the keys |
+
+A key fault is stated as a fact about the file. The refusal does not say how
+to edit it: whether to move, respell or remove a key is the author's call, and
+there is one next step for every stated parse fault, listing every key this
+build reads and where. The two comparisons ignore case, `_` and `-`. A key
+inside a block that is itself stated as misplaced, respelled or unread is not
+looked at until that block is corrected. At most three statements are shown;
+further faults are counted, not described. Only the first stage that stops the
+load is reported (the YAML reader, then keys, then value rules), so a file with
+faults at several stages takes more than one run to clear.
+
+Key faults are stated when the file contains no `!` (the mark of a YAML tag,
+even inside a comment or a text value) and the second, untyped read of it
+succeeds; that read fails for a key written twice and for a number too large to
+read, wherever they are in the file. When either condition does not hold, key
+faults are not stated and the last row of the table applies instead. A YAML
+reader stop is stated in any file. Value rules are checked after the file
+loads, in a fixed order, and the first that fails is reported; they are
+reported for any file that loads, with or without `!`.
+
+For the stated parse-fault rows and the value-rule row, `qaren doctor` prints
+the same statement and the same next step on its `config` row, passed through
+the same output redaction as the failure. It skips a config file it cannot see,
+which includes a missing one; for a path it can see and cannot read, and for
+the last row of the table, it prints the code and the loader's next step. With
+`--config`, it reads the file that flag selects.
+
+A refusal never quotes the file: not a value, and not the file's own spelling
+of a key. A key added by a newer release can read as a key this build knows
+and is then stated as misplaced or respelled.
+
+A file that loads can still be refused afterwards for what the run needs: a
+missing or malformed `devClientScheme` refuses with `DEV_CLIENT_SCHEME_REQUIRED`
+(result `refused`, exit code 4), and an `ios.build` workspace that does not
+exist is refused by the iOS build check.
+
+No second name is read for any key: a misplaced or respelled key is refused,
+never accepted. No configuration key has been removed, renamed or moved since
+2.0.0. These keys were added later, and a `qaren` older than the release shown
+refuses a file that carries one with the general refusal of that release:
+
+| Key | First release |
+|---|---|
+| `video` | 2.0.3 |
+| `proofInDescription` | 2.0.4 |
+| `deadlines.manifest_warmup_seconds` | 2.0.6 |
+| `depsCache` | 2.1.2 |
+| `build` (`jobs`, `priority`, `arch`) | 2.2.1 |
 
 For optional preparation budgets, see the
 [deadline defaults and validation](src/scenario.rs).

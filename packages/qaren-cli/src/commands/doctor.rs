@@ -1383,17 +1383,18 @@ fn config_check(file: &Path) -> (Check, Option<CheckConfig>) {
             None,
         );
     }
-    let config = match CheckConfig::load(file) {
+    let config = match CheckConfig::load_named(file) {
         Ok((config, _)) => config,
-        Err(failure) => {
-            return (
-                Check::fail(
-                    "config",
-                    format!("{}: {:?}", file.display(), failure.code),
-                    "fix the config using the documented .qaren/config.yaml schema; video must be strict or non-strict",
-                ),
-                None,
-            )
+        Err(refusal) => {
+            let category = format!("{}: {:?}", file.display(), refusal.failure.code);
+            // Only the named part is printed: a refusal's own detail may quote the file.
+            let raw_detail = match &refusal.named {
+                Some(named) => format!("{category}: {}", named.seen),
+                None => category,
+            };
+            let detail = crate::redact::OutputText::from_output(&raw_detail).to_string();
+            let fix = refusal.failure.next_action.to_string();
+            return (Check::fail("config", detail, fix), None);
         }
     };
     let mut validation = config.validate_for_platform(Platform::Ios);
@@ -4078,6 +4079,194 @@ mod tests {
                 assert!(!out.contains("metroPort 80"), "{out}");
             }
             assert_eq!(s.tree(), before);
+        }
+    }
+
+    // The one next step for every stated parse fault: no edit of its own, and where each key is read.
+    const KEY_FAULT_NEXT: &str = "in the config file, correct what the detail identifies; this qaren reads, at the top level: appId, video, packageManager, registryAuthEnv, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, proofInDescription, depsCache, build, deadlines; under `ios:`: deviceType, runtime, build; under `ios:` then `build:`: workspace, scheme; under `android:`: avd; under `loginMarker:`: id, text; under `build:`: jobs, priority, arch; under `deadlines:`: install_deps_seconds, build_seconds, device_boot_seconds, manifest_warmup_seconds, attach_seconds; then run the same command again";
+
+    #[test]
+    fn the_config_row_names_the_key_and_its_place_and_never_a_value() {
+        let s = Scratch::new("config-named");
+        let rule =
+            |fix: &str| format!("in the config file, {fix}; then run the same command again");
+        for (field, seen, fix) in [
+            (
+                "attach_seconds: 4271\n",
+                "the top level has a key for `attach_seconds`, which is read only under `deadlines:`",
+                KEY_FAULT_NEXT.to_string(),
+            ),
+            (
+                "deadlines:\n  attachSeconds: 4271\n",
+                "`deadlines:` has a key for `attach_seconds` in another spelling",
+                KEY_FAULT_NEXT.to_string(),
+            ),
+            (
+                "registryAuthEnv: [QAREN_INPUT_PRIVATE_CONFIG_CANARY]\n",
+                "`registryAuthEnv` is not a list of at most 64 allowed environment names",
+                rule("list at most 64 names, each matching [A-Za-z_][A-Za-z0-9_]* and at most 128 ASCII bytes, and neither TYPESAFE_API_KEY nor a name starting with QAREN_INPUT_ (in any letter case)"),
+            ),
+            (
+                "packageManager: private-config-canary\n",
+                "`packageManager` is not pnpm, the only package manager this release supports",
+                rule("set `packageManager: pnpm` or remove the key"),
+            ),
+            (
+                "metroPort: 1023\n",
+                "`metroPort` is below 1024",
+                rule("set `metroPort` to a port from 1024 through 65535, or remove the key"),
+            ),
+            (
+                "deadlines:\n  attach_seconds: 7201\n",
+                "`deadlines.attach_seconds` is outside 30 through 7200 seconds",
+                rule("set `deadlines.attach_seconds` to a whole number of seconds from 30 through 7200"),
+            ),
+            (
+                "nodePath: private-config-canary/bin/node\n",
+                "`nodePath` is not an absolute path",
+                rule("set `nodePath` to the absolute path of a Node 24 or newer binary, or remove the key"),
+            ),
+            (
+                "loginBlock: private-config-canary\n",
+                "`loginBlock` and `loginMarker` are not set together",
+                rule("set both `loginBlock` and `loginMarker`, or neither"),
+            ),
+            (
+                "loginBlock: ../private-config-canary\nloginMarker: { id: m }\n",
+                "`loginBlock` is not a saved-block slug",
+                rule("set `loginBlock` to a slug of ASCII letters, digits, `_`, `.` or `-` that starts with a letter or digit, at most 64 characters, without `..`"),
+            ),
+            (
+                "loginBlock: log-in\nloginMarker: { id: private-config-canary, text: private-config-canary }\n",
+                "`loginMarker` does not have exactly one of `id` and `text`, set to a non-empty value",
+                rule("set exactly one of `id` (testID) or `text` (label) in `loginMarker` to a non-empty value and omit the other"),
+            ),
+            (
+                "ios:\n  build:\n    workspace: ../private-config-canary.xcworkspace\n    scheme: App\n",
+                "`build:` under `ios:` is not a normal project-relative ios/*.xcworkspace path with a trimmed 1–256-byte scheme without controls or a leading hyphen",
+                rule("correct `workspace` and `scheme` under `ios:` then `build:`, or remove that `build:` block to use the default build route"),
+            ),
+        ] {
+            s.file(
+                ".qaren/config.yaml",
+                &format!("appId: com.example\ndevClientScheme: exp+example\n{field}"),
+            );
+            named_row(&s, seen, &fix, field);
+        }
+        s.file(
+            ".qaren/config.yaml",
+            "appId: '  '\ndevClientScheme: exp+example\n",
+        );
+        named_row(
+            &s,
+            "`appId` is blank",
+            &rule("set `appId` to the app's bundle ID or package name"),
+            "appId",
+        );
+    }
+
+    // One failing config row: its whole text in the report, its rendered lines and its JSON fields.
+    fn named_row(s: &Scratch, seen: &str, fix: &str, case: &str) {
+        let mut runner = MockRunner::new();
+        script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
+        let report = run_doctor(&mut runner, s, &s.0, None);
+        let check = row(&report, "config");
+        let detail = format!(
+            "{}: ScenarioInvalid: {seen}",
+            s.0.join(".qaren/config.yaml").display()
+        );
+        assert_eq!(check.status, Status::Fail, "{case}");
+        assert_eq!(check.detail, detail, "{case}");
+        assert_eq!(check.fix.as_deref(), Some(fix), "{case}");
+        assert_eq!(report.exit_code(), 1);
+        let rendered = report.render();
+        assert!(
+            rendered.contains(&format!("FAIL config: {detail}\n     fix: {fix}\n")),
+            "{case}: {rendered}"
+        );
+        let json: serde_json::Value = serde_json::from_str(&report.to_json()).unwrap();
+        let config = json["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["id"] == "config")
+            .unwrap();
+        assert_eq!(config["status"], "fail", "{case}");
+        assert_eq!(config["detail"], detail.as_str(), "{case}");
+        assert_eq!(config["fix"], fix, "{case}");
+        // Nowhere in either report: the canary in any letter case, or the file's own key spelling.
+        let root = s.0.display().to_string();
+        for out in [rendered, report.to_json()] {
+            let out = out.replace(&root, "<scratch>");
+            let lower = out.to_lowercase();
+            assert!(!lower.contains("private-config-canary"), "{case}: {out}");
+            assert!(!lower.contains("private_config_canary"), "{case}: {out}");
+            assert!(!out.contains("attachSeconds"), "{case}: {out}");
+        }
+    }
+
+    #[test]
+    fn the_config_row_is_about_the_selected_file_not_the_default_one() {
+        let s = Scratch::new("config-selected");
+        s.file(
+            ".qaren/config.yaml",
+            "appId: com.example\ndevClientScheme: exp+example\n",
+        );
+        for (other, detail, fix) in [
+            (
+                "appId: com.example\ndevClientScheme: exp+example\nattach_seconds: 4271\n",
+                "ScenarioInvalid: the top level has a key for `attach_seconds`, which is read only under `deadlines:`",
+                // The next step names no command and no path: the same command carries the same --config.
+                KEY_FAULT_NEXT,
+            ),
+            // A fault this row cannot name keeps the code, and its fix speaks of no default path.
+            (
+                "devClientScheme: exp+example\n",
+                "ScenarioInvalid",
+                "fix the config file (video must be strict or non-strict; keys: video, appId, packageManager, metroPort, ios, android, nodePath, devClientScheme, loginBlock, loginMarker, savePlans, proofInDescription, depsCache, registryAuthEnv, build (jobs: a positive number, priority: low or normal, arch: all), deadlines)",
+            ),
+        ] {
+            s.file("other/config.yaml", other);
+            let mut runner = MockRunner::new();
+            script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
+            runner.expect_run(
+                "--git-common-dir",
+                CmdOutput::failed(128, "not a git checkout"),
+            );
+            script_host(&mut runner, false);
+            let report = doctor(
+                &mut runner,
+                &s.0,
+                &s.0.join(".qaren"),
+                &s.0,
+                None,
+                PathBuf::from("/runtime"),
+                Some(Path::new("other/config.yaml")),
+            );
+            let check = row(&report, "config");
+            assert_eq!(check.status, Status::Fail);
+            assert_eq!(
+                check.detail,
+                format!("{}: {detail}", s.0.join("other/config.yaml").display())
+            );
+            assert_eq!(check.fix.as_deref(), Some(fix));
+        }
+    }
+
+    #[test]
+    fn the_config_row_redacts_its_detail_like_a_failure() {
+        let s = Scratch::new("private key");
+        for yaml in [
+            "appId: com.example\ndevClientScheme: exp+example\nattach_seconds: 300\n",
+            "devClientScheme: exp+example\n",
+        ] {
+            s.file(".qaren/config.yaml", yaml);
+            let mut runner = MockRunner::new();
+            script_toolchain(&mut runner, Some("v24.1.0\n"), RUNTIMES);
+            let report = run_doctor(&mut runner, &s, &s.0, None);
+            let check = row(&report, "config");
+            assert_eq!(check.status, Status::Fail, "{yaml}");
+            assert_eq!(check.detail, crate::redact::PRIVATE_KEY_WITHHELD, "{yaml}");
         }
     }
 
