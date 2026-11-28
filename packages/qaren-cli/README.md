@@ -3196,7 +3196,7 @@ unavailable reason; iOS QA never falls back to unrestricted simulator capture.
 
 ```text
 plan preflight -> device selection -> lease + durable run record
-               -> app preparation -> screen proof -> walk -> teardown
+               -> driver check -> app preparation -> screen proof -> walk -> teardown
 ```
 
 ### Fresh install
@@ -3246,8 +3246,8 @@ This check refuses only on proof. Text in a process table is never enough:
   cannot judge does not end it: a later proven driver is still found, and only
   when none is proven does the check end `unproven`.
 - **Android.** The scan reads `adb -s <serial> shell ps -A` through the
-  borrowed server. The output must be a complete process table (a header and
-  a final newline). A driver is proven when a process name is exactly
+  borrowed server. The output must be a complete process table (a header from
+  `USER` to `NAME`, at least one process and a final newline). A driver is proven when a process name is exactly
   `uiautomator`, `io.appium.uiautomator2.server`, `dev.mobile.maestro`, or one
   of the latter two with `.test` appended.
 
